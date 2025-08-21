@@ -1,55 +1,87 @@
+# heatcalc/ui/main_window.py
+import json
 from pathlib import Path
+
 from PyQt5.QtWidgets import (
-    QMainWindow, QAction, QFileDialog, QWidget, QVBoxLayout,
-    QCheckBox, QMessageBox, QLabel
+    QMainWindow, QTabWidget, QVBoxLayout, QWidget, QLabel,
+    QAction, QFileDialog, QCheckBox, QMessageBox, QInputDialog
 )
 from PyQt5.QtCore import Qt
 
+from .tier_item import TierItem
+from ..version import APP_NAME, PROJECT_EXTENSION
 from ..core.models import Project
-from ..core.calculation import run_iec60890
+from ..services.autosave import AutoSaveController
 from ..services.persistence import ProjectPersistence
 from ..services.settings import SettingsManager
-from ..services.autosave import AutoSaveController
 from ..utils.qt import signals
-from ..version import PROJECT_EXTENSION, APP_NAME
+
 from .project_meta_widget import ProjectMetaWidget
+from .switchboard_tab import SwitchboardTab
+from .curvefit_tab import CurveFitTab
+from .temp_rise_tab import TempRiseTab
+
+# >>> NEW: simple report exporter types/functions
+from ..reports.export_api import export_project_report
+from ..utils.resources import get_resource_path
+REQUIRED_META_KEYS = ["job_number", "project_title", "designer_name", "date", "revision"]
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: SettingsManager):
-        super().__init__()
-        self.setWindowTitle(APP_NAME)
-        self.resize(1000, 700)
-
+    def __init__(self, settings: SettingsManager, project: Project | None = None, parent=None):
+        super().__init__(parent)
         self.settings = settings
-        self.persistence = ProjectPersistence()
-        self.project = Project()
-        self.current_path: Path | None = None
+        self.project: Project = project or Project()
 
-        # Central content
-        central = QWidget(self)
-        v = QVBoxLayout(central)
-        self.setCentralWidget(central)
+        self.setWindowTitle(APP_NAME)
+        self.resize(1920, 1080)
 
+        # ---- Tabs -----------------------------------------------------------
+        self.tabs = QTabWidget()
+        self.tabs.setMovable(True)
+        self.tabs.setTabsClosable(False)
+        self.setCentralWidget(self.tabs)
+
+        # Project Info
         self.meta_widget = ProjectMetaWidget(self.project)
-        v.addWidget(self.meta_widget)
+        self.project_tab = QWidget()
+        self.project_tab_layout = QVBoxLayout(self.project_tab)
+        self.project_tab_layout.setContentsMargins(10, 10, 10, 10)
+        self.project_tab_layout.setSpacing(10)
+        self.project_tab_layout.addWidget(self.meta_widget)
+        self.tabs.addTab(self.project_tab, "Project Info")
 
-        self.results_label = QLabel("Results will appear here.")
-        v.addWidget(self.results_label)
+        # Switchboard Designer
+        self.switchboard_tab = SwitchboardTab(self.project, parent=self)
+        self.tabs.addTab(self.switchboard_tab, "Switchboard Designer")
 
-        # Autosave checkbox
+        self.curvefit_tab = CurveFitTab(self.project, self.switchboard_tab.scene, parent=self)
+        self.tabs.addTab(self.curvefit_tab, "Curve fitting")
+        self.switchboard_tab.tierGeometryCommitted.connect(
+            self.curvefit_tab.on_tier_geometry_committed
+        )
+
+        # Temperature rise (per-tier) – manual calculate
+        self.temp_tab = TempRiseTab(self.switchboard_tab.scene, parent=self)
+        self.tabs.addTab(self.temp_tab, "Temperature rise")
+
+        # autosave toggle
         self.cb_autosave = QCheckBox("Autosave")
         self.cb_autosave.setChecked(self.settings.autosave_enabled)
         self.cb_autosave.stateChanged.connect(self._toggle_autosave)
-        v.addWidget(self.cb_autosave, alignment=Qt.AlignLeft)
+        self.statusBar().addPermanentWidget(self.cb_autosave)
 
-        # Autosave controller
+        self.statusBar().showMessage("Ready")
+
+        # ---- Persistence / autosave ----------------------------------------
+        self.persistence = ProjectPersistence()
+        self.current_path: Path | None = None
         self.autosaver = AutoSaveController(self._get_project_json, self.settings, self)
 
-        # Menu
+        # ---- Menu -----------------------------------------------------------
         self._build_menu()
 
-    # ── UI Helpers ──────────────────────────────────────────────────────────
+    # ======================= Menu / Actions =================================
     def _build_menu(self):
         m = self.menuBar()
         filem = m.addMenu("File")
@@ -59,89 +91,181 @@ class MainWindow(QMainWindow):
         filem.addAction(act_new)
 
         act_open = QAction("Open…", self)
-        act_open.triggered.connect(self.action_open)
+        act_open.triggered.connect(self._do_open)
         filem.addAction(act_open)
 
         act_saveas = QAction("Save As…", self)
-        act_saveas.triggered.connect(self.action_save_as)
+        act_saveas.triggered.connect(self._do_save)
         filem.addAction(act_saveas)
 
-        calc = m.addMenu("Calculate")
-        act_run = QAction("Run IEC 60890", self)
-        act_run.triggered.connect(self.action_run)
-        calc.addAction(act_run)
+        # >>> NEW: Print/Export Report
+        act_report = QAction("Print Report…", self)
+        act_report.triggered.connect(self._do_print_report)
+        filem.addAction(act_report)
 
-    # ── Actions ─────────────────────────────────────────────────────────────
     def action_new(self):
+        """Clear current project (ask if discarding), reset tabs and path."""
         if not self._confirm_discard():
             return
-        self.project = Project()
+        self.project = Project()  # fresh meta container
+        self.current_path = None
+        # clear the switchboard and meta UIs
+        self.switchboard_tab.import_state({"tiers": [], "uniform_depth_value": 200})
+        self._rebuild_tabs()
+        self.statusBar().showMessage("New project")
+
+    # --- OPEN ---
+    def _do_open(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "JSON (*.json)")
+        if not path:
+            return
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        # Support both new payloads {"meta":..., "designer":...} and old ones {"tiers":[...]}.
+        designer_state = data.get("designer", data)
+
+        # Restore switchboard (tiers + toggles) via the tab’s API
+        self.switchboard_tab.import_state(designer_state)
+
+        # 2) Meta: set both the data model and the UI
+        meta = data.get("meta", {})
+        self.project.meta.job_number = meta.get("job_number", "")
+        self.project.meta.project_title = meta.get("project_title", "")
+        self.project.meta.designer_name = meta.get("designer_name", "")
+        self.project.meta.date = meta.get("date", "")
+        self.project.meta.revision = meta.get("revision", "")
+
+        # push into the UI widget so the user sees the loaded values
+        self.meta_widget.set_meta({
+            "job_number": self.project.meta.job_number,
+            "project_title": self.project.meta.project_title,
+            "designer_name": self.project.meta.designer_name,
+            "date": self.project.meta.date,
+            "revision": self.project.meta.revision,
+        })
+
+        self.curvefit_tab.on_tier_geometry_committed() # Refresh the curve fitting UI
+        self.statusBar().showMessage(f"Opened: {Path(path).name}")
+
+    # --- SAVE (Save As) ---
+    def _do_save(self):
+        if not self._validate_meta_or_remind():
+            return
+        payload = self._get_project_json()
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "JSON (*.json)")
+        if not path:
+            return
+        Path(path).write_text(json.dumps(payload, indent=2))
+        self.statusBar().showMessage(f"Saved: {Path(path).name}")
+
+    # ======================= Internals ======================================
+    def _rebuild_tabs(self):
+        """Recreate tab contents that depend on the current Project instance."""
+        # Project Info
+        self.project_tab_layout.removeWidget(self.meta_widget)
         self.meta_widget.setParent(None)
         self.meta_widget = ProjectMetaWidget(self.project)
-        self.centralWidget().layout().insertWidget(0, self.meta_widget)
-        self.current_path = None
-        self.autosaver.set_current_path(None)
-        self._refresh_results()
+        self.project_tab_layout.addWidget(self.meta_widget)
 
-    def action_open(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Open Project", "", f"HeatCalc (*{PROJECT_EXTENSION})")
-        if not p:
-            return
-        try:
-            data = self.persistence.load_project(Path(p))
-            self.project = Project.from_json(data)
-            self.meta_widget.setParent(None)
-            self.meta_widget = ProjectMetaWidget(self.project)
-            self.centralWidget().layout().insertWidget(0, self.meta_widget)
-            self.current_path = Path(p)
-            self.autosaver.set_current_path(self.current_path)
-            self.settings.add_recent(self.current_path)
-            self._refresh_results()
-        except Exception as e:
-            QMessageBox.critical(self, "Open failed", str(e))
+        # Switchboard Designer
+        idx = self.tabs.indexOf(self.switchboard_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        self.switchboard_tab.setParent(None)
+        self.switchboard_tab = SwitchboardTab(self.project, parent=self)
+        self.tabs.insertTab(1, self.switchboard_tab, "Switchboard Designer")
 
-    def action_save_as(self):
-        p, _ = QFileDialog.getSaveFileName(self, "Save Project As", "", f"HeatCalc (*{PROJECT_EXTENSION})")
-        if not p:
-            return
-        self.current_path = Path(p)
-        self.autosaver.set_current_path(self.current_path)
-        self._save_now()
-        self.settings.add_recent(self.current_path)
-
-    def action_run(self):
-        self.project = run_iec60890(self.project)
-        self._refresh_results()
-        self.project.mark_changed()  # trigger autosave of results too
-
-    # ── Internals ───────────────────────────────────────────────────────────
-    def _save_now(self):
-        if self.current_path is None:
-            self.action_save_as()
-            return
-        self.persistence.save_project(self._get_project_json(), self.current_path)
-
-    def _get_project_json(self):
-        return self.project.to_json()
-
-    def _refresh_results(self):
-        out = self.project.outputs
-        text = (
-            f"A_e: {out.ae_m2:.3f} m^2\n"
-            f"ΔT_mid: {out.delta_t_mid_c:.2f} °C\n"
-            f"ΔT_top: {out.delta_t_top_c:.2f} °C\n"
-            f"factors: {out.factors}"
-        )
-        self.results_label.setText(text)
 
     def _toggle_autosave(self, state: int):
         enabled = state == Qt.Checked
         self.settings.autosave_enabled = enabled
         signals.autosave_changed.emit(enabled)
 
+    def _save_now(self):
+        if self.current_path is None:
+            self.action_save_as()
+            return
+        self.persistence.save_project(self._get_project_json(), self.current_path)
+
+    def _get_project_json(self) -> dict:
+        meta = self.meta_widget.get_meta()
+        # keep model in sync (optional)
+        self.project.meta.job_number = meta["job_number"]
+        self.project.meta.project_title = meta["project_title"]
+        self.project.meta.designer_name = meta["designer_name"]
+        self.project.meta.date = meta["date"]
+        self.project.meta.revision = meta["revision"]
+        return {"meta": meta, "designer": self.switchboard_tab.export_state()}
+
     def _confirm_discard(self) -> bool:
-        # Later: detect dirty state; for now always ask when creating new
         if self.current_path is None:
             return True
         r = QMessageBox.question(self, "Discard current project?", "Start a new project and discard the current one?")
         return r == QMessageBox.Yes
+
+
+    def _collect_meta_safely(self) -> dict:
+        m = getattr(self.project, "meta", None)
+        # Safely read attributes (supporting possible aliases like 'title')
+        def g(obj, *names, default=""):
+            for n in names:
+                if hasattr(obj, n):
+                    v = getattr(obj, n)
+                    return v if v is not None else default
+            return default
+
+        if m is None:
+            # Return empty dict with all expected keys (so validator can complain once)
+            return {k: "" for k in REQUIRED_META_KEYS}
+
+        return {
+            "job_number":    g(m, "job_number"),
+            "project_title": g(m, "project_title", "title"),
+            "designer_name": g(m, "designer_name", "designer"),
+            "date":          g(m, "date"),
+            "revision":      g(m, "revision"),
+        }
+
+    def _validate_meta_or_remind(self) -> bool:
+        meta = self._collect_meta_safely()
+        missing = [k.replace("_", " ").title() for k, v in meta.items() if not str(v).strip()]
+        if missing:
+            msg = "Please complete project metadata before saving:\n\n• " + "\n• ".join(missing)
+            QMessageBox.information(self, "Missing Project Info", msg)
+            # Optional: jump to the Meta tab if you have one
+            try:
+                # If you stored the Meta tab widget: self.tabs.setCurrentWidget(self.meta_widget)
+                # or if by index, e.g. index 0:
+                # self.tabs.setCurrentIndex(0)
+                pass
+            except Exception:
+                pass
+            return False
+        return True
+
+        # ======================= Report =================================
+
+    # add this handler method to MainWindow
+    def _do_print_report(self):
+        amb, ok = QInputDialog.getInt(self, "Ambient Temperature", "Enter ambient temperature (°C):", 25, -20, 90, 1)
+        if not ok:
+            return
+
+        # Pick a filename
+        out_path_str, _ = QFileDialog.getSaveFileName(self, "Export PDF Report", "", "PDF (*.pdf)")
+        if not out_path_str:
+            return
+        out_path = Path(out_path_str)
+
+        # cable_path = Path(__file__).resolve().parents[1] / "data" / "cable_table.csv"
+        header_path = get_resource_path("heatcalc/data/logo.png")
+        footer_path = get_resource_path("heatcalc/data/title.png")
+
+        try:
+            export_project_report(self.project, self.switchboard_tab, self.curvefit_tab, out_path, ambient_C=amb, header_logo_path=footer_path, footer_image_path=header_path)
+            self.statusBar().showMessage(f"Report written: {out_path.name}")
+            QMessageBox.information(self, "Report Exported", f"Saved:\n{out_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Report Export Failed", f"Could not export report:\n\n{e}")
+            raise

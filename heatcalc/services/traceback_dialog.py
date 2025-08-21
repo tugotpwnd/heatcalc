@@ -39,3 +39,4 @@ def install_excepthook():
             dlg = TracebackDialog(exc_type, exc, tb)
             dlg.exec_()
     sys.excepthook = handle
+
