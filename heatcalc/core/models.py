@@ -7,6 +7,7 @@ from ..utils.qt import signals
 class ProjectMeta:
     job_number: str = ""
     title: str = ""
+    enclosure: str = ""
     designer: str = ""
     date: str = ""
     revision: str = "A"

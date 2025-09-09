@@ -1,7 +1,9 @@
+# heatcalc/core/component_store.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
+import sys
 import csv
 
 @dataclass(frozen=True)
@@ -10,7 +12,7 @@ class ComponentRow:
     part_number: str
     description: str
     heat_w: float
-    max_temp_C: int = 70  # NEW: per-component rating with safe default
+    max_temp_C: int = 70  # default safe rating
 
 # Accept common header variants (case/spacing insensitive)
 ALIASES: Dict[str, list[str]] = {
@@ -18,12 +20,16 @@ ALIASES: Dict[str, list[str]] = {
     "part_number": ["part_number", "PartNumber", "partnumber", "Part #", "Part#", "Part No", "PartNo", "PN"],
     "description": ["description", "Description", "Desc", "Name", "Title"],
     "heat_w":      ["heat_w", "HeatLoss", "Heat (W)", "Heat", "Watts", "W", "PowerLoss", "Power (W)"],
-    # NEW — lots of forgiving aliases; primary label we recommend in the CSV is “Max Temp (°C)”
     "max_temp_C":  [
         "max_temp_C", "Max Temp (°C)", "MaxTemp", "Max Temperature", "Temperature (°C)",
         "Temp (°C)", "Max T", "Tmax", "MaxTempC", "Max Temp C", "Max Temperature (°C)"
     ],
 }
+
+# The header we WRITE when creating/appending the CSV
+CANON_HEADERS: Tuple[str, str, str, str, str] = (
+    "Category", "Part #", "Description", "Heat (W)", "Max Temp (°C)"
+)
 
 def _norm(s: str) -> str:
     return (s or "").strip()
@@ -40,11 +46,33 @@ def _map_headers(fieldnames: List[str]) -> Dict[str, Optional[str]]:
                 break
     return out
 
+def resolve_components_csv() -> Path:
+    """
+    Preferred resolution order:
+      1) <folder of the EXE>/components.csv   (when bundled by PyInstaller)
+      2) <cwd>/components.csv                  (if user placed it)
+      3) repo fallback: heatcalc/data/components.csv
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        p = exe_dir / "components.csv"
+        if p.exists():
+            return p
+        # If missing, still *prefer* to create it next to exe for user editing:
+        return p
+
+    # non-frozen: prefer a local components.csv if developer placed one
+    cwd_csv = Path.cwd() / "components.csv"
+    if cwd_csv.exists():
+        return cwd_csv
+
+    # fallback to repo copy
+    return Path(__file__).resolve().parents[1] / "data" / "components.csv"
+
 def load_component_catalog(csv_path: Path) -> List[ComponentRow]:
     if not csv_path.exists():
         return []
 
-    # Sniff delimiter just in case (comma/semicolon/tab)
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         sample = f.read(2048)
         f.seek(0)
@@ -72,13 +100,11 @@ def load_component_catalog(csv_path: Path) -> List[ComponentRow]:
                 heat = 0.0
 
             try:
-                # allow values like "70 C", "70°", etc.
                 cleaned = max_raw.replace("°", "").replace("C", "").replace("c", "").strip()
                 max_temp = int(float(cleaned)) if cleaned else 70
             except Exception:
                 max_temp = 70
 
-            # Skip totally empty lines
             if not (cat or pn or desc):
                 continue
 
@@ -90,3 +116,23 @@ def load_component_catalog(csv_path: Path) -> List[ComponentRow]:
                 max_temp_C=max_temp,
             ))
         return rows
+
+def _ensure_csv_with_header(csv_path: Path) -> None:
+    if not csv_path.exists():
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(CANON_HEADERS)
+
+def append_component_to_csv(csv_path: Path, row: ComponentRow) -> None:
+    """Append a single component line; create file with canonical header if needed."""
+    _ensure_csv_with_header(csv_path)
+    with csv_path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            row.category,
+            row.part_number,
+            row.description,
+            f"{row.heat_w:.6g}",
+            int(row.max_temp_C),
+        ])

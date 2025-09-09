@@ -4,12 +4,19 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Any, Sequence, Tuple
 from pathlib import Path
 import os
+from PyPDF2 import PdfMerger
+from reportlab.pdfgen import canvas
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QImage, QPainter
 from PyQt5.QtCore import QRectF
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 import matplotlib
+
+from heatcalc.utils.resources import get_resource_path
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -50,6 +57,7 @@ def _times_rc():
 class ProjectMeta:
     job_number: str
     project_title: str
+    enclosure: str
     designer: str
     revision: str
     date: str
@@ -107,6 +115,59 @@ class TierThermal:
     airflow_m3h: Optional[float]
 
 # ---------------- Helpers ----------------
+
+def _make_disclaimer_page(path: Path):
+    styles = getSampleStyleSheet()
+    style = styles["Normal"]
+    style.fontName = FONT
+    style.fontSize = 11
+    style.leading = 14
+
+    disclaimer = """Disclaimer:<br/><br/>
+    This document has been prepared by Maxwell Industries based on information and conditions available at the time of its creation. All recommendations and findings contained herein reflect the best available data, engineering principles, and professional judgment as of the date of completion. Any changes to the circumstances or information may affect the validity of the conclusions and recommendations presented.<br/><br/>
+    The content of this document is confidential and has been prepared solely for the intended purpose as outlined in the contract between the client and Maxwell Industries. Any party using this document without obtaining the most current revision acknowledges that the information may be outdated or inaccurate. Maxwell Industries assumes no liability for any consequences arising from the misuse or misinterpretation of this document by third parties.<br/><br/>
+    ©Copyright Maxwell Industries Pty Ltd.<br/>
+    This document is the intellectual property of Maxwell Industries and is protected by copyright. No part of this document, whether in whole or substantial portion, may be reproduced or distributed without the prior written authorisation of Maxwell Industries. Unauthorised use or reproduction constitutes a violation of copyright law.
+    """
+
+    doc = SimpleDocTemplate(str(path), pagesize=A4,
+                            leftMargin=40, rightMargin=40,
+                            topMargin=60, bottomMargin=40)
+    flow = [Paragraph(disclaimer, style)]
+    doc.build(flow)
+    return path
+
+# --- NEW: helper to render a per-tier components table ---
+def _components_table_for_tier(tier: TierRow) -> Table:
+    # Header row
+    rows = [["Description", "Part #", "Qty", "W each", "W total"]]
+    # Data rows
+    for c in tier.components:
+        rows.append([
+            str(c.description or ""),
+            str(c.part_no or ""),
+            f"{int(c.qty)}",
+            f"{float(c.heat_each_w):.1f}",
+            f"{float(c.heat_total_w):.1f}",
+        ])
+    # Simple subtotal bar at bottom
+    if tier.components:
+        rows.append(["", "", "", "Subtotal (W):", f"{tier.heat_w:.1f}"])
+
+    t = Table(rows, colWidths=[70*mm, 35*mm, 12*mm, 20*mm, 25*mm])
+    t.setStyle(TableStyle([
+        ("FONT", (0,0), (-1,-1), FONT, 9),
+        ("FONT", (0,0), (-1,0), FONT_B, 9),
+        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+        ("LINEBELOW", (0,0), (-1,-1), 0.25, colors.whitesmoke),
+        ("ALIGN", (2,1), (4,-1), "RIGHT"),
+        ("LEFTPADDING", (0,0), (-1,-1), 2),
+        ("RIGHTPADDING", (0,0), (-1,-1), 2),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+    ]))
+    return t
+
+
 def _ensure_app():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     return QApplication.instance() or QApplication([])
@@ -380,10 +441,10 @@ def export_simple_report(
     flow = []
 
     # Title block (shares page with layout image)
-    flow.append(Paragraph("HeatCalc — Temperature Rise Report (IEC 60890)", H1))
+    flow.append(Paragraph("Temperature Rise Report (IEC 60890)", H1))
     flow.append(Spacer(1, 6))
     kv = [["Job #", meta.job_number], ["Project", meta.project_title], ["Designer", meta.designer],
-          ["Revision", meta.revision], ["Date", meta.date], ["Enclosure", enclosure_type]]
+          ["Revision", meta.revision], ["Date", meta.date], ["Enclosure", meta.enclosure]]
     if ambient_C is not None:
         kv.append(["Ambient (°C)", f"{ambient_C:.1f}"])
     t = Table(kv, colWidths=[35*mm, 110*mm])
@@ -419,8 +480,6 @@ def export_simple_report(
         )
         flow.append(Paragraph(sub, Body))
 
-    # Summary page
-    flow.append(PageBreak())
     flow.append(Paragraph("Summary", H2))
     sum_rows = [["Total Heat Loss (W)", f"{totals.get('heat_total_w', 0.0):.1f}"],
                 ["Number of Tiers", f"{len(tiers)}"]]
@@ -435,12 +494,19 @@ def export_simple_report(
     ]))
     flow.append(t2)
     flow.append(Spacer(1, 8))
+    # Summary page
+    flow.append(PageBreak())
 
     # Temperature compliance + per-tier tables (compact)
     thermal_by_tag = {th.tag: th for th in (tier_thermals or [])}
     flow.append(Paragraph("Tiers & Details", H2))
     for tier in tiers:
         flow.append(Paragraph(f"{tier.tag} — {tier.width_mm}×{tier.height_mm}×{tier.depth_mm} mm", H3))
+        # --- NEW: per-tier components list below the thermal summary ---
+        if tier.components:
+            flow.append(Paragraph("Components", H3))
+            flow.append(_components_table_for_tier(tier))
+            flow.append(Spacer(1, 8))
         sub_tbl = Table([["Tier subtotal (W)", f"{tier.heat_w:.1f}"]], colWidths=[60*mm, 30*mm])
         sub_tbl.setStyle(TableStyle([
             ("FONT", (0,0), (-1,-1), FONT_B, 9),
@@ -451,39 +517,7 @@ def export_simple_report(
             ("BOTTOMPADDING", (0,0), (-1,-1), 5),
         ]))
         flow.append(sub_tbl)
-        th = thermal_by_tag.get(tier.tag)
-        if th is not None:
-            comp_mid = "Compliant" if th.compliant_mid else "Not compliant"
-            comp_top = "Compliant" if th.compliant_top else "Not compliant"
-            comp_mid_color = colors.green if th.compliant_mid else colors.red
-            comp_top_color = colors.green if th.compliant_top else colors.red
-            main_rows = [["Ambient (°C)", f"{th.ambient_C:.1f}"],
-                         ["dT @ 0.5t (K)", f"{th.dt_mid:.2f}"],
-                         ["dT @ 1.0t (K)", f"{th.dt_top:.2f}"],
-                         ["Final Temp @ 0.5t (°C)", f"{th.T_mid:.1f}"],
-                         ["Final Temp @ 1.0t (°C)", f"{th.T_top:.1f}"],
-                         ["Maximum Allowed (°C)", f"{th.max_C:d}"],
-                         ["Compliance @ 0.5t", comp_mid],
-                         ["Compliance @ 1.0t", comp_top]]
-            tbl = Table(main_rows, colWidths=[60*mm, 85*mm])
-            tbl.setStyle(TableStyle([
-                ("FONT", (0,0), (-1,-1), FONT, 9),
-                ("LINEBELOW", (0,0), (-1,-1), 0.25, colors.whitesmoke),
-                ("TEXTCOLOR", (1,6), (1,6), comp_mid_color),
-                ("TEXTCOLOR", (1,7), (1,7), comp_top_color),
-                ("LEFTPADDING", (0,0), (-1,-1), 2),
-                ("RIGHTPADDING", (0,0), (-1,-1), 2),
-                ("BOTTOMPADDING", (0,0), (-1,-1), 3),
-            ]))
-            flow.append(tbl)
-            if not th.compliant_top:
-                flow.append(Spacer(1, 3))
-                if th.airflow_m3h is not None:
-                    flow.append(Paragraph(
-                        f"<b>Cooling required:</b> Provide ≥ {th.airflow_m3h:.0f} m^3/h of airflow to limit the top temperature to {th.max_C} °C.",
-                        Body,
-                    ))
-            flow.append(Spacer(1, 8))
+        flow.append(Spacer(1, 6))
 
     # 6) One Temperature Rise page per tier (image + temps line under plot)
     if tier_curve_images:
@@ -494,7 +528,7 @@ def export_simple_report(
             flow.append(Paragraph(f"Temperature Rise Summary — {title}", H2))
             flow.append(Paragraph("Design Variables", H3))
             flow.append(Paragraph(subtitle, Body))
-            flow.append(Paragraph("Temperature Rise Curve", H3))
+            flow.append(Paragraph("Temperature Rise Curve & Slice", H3))
             try:
                 from PIL import Image as PILImage
                 img = PILImage.open(img_path)
@@ -520,8 +554,6 @@ def export_simple_report(
             except Exception:
                 pass
 
-            flow.append(Paragraph("Temperature Rise Slice", H3))
-
             slice_png = assets / f"temp_slice_{th.tag.replace(' ', '_')}.png"
             render_temp_slice_png(
                 out_path=slice_png,
@@ -545,9 +577,65 @@ def export_simple_report(
             flow.append(RLImage(str(slice_png), width=target_sw_pt, height=target_sh_pt))
 
             flow.append(Spacer(1, 6))
-            flow.append(Paragraph(f"Resultant Temperature Rise at Ambient ({th.ambient_C:.1f} °C)", H3))
-            flow.append(Paragraph(temps_line, Body))
+
+            # NEW — move the compliance/thermal summary table here (same page as the curves)
+            comp_mid = "Compliant" if th.compliant_mid else "Cooling Required"
+            comp_top = "Compliant" if th.compliant_top else "Cooling Required"
+            comp_mid_color = colors.green if th.compliant_mid else colors.red
+            comp_top_color = colors.green if th.compliant_top else colors.red
+
+            main_rows = [
+                ["Ambient (°C)", f"{th.ambient_C:.1f}"],
+                ["dT @ 0.5t (K)", f"{th.dt_mid:.2f}"],
+                ["dT @ 1.0t (K)", f"{th.dt_top:.2f}"],
+                ["Final Temp @ 0.5t (°C)", f"{th.T_mid:.1f}"],
+                ["Final Temp @ 1.0t (°C)", f"{th.T_top:.1f}"],
+                ["Maximum Allowed (°C)", f"{th.max_C:d}"],
+                ["Compliance @ 0.5t", comp_mid],
+                ["Compliance @ 1.0t", comp_top],
+            ]
+            tbl = Table(main_rows, colWidths=[60 * mm, 85 * mm])
+            tbl.setStyle(TableStyle([
+                ("FONT", (0, 0), (-1, -1), FONT, 9),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.whitesmoke),
+                ("TEXTCOLOR", (1, 6), (1, 6), comp_mid_color),
+                ("TEXTCOLOR", (1, 7), (1, 7), comp_top_color),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            flow.append(Spacer(1, 6))
+            flow.append(tbl)
+
+            # If the top isn’t compliant and we’ve computed airflow, show the requirement under the table
+            if not th.compliant_top and th.airflow_m3h is not None:
+                flow.append(Spacer(1, 3))
+                flow.append(Paragraph(
+                    f"<b>Cooling required:</b> Provide ≥ {th.airflow_m3h:.0f} m^3/h of airflow to limit the top temperature to {th.max_C} °C.",
+                    Body,
+                ))
+            flow.append(Spacer(1, 8))
+
     doc.build(flow)
-    return out_pdf
+
+    # Now merge cover + report + disclaimer
+    final_path = out_pdf
+    tmp_report = out_pdf.with_name(out_pdf.stem + "_body.pdf")
+    out_pdf.rename(tmp_report)
+
+    assets = out_pdf.parent / ".assets"
+    disclaimer_pdf = _make_disclaimer_page(assets / "disclaimer.pdf")
+
+    merger = PdfMerger()
+    cover_path = Path(get_resource_path("heatcalc/assets/coverpage.pdf"))
+    if cover_path.exists():
+        merger.append(str(cover_path))
+    merger.append(str(tmp_report))
+    merger.append(str(disclaimer_pdf))
+    merger.write(str(final_path))
+    merger.close()
+
+    tmp_report.unlink(missing_ok=True)
+    return final_path
 
 

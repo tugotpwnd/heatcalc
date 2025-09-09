@@ -234,6 +234,7 @@ def _meta_from_project(project: Any) -> ReportMeta:
     return ReportMeta(
         job_number=g(m, "job_number"),
         project_title=g(m, "project_title", "title"),
+        enclosure=g(m, "enclosure"),
         designer=g(m, "designer_name", "designer"),
         revision=g(m, "revision"),
         date=g(m, "date"),

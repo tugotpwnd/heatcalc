@@ -20,6 +20,7 @@ from .project_meta_widget import ProjectMetaWidget
 from .switchboard_tab import SwitchboardTab
 from .curvefit_tab import CurveFitTab
 from .temp_rise_tab import TempRiseTab
+from .toast_message import ToastMessage
 
 # >>> NEW: simple report exporter types/functions
 from ..reports.export_api import export_project_report
@@ -46,8 +47,8 @@ class MainWindow(QMainWindow):
         self.meta_widget = ProjectMetaWidget(self.project)
         self.project_tab = QWidget()
         self.project_tab_layout = QVBoxLayout(self.project_tab)
-        self.project_tab_layout.setContentsMargins(10, 10, 10, 10)
-        self.project_tab_layout.setSpacing(10)
+        self.project_tab_layout.setContentsMargins(0, 0, 0, 0)
+        self.project_tab_layout.setSpacing(0)
         self.project_tab_layout.addWidget(self.meta_widget)
         self.tabs.addTab(self.project_tab, "Project Info")
 
@@ -57,9 +58,19 @@ class MainWindow(QMainWindow):
 
         self.curvefit_tab = CurveFitTab(self.project, self.switchboard_tab.scene, parent=self)
         self.tabs.addTab(self.curvefit_tab, "Curve fitting")
+
+        # ---- Connect changes to autosave save and curve refitting ----------------------------------------
         self.switchboard_tab.tierGeometryCommitted.connect(
             self.curvefit_tab.on_tier_geometry_committed
         )
+        # Any change in geom should call autosave
+        self.switchboard_tab.tierGeometryCommitted.connect(
+            self._project_changed
+        )
+        self.switchboard_tab.tierContentsChanged.connect(
+            self._project_changed
+        )
+        # ---------------------------------------------------------------------------------------------------
 
         # Temperature rise (per-tier) – manual calculate
         self.temp_tab = TempRiseTab(self.switchboard_tab.scene, parent=self)
@@ -80,6 +91,15 @@ class MainWindow(QMainWindow):
 
         # ---- Menu -----------------------------------------------------------
         self._build_menu()
+
+        # ---- Autosave Notifier ----------------------------------------------
+        msg = "💾 Autosave is ON"
+        toast = ToastMessage(msg, self)
+        toast.show_centered(self)
+
+    # ======================= Autosave Trigger =================================
+    def _project_changed(self):
+        signals.project_changed.emit()
 
     # ======================= Menu / Actions =================================
     def _build_menu(self):
@@ -132,6 +152,7 @@ class MainWindow(QMainWindow):
         meta = data.get("meta", {})
         self.project.meta.job_number = meta.get("job_number", "")
         self.project.meta.project_title = meta.get("project_title", "")
+        self.project.meta.enclosure = meta.get("enclosure", "")
         self.project.meta.designer_name = meta.get("designer_name", "")
         self.project.meta.date = meta.get("date", "")
         self.project.meta.revision = meta.get("revision", "")
@@ -140,12 +161,15 @@ class MainWindow(QMainWindow):
         self.meta_widget.set_meta({
             "job_number": self.project.meta.job_number,
             "project_title": self.project.meta.project_title,
+            "enclosure": self.project.meta.enclosure,
             "designer_name": self.project.meta.designer_name,
             "date": self.project.meta.date,
             "revision": self.project.meta.revision,
         })
 
         self.curvefit_tab.on_tier_geometry_committed() # Refresh the curve fitting UI
+        self.current_path = Path(path)  # NEW
+        self.autosaver.set_current_path(self.current_path)  # NEW
         self.statusBar().showMessage(f"Opened: {Path(path).name}")
 
     # --- SAVE (Save As) ---
@@ -157,6 +181,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         Path(path).write_text(json.dumps(payload, indent=2))
+        self.current_path = Path(path)  # NEW
+        self.autosaver.set_current_path(self.current_path)  # NEW
         self.statusBar().showMessage(f"Saved: {Path(path).name}")
 
     # ======================= Internals ======================================
@@ -176,10 +202,11 @@ class MainWindow(QMainWindow):
         self.switchboard_tab = SwitchboardTab(self.project, parent=self)
         self.tabs.insertTab(1, self.switchboard_tab, "Switchboard Designer")
 
-
     def _toggle_autosave(self, state: int):
         enabled = state == Qt.Checked
         self.settings.autosave_enabled = enabled
+        if enabled and self.current_path is None:
+            self._do_save()  # pick a location, sets current_path + autosaver path
         signals.autosave_changed.emit(enabled)
 
     def _save_now(self):
@@ -193,6 +220,7 @@ class MainWindow(QMainWindow):
         # keep model in sync (optional)
         self.project.meta.job_number = meta["job_number"]
         self.project.meta.project_title = meta["project_title"]
+        self.project.meta.enclosure = meta["enclosure"]
         self.project.meta.designer_name = meta["designer_name"]
         self.project.meta.date = meta["date"]
         self.project.meta.revision = meta["revision"]
@@ -222,6 +250,7 @@ class MainWindow(QMainWindow):
         return {
             "job_number":    g(m, "job_number"),
             "project_title": g(m, "project_title", "title"),
+            "enclosure":     g(m, "enclosure"),
             "designer_name": g(m, "designer_name", "designer"),
             "date":          g(m, "date"),
             "revision":      g(m, "revision"),

@@ -16,7 +16,11 @@ datas += [
     ('heatcalc/data/logo.png', 'heatcalc/data'),
     ('heatcalc/data/title.png', 'heatcalc/data'),
     ('heatcalc/assets/Logo.ico', 'heatcalc/assets'),
+    ('heatcalc/assets/menuwindow.png', 'heatcalc/assets'),
+    ('heatcalc/assets/coverpage.pdf', 'heatcalc/assets'),
 ]
+datas += [("heatcalc/data/components.csv", ".")]   # <-- put the CSV next to the exe
+
 
 # (ReportLab often loads resources dynamically; if you use it at startup, keep this)
 # If ReportLab/Matplotlib are only used later, leaving them out of hiddenimports is fine.

@@ -11,6 +11,11 @@ class ComponentTableModel(QAbstractTableModel):
         super().__init__()
         self._rows = rows
 
+    def set_rows(self, rows: List[ComponentRow]) -> None:
+        self.beginResetModel()
+        self._rows = rows
+        self.endResetModel()
+
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._rows)
 
@@ -34,7 +39,7 @@ class ComponentTableModel(QAbstractTableModel):
             if col == 1: return getattr(row, "part_number", "")
             if col == 2: return getattr(row, "description", "")
             if col == 3: return f"{float(getattr(row, 'heat_w', 0.0)):.1f}"
-            if col == 4: return str(int(getattr(row, "max_temp_C", 70)))  # NEW
+            if col == 4: return str(int(getattr(row, "max_temp_C", 70)))
         if role == Qt.UserRole:
             return row
         return QVariant()

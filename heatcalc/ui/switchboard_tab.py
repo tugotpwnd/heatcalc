@@ -8,13 +8,18 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QGroupBox,
     QLabel, QFormLayout, QLineEdit, QCheckBox, QSpinBox,
     QSplitter, QListWidget, QListWidgetItem, QAbstractItemView, QTableView,
-    QToolButton, QComboBox
+    QToolButton, QComboBox, QMessageBox, QSizePolicy
 )
+from PyQt5.QtGui import QFontMetrics
 
 from .designer_view import DesignerView, GRID, snap
 from .tier_item import TierItem, _Handle
 from ..core.component_library import DEFAULT_COMPONENTS  # we’ll enrich this map with catalog entries
-from ..core.component_store import load_component_catalog, ComponentRow
+from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+from ..core.component_store import (
+    load_component_catalog, ComponentRow,
+    resolve_components_csv, append_component_to_csv
+)
 from .component_table_model import ComponentTableModel
 from .cable_adder import CableAdderWidget
 
@@ -51,8 +56,94 @@ class _CatalogProxy(QSortFilterProxyModel):
         return self._text in blob
 
 
+class _NewComponentDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New Component")
+        lay = QFormLayout(self)
+
+        self.ed_cat  = QLineEdit(); self.ed_cat.setPlaceholderText("e.g., Drives")
+        self.ed_pn   = QLineEdit(); self.ed_pn.setPlaceholderText("Part number (optional)")
+        self.ed_desc = QLineEdit(); self.ed_desc.setPlaceholderText("Description")
+        self.ed_heat = QLineEdit(); self.ed_heat.setPlaceholderText("Heat (W), e.g. 12.5")
+        self.ed_tmax = QLineEdit(); self.ed_tmax.setPlaceholderText("Max Temp (°C), e.g. 70")
+
+        lay.addRow("Category:", self.ed_cat)
+        lay.addRow("Part #:", self.ed_pn)
+        lay.addRow("Description:", self.ed_desc)
+        lay.addRow("Heat (W):", self.ed_heat)
+        lay.addRow("Max Temp (°C):", self.ed_tmax)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addRow(btns)
+
+    def values(self) -> tuple[str, str, str, float, int] | None:
+        cat = (self.ed_cat.text() or "").strip()
+        desc = (self.ed_desc.text() or "").strip()
+        if not cat or not desc:
+            return None
+        pn = (self.ed_pn.text() or "").strip()
+        try:
+            heat = float((self.ed_heat.text() or "0").strip())
+        except Exception:
+            heat = 0.0
+        try:
+            tmax = int(float((self.ed_tmax.text() or "70").replace("°","").replace("C","").strip()))
+        except Exception:
+            tmax = 70
+        return cat, pn, desc, heat, tmax
+
+
+
+class CollapsibleGroupBox(QGroupBox):
+    def __init__(self, title="", parent=None, start_expanded=True):
+        super().__init__(title, parent)
+        self.setCheckable(True)
+        self.setChecked(bool(start_expanded))
+        self._content = QWidget(self)
+        self._inner_layout = QVBoxLayout(self._content)
+        self._inner_layout.setContentsMargins(0, 0, 0, 0)
+
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._content)
+        super().setLayout(outer)
+
+        # size policy: expand when open, fixed when closed
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toggled.connect(self._on_toggled)
+
+        # start in correct visual state
+        self._apply_collapsed_look(not start_expanded)
+
+    def setLayout(self, layout):
+        """Put caller's layout inside the collapsible content area."""
+        self._inner_layout.addLayout(layout)
+
+    # --- helpers ---------------------------------------------------------
+    def _header_height_px(self) -> int:
+        fm = QFontMetrics(self.font())
+        # room for check box + text + frame margins
+        return int(fm.height() + fm.leading() + 10)
+
+    def _apply_collapsed_look(self, collapsed: bool):
+        self._content.setVisible(not collapsed)
+        if collapsed:
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.setMaximumHeight(self._header_height_px())
+        else:
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            self.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+
+    def _on_toggled(self, checked: bool):
+        self._apply_collapsed_look(not checked)
+
+
 class SwitchboardTab(QWidget):
     tierGeometryCommitted = pyqtSignal()
+    tierContentsChanged = pyqtSignal()
     def __init__(self, project, parent=None):
         super().__init__(parent)
         self.project = project
@@ -93,8 +184,9 @@ class SwitchboardTab(QWidget):
 
 
         # Selected tier basics
-        gb_sel = QGroupBox("Selected tier")
-        sel_form = QFormLayout(gb_sel)
+        gb_sel = CollapsibleGroupBox("Selected tier")
+        sel_form = QFormLayout()
+        gb_sel.setLayout(sel_form)
         self.lbl_sel_name = QLabel("-")
         self.ed_name = QLineEdit("")
         self.ed_name.editingFinished.connect(self._apply_name)
@@ -130,8 +222,9 @@ class SwitchboardTab(QWidget):
         left_lay.addWidget(gb_sel)
 
         # Selected tier contents (list)
-        gb_contents = QGroupBox("Tier contents")
-        v_contents = QVBoxLayout(gb_contents)
+        gb_contents = CollapsibleGroupBox("Tier contents")
+        v_contents = QVBoxLayout()
+        gb_contents.setLayout(v_contents)
         self.list_contents = QListWidget()
         self.list_contents.setSelectionMode(QAbstractItemView.SingleSelection)
         v_contents.addWidget(self.list_contents)
@@ -150,8 +243,9 @@ class SwitchboardTab(QWidget):
         left_lay.addWidget(gb_contents, 1)
 
         # Component library (search + category + table)
-        gb_db = QGroupBox("Component library")
-        v_db = QVBoxLayout(gb_db)
+        gb_db = CollapsibleGroupBox("Component library")
+        v_db = QVBoxLayout()
+        gb_db.setLayout(v_db)
 
         top_row = QWidget(); tr = QHBoxLayout(top_row); tr.setContentsMargins(0, 0, 0, 0)
         self.cmb_category = QComboBox(); self.cmb_category.addItem("All categories")
@@ -176,8 +270,9 @@ class SwitchboardTab(QWidget):
         left_lay.addWidget(gb_db, 2)
 
         # --- Cable adder (next to/under component library) ---
-        gb_cab = QGroupBox("Cable adder")
-        v_cab = QVBoxLayout(gb_cab)
+        gb_cab = CollapsibleGroupBox("Cable adder")
+        v_cab = QVBoxLayout()
+        gb_cab.setLayout(v_cab)
 
         self.cableAdder = CableAdderWidget(self)  # auto-loads cable_table.csv
         self.cableAdder.cableAdded.connect(self._on_cable_added)
@@ -192,6 +287,16 @@ class SwitchboardTab(QWidget):
         br.addWidget(self.btn_add); br.addWidget(self.btn_del)
         left_lay.addWidget(btn_row)
 
+        # Row for adding a brand-new component into the CSV
+        add_new_row = QWidget();
+        anr = QHBoxLayout(add_new_row);
+        anr.setContentsMargins(0, 0, 0, 0)
+        self.btn_add_new_component = QPushButton("Add Component…")
+        self.btn_add_new_component.clicked.connect(self._quick_add_component)
+        anr.addStretch(1);
+        anr.addWidget(self.btn_add_new_component)
+        v_db.addWidget(add_new_row)
+
         # ---- Splitter so left can be ~half ----
         splitter = QSplitter()
         splitter.addWidget(left)
@@ -205,14 +310,38 @@ class SwitchboardTab(QWidget):
         root.addWidget(splitter)
 
         # ---- Catalog model / proxy ----------------------------------------
-        from heatcalc.utils.resources import get_resource_path
-        csv_in_bundle = get_resource_path("heatcalc/data/components.csv")
+        self.components_csv_path = resolve_components_csv()
         rows = []
+        error_txt = None
         try:
-            rows = load_component_catalog(csv_in_bundle)
+            rows = load_component_catalog(self.components_csv_path)
         except Exception as e:
-            # optional: print/log to help diagnose if ever empty again
-            print(f"[ComponentCatalog] Failed to load {csv_in_bundle}: {e}")
+            error_txt = str(e)
+
+        # Fallback if missing/empty/unreadable
+        if not rows:
+            # Build a tiny built‑in catalog so the app still works
+            from ..core.component_store import ComponentRow
+            rows = [
+                ComponentRow(category="Default", part_number=pn, description=desc, heat_w=float(w))
+                for desc, w in DEFAULT_COMPONENTS.items()
+                for pn in [""]
+            ]
+
+            # Show a one‑time friendly heads‑up
+            msg = (
+                    "<b>Couldn’t load <code>components.csv</code>.</b><br/><br/>"
+                    "Falling back to the limited built‑in library. "
+                    "To use your full catalogue, place <code>components.csv</code> in the same folder as this application:<br/>"
+                    f"<code>{str(self.components_csv_path)}</code>"
+                    + (f"<br/><br/><i>Details:</i> {error_txt}" if error_txt else "")
+            )
+            try:
+                # Non-blocking info box (OK-only)
+                QMessageBox.information(self, "Component Catalogue Not Found", msg)
+            except Exception:
+                # If we’re in an offscreen/test context just ignore
+                pass
 
         self.model = ComponentTableModel(rows)
         self.proxy = _CatalogProxy(self)
@@ -230,6 +359,15 @@ class SwitchboardTab(QWidget):
     # ------------------------------------------------------------------ #
     # Save / Load
     # ------------------------------------------------------------------ #
+
+    # Helper to rewire emit signals.
+    def _wire_tier_signals(self, t: TierItem):
+        # Safe to call multiple times thanks to UniqueConnection
+        t.requestDelete.connect(self._delete_item, type=Qt.UniqueConnection)
+        t.geometryCommitted.connect(self._on_tier_geometry_committed, type=Qt.UniqueConnection)
+        t.positionCommitted.connect(self._on_tier_geometry_committed, type=Qt.UniqueConnection)
+        # keeps left panel responsive while dragging
+        t.rectChanged.connect(lambda: self._update_left_from_selection(), type=Qt.UniqueConnection)
 
     def export_state(self) -> dict:
         return {
@@ -250,9 +388,7 @@ class SwitchboardTab(QWidget):
 
         for td in state.get("tiers", []):
             t = TierItem.from_dict(td)
-            t.requestDelete.connect(self._delete_item)
-            t.geometryCommitted.connect(self._on_tier_geometry_committed)
-            t.positionCommitted.connect(self._on_tier_geometry_committed)
+            self._wire_tier_signals(t)
             self.scene.addItem(t)
 
         self._recompute_all_curves()
@@ -306,14 +442,10 @@ class SwitchboardTab(QWidget):
         self.scene.clearSelection()
         depth = self.sp_same_depth.value() if self.cb_same_depth.isChecked() else 200
         t = TierItem(name, x, y, w, h, depth_mm=depth)
-        t.requestDelete.connect(self._delete_item)
+        self._wire_tier_signals(t)
 
         # Live left-panel size while dragging
         t.rectChanged.connect(lambda: self._update_left_from_selection())
-
-        # Update curves only on commit (mouse release)
-        t.geometryCommitted.connect(self._on_tier_geometry_committed)
-        t.positionCommitted.connect(self._on_tier_geometry_committed)
 
         self.scene.addItem(t)
         t.setSelected(True)
@@ -334,6 +466,7 @@ class SwitchboardTab(QWidget):
             self.tierGeometryCommitted.emit()
 
     def _delete_item(self, it):
+        print(f"Delete requested on : {it}")
         self.scene.removeItem(it)
         self._update_left_from_selection()
         self._recompute_all_curves()
@@ -422,6 +555,45 @@ class SwitchboardTab(QWidget):
         it.update()
         self._refresh_selected_contents()
 
+    def _reload_components(self):
+        rows = load_component_catalog(self.components_csv_path)
+        self.model.set_rows(rows)
+        # refresh category combobox (preserve selection if possible)
+        current = self.cmb_category.currentText()
+        self.cmb_category.blockSignals(True)
+        self.cmb_category.clear()
+        self.cmb_category.addItem("All categories")
+        for cat in self.model.all_categories():
+            self.cmb_category.addItem(cat)
+        # restore selection if still present
+        idx = self.cmb_category.findText(current) if current else -1
+        self.cmb_category.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_category.blockSignals(False)
+
+    def _quick_add_component(self):
+        dlg = _NewComponentDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        vals = dlg.values()
+        if not vals:
+            return
+        cat, pn, desc, heat, tmax = vals
+        new_row = ComponentRow(
+            category=cat,
+            part_number=pn,
+            description=desc,
+            heat_w=heat,
+            max_temp_C=tmax
+        )
+        try:
+            append_component_to_csv(self.components_csv_path, new_row)
+            self._reload_components()
+            # pre-select the newly added category to make it visible
+            self.cmb_category.setCurrentText(cat if cat else "All categories")
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Add Component Failed", f"Could not append to CSV:\n\n{e}")
+
     # ------------------------------------------------------------------ #
     # Cable library add
     # ------------------------------------------------------------------ #
@@ -499,6 +671,9 @@ class SwitchboardTab(QWidget):
         self.lbl_effective_limit.setText(f"Effective limit: {eff}°C ({mode})")
 
     def _refresh_selected_contents(self):
+        #A refresh of contents should trigger autosave
+        self.tierContentsChanged.emit()
+
         it = self._selected_tier()
         self.list_contents.clear()
         total = 0.0
@@ -617,35 +792,35 @@ class SwitchboardTab(QWidget):
 
 
     # --- persistence API ---------------------------------------------
-    def export_state(self) -> dict:
-        tiers = []
-        for it in self.scene.items():
-            if isinstance(it, TierItem):
-                tiers.append(it.to_dict())
-        return {
-            "wall_mounted_global": bool(self.cb_wall.isChecked()),
-            "use_uniform_depth": bool(getattr(self, "cb_uniform_depth", None) and self.cb_uniform_depth.isChecked()),
-            "uniform_depth_mm": int(getattr(self, "sp_uniform_depth", None).value() if getattr(self, "sp_uniform_depth", None) else 400),
-            "tiers": list(reversed(tiers)),  # reverse to keep visual stacking order
-        }
-
-    def import_state(self, state: dict) -> None:
-        # clear existing tiers
-        for it in list(self.scene.items()):
-            if isinstance(it, TierItem):
-                self.scene.removeItem(it)
-
-        self.cb_wall.setChecked(bool(state.get("wall_mounted_global", False)))
-        if getattr(self, "cb_uniform_depth", None):
-            self.cb_uniform_depth.setChecked(bool(state.get("use_uniform_depth", False)))
-        if getattr(self, "sp_uniform_depth", None):
-            self.sp_uniform_depth.setValue(int(state.get("uniform_depth_mm", 400)))
-
-        for td in state.get("tiers", []):
-            t = TierItem.from_dict(td)
-            self.scene.addItem(t)
-        self._recompute_all_curves()
-        self._update_left_from_selection()
+    # def export_state(self) -> dict:
+    #     tiers = []
+    #     for it in self.scene.items():
+    #         if isinstance(it, TierItem):
+    #             tiers.append(it.to_dict())
+    #     return {
+    #         "wall_mounted_global": bool(self.cb_wall.isChecked()),
+    #         "use_uniform_depth": bool(getattr(self, "cb_uniform_depth", None) and self.cb_uniform_depth.isChecked()),
+    #         "uniform_depth_mm": int(getattr(self, "sp_uniform_depth", None).value() if getattr(self, "sp_uniform_depth", None) else 400),
+    #         "tiers": list(reversed(tiers)),  # reverse to keep visual stacking order
+    #     }
+    #
+    # def import_state(self, state: dict) -> None:
+    #     # clear existing tiers
+    #     for it in list(self.scene.items()):
+    #         if isinstance(it, TierItem):
+    #             self.scene.removeItem(it)
+    #
+    #     self.cb_wall.setChecked(bool(state.get("wall_mounted_global", False)))
+    #     if getattr(self, "cb_uniform_depth", None):
+    #         self.cb_uniform_depth.setChecked(bool(state.get("use_uniform_depth", False)))
+    #     if getattr(self, "sp_uniform_depth", None):
+    #         self.sp_uniform_depth.setValue(int(state.get("uniform_depth_mm", 400)))
+    #
+    #     for td in state.get("tiers", []):
+    #         t = TierItem.from_dict(td)
+    #         self.scene.addItem(t)
+    #     self._recompute_all_curves()
+    #     self._update_left_from_selection()
 
 
     @staticmethod
