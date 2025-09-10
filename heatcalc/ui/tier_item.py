@@ -168,6 +168,7 @@ class CableEntry:
     Pn_Wpm: float
     P_Wpm: float
     total_W: float
+    install_type: int = 1     # NEW
     factor_install: float = 1.0
 
     def to_dict(self): return asdict(self)

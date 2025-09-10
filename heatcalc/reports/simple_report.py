@@ -13,6 +13,7 @@ from PyQt5.QtCore import QRectF
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+
 import matplotlib
 
 from heatcalc.utils.resources import get_resource_path
@@ -28,6 +29,9 @@ from reportlab.platypus import (
     BaseDocTemplate, Frame, PageTemplate
 )
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, KeepTogether
 matplotlib.rcParams.update({
     "font.family": "serif",
     "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "Liberation Serif"],
@@ -36,6 +40,7 @@ matplotlib.rcParams.update({
 })
 FONT = "Times-Roman"
 FONT_B = "Times-Bold"
+IEC_HEAD = "IEC 60890 Preconditions (Clause 10.10.4.3.1)"
 
 # ---------------- Times font helper for matplotlib ----------------
 def _times_rc():
@@ -363,6 +368,94 @@ def render_temp_slice_png(
     plt.close(fig)
     return out_path
 
+# ---------------- IEC60890 Compliance Table. ----------------
+def _iec_status_color(text: str):
+    t = (text or "").strip().lower()
+    if t == "compliant":
+        return colors.HexColor("#90E4B4")
+    if t in ("n/a", "na", "n.a."):
+        return colors.HexColor("#C8CCD0")
+    return colors.HexColor("#F44336")
+
+
+def iec60890_section_flowables(answers: list[dict]) -> list:
+    styles = getSampleStyleSheet()
+    H2 = ParagraphStyle("H2", parent=styles["Heading2"], fontName=FONT)
+    Cell = ParagraphStyle(
+        "Cell",
+        fontName=FONT,
+        fontSize=10,
+        leading=12,
+        spaceAfter=0,
+        spaceBefore=0,
+    )
+    CellCenter = ParagraphStyle("CellCenter", parent=Cell, alignment=1)  # center
+
+    title = Paragraph(f"<b>{IEC_HEAD}</b>", H2)
+
+    # NEW: explanatory text
+    intro_text = (
+        "The conditions in the following table "
+        "(in line with clause 10.10.4.3.1) shall be fulfilled "
+        "in order to apply the calculation methodology in IEC 60890."
+    )
+    intro_para = Paragraph(intro_text, Cell)  # uses the same Times font
+
+    # Header row as Paragraphs (so the whole table is consistent)
+    data = [
+        [
+            Paragraph("<b>No.</b>", CellCenter),
+            Paragraph("<b>Assessment Conditions</b>", Cell),
+            Paragraph("<b>Compliance Check</b>", CellCenter),
+        ]
+    ]
+
+
+    # Body rows — wrap long condition text using Paragraph
+    for a in answers:
+        data.append([
+            Paragraph(a["item"], CellCenter),
+            Paragraph(a["condition"], Cell),
+            Paragraph(a["result"], CellCenter),
+        ])
+
+    # Column widths: tweak to your page/margins as needed
+    tbl = Table(data, colWidths=[30, 390, 120], repeatRows=1)
+
+    base = TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#009640")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.black),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ])
+    tbl.setStyle(base)
+
+    # Color the status cells
+    for r in range(1, len(data)):
+        # status is the Paragraph we inserted in col 2; use the original answers list
+        status_text = str(answers[r - 1]["result"])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (2, r), (2, r), _iec_status_color(status_text)),
+            ("TEXTCOLOR", (2, r), (2, r), colors.black),
+        ]))
+
+    return [
+        KeepTogether([
+            title,
+            Spacer(1, 4),
+            intro_para,     # <--- added line
+            Spacer(1, 6),
+            tbl,
+            Spacer(1, 12)
+        ])
+    ]
 
 # ---------------- Main: export_simple_report ----------------
 def export_simple_report(
@@ -381,6 +474,7 @@ def export_simple_report(
     tier_thermals: Optional[List[TierThermal]] = None,
     header_logo_path: Optional[Path] = None,   # optional assets
     footer_image_path: Optional[Path] = None,  # optional assets
+    iec60890_checklist=None
 ) -> Path:
 
     out_pdf = Path(out_pdf)
@@ -479,6 +573,13 @@ def export_simple_report(
             "and correspond to the dimensional inputs used in the thermal model."
         )
         flow.append(Paragraph(sub, Body))
+
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # INSERT IEC 60890 PRECONDITION TABLE HERE (after layout, before summary)
+    if iec60890_checklist:
+        flow += iec60890_section_flowables(iec60890_checklist)
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
 
     flow.append(Paragraph("Summary", H2))
     sum_rows = [["Total Heat Loss (W)", f"{totals.get('heat_total_w', 0.0):.1f}"],

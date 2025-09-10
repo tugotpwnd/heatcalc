@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
+from .iec60890_dialog import ensure_checklist_before_report
 from .tier_item import TierItem
 from ..version import APP_NAME, PROJECT_EXTENSION
 from ..core.models import Project
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
         self.switchboard_tab.import_state({"tiers": [], "uniform_depth_value": 200})
         self._rebuild_tabs()
         self.statusBar().showMessage("New project")
+        self.project.meta.iec60890_checklist = []
 
     # --- OPEN ---
     def _do_open(self):
@@ -156,6 +158,9 @@ class MainWindow(QMainWindow):
         self.project.meta.designer_name = meta.get("designer_name", "")
         self.project.meta.date = meta.get("date", "")
         self.project.meta.revision = meta.get("revision", "")
+
+        # NEW: hydrate IEC 60890 checklist
+        self.project.meta.iec60890_checklist = meta.get("iec60890_checklist", [])
 
         # push into the UI widget so the user sees the loaded values
         self.meta_widget.set_meta({
@@ -217,14 +222,24 @@ class MainWindow(QMainWindow):
 
     def _get_project_json(self) -> dict:
         meta = self.meta_widget.get_meta()
-        # keep model in sync (optional)
+
+        # keep model in sync (existing)
         self.project.meta.job_number = meta["job_number"]
         self.project.meta.project_title = meta["project_title"]
         self.project.meta.enclosure = meta["enclosure"]
         self.project.meta.designer_name = meta["designer_name"]
         self.project.meta.date = meta["date"]
         self.project.meta.revision = meta["revision"]
-        return {"meta": meta, "designer": self.switchboard_tab.export_state()}
+
+        # NEW: persist the IEC 60890 checklist
+        # prefer the dataclass (if present), fall back to UI meta dict, else []
+        checklist = getattr(self.project.meta, "iec60890_checklist", None)
+        if not checklist:
+            checklist = meta.get("iec60890_checklist", [])
+        # write it into the saved meta dict (even if UI doesn’t render it)
+        meta_out = {**meta, "iec60890_checklist": checklist}
+
+        return {"meta": meta_out, "designer": self.switchboard_tab.export_state()}
 
     def _confirm_discard(self) -> bool:
         if self.current_path is None:
@@ -277,6 +292,32 @@ class MainWindow(QMainWindow):
 
     # add this handler method to MainWindow
     def _do_print_report(self):
+        # 0) IEC 60890 preconditions (before anything else)
+        answers = ensure_checklist_before_report(self, getattr(self.project, "meta", {}))
+        if answers is None:
+            # User cancelled out of the dialog prompt
+            return
+
+        # Persist answers into meta so they autosave + reload later
+        # (Keep both: into the dataclass if present, and into the meta widget dict we serialize)
+        try:
+            # If your ProjectMeta has 'iec60890_checklist' attr (see §3), keep it in sync:
+            if hasattr(self.project.meta, "iec60890_checklist"):
+                self.project.meta.iec60890_checklist = answers
+        except Exception:
+            pass
+
+        # Also stuff it into the meta dict we write via _get_project_json()
+        # (So it round-trips even if the dataclass isn’t extended yet.)
+        current_meta = self.meta_widget.get_meta()
+        current_meta["iec60890_checklist"] = answers
+        if hasattr(self.meta_widget, "set_meta"):
+            # If your widget supports setting back, do it so the UI reflects state
+            self.meta_widget.set_meta(current_meta)
+
+        # Trigger autosave machinery if you use it
+        if getattr(self, "_project_changed", None):
+            self._project_changed()
         amb, ok = QInputDialog.getInt(self, "Ambient Temperature", "Enter ambient temperature (°C):", 25, -20, 90, 1)
         if not ok:
             return
@@ -292,7 +333,7 @@ class MainWindow(QMainWindow):
         footer_path = get_resource_path("heatcalc/data/title.png")
 
         try:
-            export_project_report(self.project, self.switchboard_tab, self.curvefit_tab, out_path, ambient_C=amb, header_logo_path=footer_path, footer_image_path=header_path)
+            export_project_report(self.project, self.switchboard_tab, self.curvefit_tab, out_path, ambient_C=amb, header_logo_path=footer_path, footer_image_path=header_path, iec60890_checklist=answers)
             self.statusBar().showMessage(f"Report written: {out_path.name}")
             QMessageBox.information(self, "Report Exported", f"Saved:\n{out_path}")
         except Exception as e:

@@ -16,26 +16,21 @@ Integrate by connecting the signal to your tier/component-heat-loss accumulator.
 """
 
 from __future__ import annotations
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtWidgets, QtGui
 from dataclasses import dataclass
 from typing import Optional
 from pathlib import Path
+from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor
 
 # Local import
+from ..utils.resources import get_resource_path
 from .cable_table import load_cable_table, interpolate_loss, cable_path
-
-INSTALLATION_TYPES = [
-    "Single length (note 2)",
-    "Multi-core bundle (6 cores, note 1)",
-    "Other / custom factor",
-]
-
 
 @dataclass
 class CableSelection:
     name: str
     csa_mm2: float
-    installation: str
+    installation: str           # keep human label for report
     air_temp_C: int
     current_A: float
     length_m: float
@@ -43,45 +38,69 @@ class CableSelection:
     Pn_Wpm: float
     P_Wpm: float
     total_W: float
-    factor_install: float = 1.0  # reserved for future multipliers
-
+    install_type: int           # NEW: 1/2/3 index
+    factor_install: float = 1.0 # kept for backward compatibility (always 1.0)
 
 class CableAdderWidget(QtWidgets.QWidget):
-    cableAdded = QtCore.pyqtSignal(dict)  # payload is CableSelection.asdict()
+    cableAdded = QtCore.pyqtSignal(dict)
 
     def __init__(self, parent=None, cable_csv: Optional[str] = None):
         super().__init__(parent)
         self._csv_path = Path(cable_csv) if cable_csv else cable_path
-        self._rows = load_cable_table(self._csv_path)
-
+        self._table_index = load_cable_table(self._csv_path)  # not strictly needed here, but OK
         self._build_ui()
         self._wire()
 
-    # ---------- UI ----------
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
         layout.addLayout(form)
 
         self.ed_name = QtWidgets.QLineEdit()
-        self.ed_name.setPlaceholderText("e.g., 'MSB Feeder A'")
+        self.ed_name.setPlaceholderText("e.g. 'MSB Feeder A'")
         form.addRow("Cable name:", self.ed_name)
 
-        # CSA
+        # CSA combo (from available rows in any series)
+        # Derive unique CSA values from the loaded table
+        csa_values = sorted({row.csa for series in self._table_index.values() for row in series})
         self.cb_csa = QtWidgets.QComboBox()
-        for r in self._rows:
-            self.cb_csa.addItem(f"{r.csa:.1f} mm²", r.csa)
+        for csa in csa_values:
+            self.cb_csa.addItem(f"{csa:.1f} mm²", csa)
         form.addRow("CSA:", self.cb_csa)
 
-        # Installation
-        self.cb_inst = QtWidgets.QComboBox()
-        self.cb_inst.addItems(INSTALLATION_TYPES)
-        form.addRow("Installation:", self.cb_inst)
+        # Installation type: 3 image tiles (mutually exclusive)
+        inst_box = QtWidgets.QGroupBox("Installation type")
+        inst_lay = QtWidgets.QHBoxLayout(inst_box)
+        self.btn_group = QtWidgets.QButtonGroup(self); self.btn_group.setExclusive(True)
 
-        # Air temperature
+        def _make_inst_btn(idx: int, label: str, icon_name: str):
+            b = QtWidgets.QToolButton()
+            b.setCheckable(True)
+            b.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+            # Try to load an icon; fall back to a simple colored square
+            icon_path = str(get_resource_path(f"heatcalc/assets/{icon_name}")) if 'get_resource_path' in globals() else ""
+            icon = QtGui.QIcon(icon_path) if icon_path else QtGui.QIcon()
+            if icon.isNull():
+                pm = QtGui.QPixmap(64, 40); pm.fill(QtGui.QColor("#ddd"))
+                painter = QtGui.QPainter(pm); painter.drawText(pm.rect(), QtCore.Qt.AlignCenter, str(idx)); painter.end()
+                icon = QtGui.QIcon(pm)
+            b.setIcon(icon)
+            b.setIconSize(QtCore.QSize(72, 48))
+            b.setText(label)
+            self.btn_group.addButton(b, idx)
+            inst_lay.addWidget(b)
+            return b
+
+        # You can replace the icon file names with your real images
+        self.btn_inst1 = _make_inst_btn(1, "Type 1", "cable_install_type1.png")
+        self.btn_inst2 = _make_inst_btn(2, "Type 2", "cable_install_type2.png")
+        self.btn_inst3 = _make_inst_btn(3, "Type 3", "cable_install_type3.png")
+        self.btn_inst1.setChecked(True)  # default selection
+        form.addRow(inst_box)
+
+        # Air temperature (from CSV – still choose 35/55 or any in CSV; we keep a simple 35/55 chooser)
         self.cb_temp = QtWidgets.QComboBox()
-        self.cb_temp.addItems(["35", "55"])
-        self.cb_temp.setCurrentIndex(0)
+        self.cb_temp.addItems(sorted({str(t) for (t, _i) in self._table_index.keys()}))
         form.addRow("Air temp (°C):", self.cb_temp)
 
         # Load current
@@ -93,18 +112,10 @@ class CableAdderWidget(QtWidgets.QWidget):
 
         # Length
         self.sp_len = QtWidgets.QDoubleSpinBox()
-        self.sp_len.setRange(0.0, 1000.0)
+        self.sp_len.setRange(0.0, 10000.0)
         self.sp_len.setDecimals(1)
         self.sp_len.setSuffix(" m")
         form.addRow("Cable length:", self.sp_len)
-
-        # Optional custom factor for "Other / custom factor"
-        self.sp_factor = QtWidgets.QDoubleSpinBox()
-        self.sp_factor.setRange(0.1, 3.0)
-        self.sp_factor.setSingleStep(0.05)
-        self.sp_factor.setDecimals(2)
-        self.sp_factor.setValue(1.0)
-        form.addRow("Multiplier (install):", self.sp_factor)
 
         # Live preview
         self.lbl_preview = QtWidgets.QLabel("—")
@@ -112,60 +123,56 @@ class CableAdderWidget(QtWidgets.QWidget):
         layout.addWidget(self.lbl_preview)
 
         # Buttons
-        btn_row = QtWidgets.QHBoxLayout()
-        layout.addLayout(btn_row)
-
-        self.btn_add = QtWidgets.QPushButton("Add Cable → Tier Heat")
-        self.btn_add.setEnabled(False)
-        btn_row.addWidget(self.btn_add)
-
-        self.btn_clear = QtWidgets.QPushButton("Clear")
-        btn_row.addWidget(self.btn_clear)
-
+        btn_row = QtWidgets.QHBoxLayout(); layout.addLayout(btn_row)
+        self.btn_add = QtWidgets.QPushButton("Add Cable → Tier Heat"); self.btn_add.setEnabled(False); btn_row.addWidget(self.btn_add)
+        self.btn_clear = QtWidgets.QPushButton("Clear"); btn_row.addWidget(self.btn_clear)
         layout.addStretch(1)
 
     def _wire(self):
-        for w in (self.ed_name, self.cb_csa, self.cb_inst, self.cb_temp, self.sp_current, self.sp_len, self.sp_factor):
-            if isinstance(w, QtWidgets.QLineEdit):
-                w.textChanged.connect(self._update_preview)
+        for w in (self.ed_name, self.cb_csa, self.cb_temp, self.sp_current, self.sp_len):
+            if isinstance(w, QtWidgets.QLineEdit): w.textChanged.connect(self._update_preview)
             else:
-                w.currentIndexChanged.connect(self._update_preview) if isinstance(w, QtWidgets.QComboBox) else w.valueChanged.connect(self._update_preview)
-
+                (w.currentIndexChanged.connect(self._update_preview)
+                    if isinstance(w, QtWidgets.QComboBox)
+                    else w.valueChanged.connect(self._update_preview))
+        self.btn_group.buttonClicked.connect(self._update_preview)
         self.btn_add.clicked.connect(self._emit_add)
         self.btn_clear.clicked.connect(self._clear)
         self._update_preview()
 
     # ---------- Logic ----------
+    def _selected_install(self) -> tuple[int,str]:
+        idx = self.btn_group.checkedId() or 1
+        label = {1:"Type 1", 2:"Type 2", 3:"Type 3"}[idx]
+        return idx, label
+
     def _current_selection(self) -> Optional[CableSelection]:
-        name = self.ed_name.text().strip()
-        if not name:
-            return None
+        name = (self.ed_name.text() or "").strip()
+        if not name: return None
         csa = float(self.cb_csa.currentData())
         air = int(self.cb_temp.currentText())
-        I = float(self.sp_current.value())
-        L = float(self.sp_len.value())
-        if I <= 0 or L <= 0:
-            return None
+        I   = float(self.sp_current.value())
+        L   = float(self.sp_len.value())
+        if I <= 0 or L <= 0: return None
 
-        det = interpolate_loss(csa, I, air_temp_C=air, csv_path=self._csv_path)
+        inst_idx, inst_label = self._selected_install()
+        det = interpolate_loss(csa, I, air_temp_C=air, install_type=inst_idx, csv_path=self._csv_path)
         P_wpm = det["P_Wpm"]
-
-        inst_txt = self.cb_inst.currentText()
-        factor = float(self.sp_factor.value() if "custom" in inst_txt.lower() else 1.0)
-        total = P_wpm * L * factor
+        total = P_wpm * L
 
         return CableSelection(
             name=name,
             csa_mm2=csa,
-            installation=inst_txt,
+            installation=inst_label,
             air_temp_C=air,
             current_A=I,
             length_m=L,
             In_A=det["In_A"],
             Pn_Wpm=det["Pn_Wpm"],
-            P_Wpm=P_wpm * factor,
+            P_Wpm=P_wpm,
             total_W=total,
-            factor_install=factor,
+            install_type=inst_idx,
+            factor_install=1.0,  # always 1 now
         )
 
     def _update_preview(self):
@@ -183,18 +190,15 @@ class CableAdderWidget(QtWidgets.QWidget):
 
     def _emit_add(self):
         sel = self._current_selection()
-        if not sel:
-            return
+        if not sel: return
         payload = sel.__dict__.copy()
         self.cableAdded.emit(payload)
-        # Give user feedback
         self.lbl_preview.setText(self.lbl_preview.text() + "<br><i>Added to tier heat.</i>")
 
     def _clear(self):
         self.ed_name.clear()
         self.sp_current.setValue(0.0)
         self.sp_len.setValue(0.0)
-        self.cb_inst.setCurrentIndex(0)
         self.cb_temp.setCurrentIndex(0)
-        self.sp_factor.setValue(1.0)
+        self.btn_inst1.setChecked(True)
         self._update_preview()

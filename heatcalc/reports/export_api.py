@@ -208,16 +208,66 @@ def _calc_thermal_for_tier(t: TierItem, inlet_area_cm2: float, ambient_C: float)
     )
 
 
-def _min_airflow_m3h(P: float, amb_C: float, max_C: float) -> Optional[float]:
-    """Return minimum airflow (m³/h) to keep enclosure ≤ max_C given power P.
-    Uses steady-state heat balance: Vdot = P/(ρ c_p ΔT). ρ≈1.20 kg/m³, c_p≈1005 J/(kg·K)."""
+
+def _min_airflow_m3h(
+    P: float,
+    amb_C: float,
+    max_C: float,
+    *,
+    # --- Air properties (defaults suit ~20–35°C, sea level) ---
+    rho_kg_per_m3: float = 1.20,    # Air density [kg/m³]. Typical range 1.15–1.23 for 15–35°C.
+    cp_J_per_kgK: float = 1005.0,   # Air cp [J/(kg·K)]. ~1000–1007 J/kg·K across 0–40°C.
+    # --- Design uplift ---
+    safety_factor: float = 1.2,     # Accounts for mixing inefficiency, filter aging, minor leaks, etc.
+    # --- Output handling ---
+    min_flow_m3h: float = 0.0       # Clamp to non-negative; keep 0.0 if P<=0
+) -> Optional[float]:
+    """
+    Minimum volumetric airflow [m³/h] to keep cabinet at or below max_C for a heat load P.
+
+    Methodology (unchanged from your original):
+        - Perfectly mixed, single-pass energy balance at steady state:
+              Vdot = P / (ρ * cp * ΔT)
+          where:
+              Vdot is volumetric flow [m³/s]
+              P     is total heat to be removed [W]
+              ρ     is air density [kg/m³]
+              cp    is specific heat at constant pressure [J/(kg·K)]
+              ΔT    = (max_C - amb_C) [K]  (allowed air temperature rise)
+        - Convert m³/s → m³/h by × 3600.
+        - Apply a safety factor (>1) to cover non-idealities.
+
+    Notes / justification of defaults:
+        • ρ ≈ 1.20 kg/m³ and cp ≈ 1005 J/kg·K are standard engineering values for warm indoor air.
+        • Schneider’s example uses ρ ≈ 1.1 kg/m³ and c ≈ 1.0 kJ/kg·K; to reproduce that exactly,
+          call with rho_kg_per_m3=1.1 and cp_J_per_kgK=1000.0.
+        • Safety factor 1.2 gives ≈20% headroom for imperfect mixing, grills/filters, and aging.
+          Increase if you expect heavy filters, long ducts, or poor airflow paths.
+
+    Returns:
+        m³/h as float; None if ΔT <= 0 (i.e., max_C <= amb_C makes the problem ill-posed).
+
+    Edge cases:
+        • If P <= 0, returns max(min_flow_m3h, 0.0) (i.e., 0 by default).
+    """
+    # Allowed air temperature rise (K). If non-positive, cannot meet the setpoint by ventilation alone.
     dT_allow = max_C - amb_C
     if dT_allow <= 0:
         return None
-    rho = 1.20
-    cp = 1005.0
-    Vdot_m3_s = P / (rho * cp * dT_allow)
-    return Vdot_m3_s * 3600.0
+
+    # Trivial non-heating case
+    if P <= 0:
+        return max(min_flow_m3h, 0.0)
+
+    # Ideal required m³/s from steady-state heat balance
+    denom = rho_kg_per_m3 * cp_J_per_kgK * dT_allow
+    Vdot_m3_s_ideal = P / denom
+
+    # Convert to m³/h and apply safety factor
+    Vdot_m3_h = Vdot_m3_s_ideal * 3600.0 * safety_factor
+
+    # Never return negative due to any numerical issue; clamp to user-defined minimum
+    return max(Vdot_m3_h, min_flow_m3h)
 
 
 # -------------------------- meta helpers ---------------------------
@@ -253,6 +303,7 @@ def export_project_report(
     inlet_area_cm2: float = 300.0,
     header_logo_path: Optional[Path] = None,   # <— NEW
     footer_image_path: Optional[Path] = None,  # <— NEW
+    iec60890_checklist
 ) -> Path:
     """
     Single entry-point you call from UI. No data helpers needed in MainWindow.
@@ -316,4 +367,5 @@ def export_project_report(
         tier_thermals=tier_thermals if tier_thermals else None,
         header_logo_path=header_logo_path,       # <— NEW
         footer_image_path=footer_image_path,     # <— NEW
+        iec60890_checklist=iec60890_checklist
     )

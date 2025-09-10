@@ -11,6 +11,8 @@ class ProjectMeta:
     designer: str = ""
     date: str = ""
     revision: str = "A"
+    # NEW: stores list of {item, condition, result}
+    iec60890_checklist: List[Dict[str, str]] = field(default_factory=list)
 
 @dataclass
 class Component:
