@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import QGraphicsScene
 # Import the TierItem class to identify items in the scene
 from ..ui.tier_item import TierItem
 from ..core import curvefit
+from ..core.iec60890_calc import calc_tier_iec60890
 
 # Simple PDF builder (no HTML/CSS)
 from .simple_report import (
@@ -48,31 +49,6 @@ def _dims_m_from_tier(t: TierItem) -> Tuple[float, float, float]:
     hmm = max(1, int(rect.height() / GRID * MM_PER_GRID_MM))
     dmm = max(1, int(getattr(t, "depth_mm", 400)))
     return wmm / 1000.0, hmm / 1000.0, dmm / 1000.0
-
-
-def _overlap_x(a: TierItem, b: TierItem) -> bool:
-    ra, rb = a.shapeRect(), b.shapeRect()
-    return not (ra.right() <= rb.left() or rb.right() <= ra.left())
-
-
-def _overlap_y(a: TierItem, b: TierItem) -> bool:
-    ra, rb = a.shapeRect(), b.shapeRect()
-    return not (ra.bottom() <= rb.top() or rb.bottom() <= ra.top())
-
-
-def _compute_face_bs(t: TierItem, tiers: List[TierItem], wall: bool) -> Dict[str, float]:
-    """Return b per side: left/right/top based on adjacency + wall flag."""
-    left_touch  = any(abs(t.shapeRect().left()  - o.shapeRect().right()) < 1e-3 and _overlap_y(t, o) for o in tiers if o is not t)
-    right_touch = any(abs(t.shapeRect().right() - o.shapeRect().left())  < 1e-3 and _overlap_y(t, o) for o in tiers if o is not t)
-    top_covered = any(abs(t.shapeRect().top()   - o.shapeRect().bottom()) < 1e-3 and _overlap_x(t, o) for o in tiers if o is not t)
-
-    b_left  = 0.5 if left_touch  else 0.9
-    b_right = 0.5 if right_touch else 0.9
-    if wall and top_covered:
-        b_top = 0.7     # “covered top surface” per Table III
-    else:
-        b_top = 1.4     # exposed top surface
-    return {"left": b_left, "right": b_right, "top": b_top}
 
 
 # -------------------------- report adapters ------------------------
@@ -119,94 +95,6 @@ def _map_tier_item(t: TierItem) -> ReportTier:
 
 
 # -------------------------- thermal math ---------------------------
-
-def _calc_thermal_for_tier(t: TierItem, inlet_area_cm2: float, ambient_C: float) -> TierThermal:
-    """Compute Δt at 0.5t and 1.0t, then absolute temps and compliance/airflow."""
-    # Geometry
-    w_m, h_m, d_m = _dims_m_from_tier(t)
-
-    # Effective area Ae
-    tiers: List[TierItem] = []
-    try:
-        # try to read siblings from the same scene for adjacency
-        scene = t.scene()
-        if scene is not None:
-            tiers = [it for it in scene.items() if isinstance(it, TierItem)]
-    except Exception:
-        pass
-    wall = bool(getattr(t, "wall_mounted", False))
-    b_faces = _compute_face_bs(t, tiers, wall)
-    areas = {
-        "top":  w_m * d_m,
-        "bot":  w_m * d_m,
-        "left": h_m * d_m,
-        "right": h_m * d_m,
-        "front": w_m * h_m,
-        "back":  w_m * h_m,
-    }
-    b_used = {
-        "top": b_faces["top"],
-        "bot": 0.0,  # bottom ignored per standard
-        "left": b_faces["left"],
-        "right": b_faces["right"],
-        "front": 0.9,
-        "back": 0.5 if wall else 0.9,
-    }
-    Ae = sum(areas[k] * b_used[k] for k in areas)
-
-    # Power and factors
-    P = float(getattr(t, "total_heat")() if hasattr(t, "total_heat") else 0.0)
-    vent = bool(getattr(t, "is_ventilated", False))
-    curve_no = int(getattr(t, "curve_no", 3))
-    x = 0.715 if vent else 0.804
-    d_fac = 1.0
-
-    if vent:
-        Ab = max(1e-9, w_m * d_m)
-        f = (h_m ** 1.35) / Ab
-        k = curvefit.k_vents(ae=max(1.0, min(14.0, Ae)), opening_area_cm2=float(inlet_area_cm2))
-        c = curvefit.c_vents(f=f, opening_area_cm2=float(inlet_area_cm2))
-        g = None
-    else:
-        if Ae <= 1.25:
-            k = curvefit.k_small_no_vents(Ae)
-            g = h_m / max(1e-9, w_m)
-            c = curvefit.c_small_no_vents(g)
-            f = None
-        else:
-            k = curvefit.k_no_vents(Ae)
-            Ab = max(1e-9, w_m * d_m)
-            f = (h_m ** 1.35) / Ab
-            c = curvefit.c_no_vents(curve_no, f)
-            g = None
-
-    dt_mid = k * d_fac * (P ** x)
-    dt_top = c * dt_mid
-
-    T_mid = ambient_C + dt_mid
-    T_top = ambient_C + dt_top
-
-    maxC = int(getattr(t, "max_temp_C", 70))
-    compliant_mid = (T_mid <= maxC)
-    compliant_top = (T_top <= maxC)
-
-    airflow_m3h = None
-    if not compliant_top and maxC > ambient_C:
-        airflow_m3h = _min_airflow_m3h(P, ambient_C, maxC)
-
-    return TierThermal(
-        tag=str(getattr(t, "name", getattr(t, "tag", "Tier"))),
-        Ae=Ae, P_W=P, k=k, c=c, x=x, f=f, g=g,
-        vent=vent, curve=curve_no,
-        ambient_C=ambient_C,
-        dt_mid=dt_mid, dt_top=dt_top,
-        T_mid=T_mid, T_top=T_top,
-        max_C=maxC,
-        compliant_mid=compliant_mid,
-        compliant_top=compliant_top,
-        airflow_m3h=airflow_m3h,
-    )
-
 
 
 def _min_airflow_m3h(
@@ -350,8 +238,36 @@ def export_project_report(
     tier_thermals: List[TierThermal] = []
     if ambient_C is not None:
         for t in live_tiers:
-            tr = _calc_thermal_for_tier(t, inlet_area_cm2, float(ambient_C))
-            tier_thermals.append(tr)
+            res = calc_tier_iec60890(
+                tier=t,
+                tiers=live_tiers,
+                wall_mounted=bool(getattr(t, "wall_mounted", False)),
+                inlet_area_cm2=inlet_area_cm2,
+                ambient_C=float(ambient_C),
+            )
+            tier_thermals.append(
+                TierThermal(
+                    tag=str(getattr(t, "name", getattr(t, "tag", "Tier"))),
+                    Ae=res["Ae"],
+                    P_W=res["P"],
+                    k=res["k"],
+                    c=res["c"],
+                    x=res["x"],
+                    f=res["f"],
+                    g=res["g"],
+                    vent=t.is_ventilated,
+                    curve=t.curve_no,
+                    ambient_C=res["ambient_C"],
+                    dt_mid=res["dt_mid"],
+                    dt_top=res["dt_top"],
+                    T_mid=res["T_mid"],
+                    T_top=res["T_top"],
+                    max_C=res["limit_C"],
+                    compliant_mid=res["compliant_mid"],
+                    compliant_top=res["compliant_top"],
+                    airflow_m3h=None,  # unchanged logic for now
+                )
+            )
 
     # Generate the PDF
     out_pdf = Path(out_pdf)

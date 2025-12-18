@@ -1,7 +1,7 @@
 import sys
 from PyQt5.QtWidgets import QApplication
 from heatcalc.services.settings import SettingsManager
-from heatcalc.services.traceback_dialog import install_excepthook
+from heatcalc.services.traceback import install_excepthook
 from heatcalc.ui.main_window import MainWindow
 
 

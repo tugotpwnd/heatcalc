@@ -15,6 +15,7 @@ from matplotlib.figure import Figure
 from .tier_item import TierItem
 from .designer_view import GRID
 from ..core import curvefit
+from ..core.iec60890_calc import calc_tier_iec60890
 
 MM_PER_GRID = 25.0  # same mapping you’ve been using
 CM2_DEFAULT = 300  # default inlet cross-section (cm^2) when ventilated
@@ -26,7 +27,7 @@ class TempRiseTab(QWidget):
     characteristic curve for each selected tier.
 
     Additions in this version:
-    - Ambient temperature must be provided before calculation is enabled.
+    - Ambient temperature must be prvided before calculation is enabled.
     - Curves are plotted as ABSOLUTE temperatures (ambient + Δt0.5, ambient + Δt1.0).
     - A per-tier result panel shows final temperatures at 0.5t and 1.0t and cooling guidance.
     - Tier entries are coloured GREEN if within max temperature, RED if exceeding.
@@ -35,7 +36,7 @@ class TempRiseTab(QWidget):
 
     def __init__(self, scene, parent=None):
         super().__init__(parent)
-        self.scene = scene
+        self._scene_provider = lambda: scene
         self._results: List[Dict] = []  # one dict per tier with calc outputs
         self.ambient_C: Optional[float] = None
 
@@ -127,18 +128,33 @@ class TempRiseTab(QWidget):
         """Compute Δt values for each tier and populate the list + first plot.
         Also colours tier entries based on maximum temperature compliance.
         """
-        tiers: List[TierItem] = [it for it in self.scene.items() if isinstance(it, TierItem)]
-        tiers = list(reversed(tiers))  # visual order consistent with other tabs
+        scene = self._scene_provider()
+        if scene is None:
+            return  # or safely exit
+
+        tiers = [it for it in scene.items() if isinstance(it, TierItem)]
+
         self.tier_list.clear()
         self._results.clear()
 
         amb = float(self.ambient_C or 0.0)
 
         for t in tiers:
-            res = self._calc_for_tier(t)
-            # compute final absolute temps
-            res["T_mid"] = amb + res["dt_mid"]
-            res["T_top"] = amb + res["dt_top"]
+            res = calc_tier_iec60890(
+                tier=t,
+                tiers=tiers,
+                wall_mounted=t.wall_mounted,
+                inlet_area_cm2=self.sb_opening.value(),
+                ambient_C=self.ambient_C,
+            )
+
+            # compute final absolute temp
+            # calc already returns absolute temperatures
+            res["tier"] = t
+            res["vent"] = t.is_ventilated
+            res["curve"] = t.curve_no
+            res["name"] = t.name
+
             self._results.append(res)
 
             # Use the tier's effective limit (manual or auto-lowest-component)
@@ -147,8 +163,20 @@ class TempRiseTab(QWidget):
             colour = QColor(0, 150, 0) if within else QColor(200, 0, 0)
 
             mode = "auto" if getattr(t, "use_auto_component_temp", False) else "manual"
-            text = (f"{t.name} — T(0.5t)={res['T_mid']:.1f}°C, "
-                    f"T(1.0t)={res['T_top']:.1f}°C  [limit {eff_limit}°C, {mode}]")
+            if res.get("T_075") is not None:
+                text = (
+                    f"{t.name} — T(0.5t)={res['T_mid']:.1f}°C, "
+                    f"T(0.75t)={res['T_075']:.1f}°C, "
+                    f"T(1.0t)={res['T_top']:.1f}°C  "
+                    f"[limit {eff_limit}°C, {mode}]"
+                )
+            else:
+                text = (
+                    f"{t.name} — T(0.5t)={res['T_mid']:.1f}°C, "
+                    f"T(1.0t)={res['T_top']:.1f}°C  "
+                    f"[limit {eff_limit}°C, {mode}]"
+                )
+
             item = QListWidgetItem(text)
             item.setForeground(colour)
             self.tier_list.addItem(item)
@@ -161,94 +189,13 @@ class TempRiseTab(QWidget):
             self.canvas.draw_idle()
             self._title.setText("No tiers on the scene")
 
-    # ---- single-tier math ----------------------------------------------------
-    def _calc_for_tier(self, t: TierItem) -> Dict:
-        """Return dict of all variables + Δt curve points for one tier."""
-        # geometry (mm -> m)
-        w_m = (t._rect.width() / GRID) * (MM_PER_GRID / 1000.0)
-        h_m = (t._rect.height() / GRID) * (MM_PER_GRID / 1000.0)
-        d_m = max(0.001, (t.depth_mm or 400) / 1000.0)  # default 400 mm if missing
-
-        # faces + b factors (uses same rule set we used elsewhere)
-        wall = t.wall_mounted
-        tiers: List[TierItem] = [it for it in self.scene.items() if isinstance(it, TierItem)]
-        b_faces = self._compute_face_bs(t, tiers, wall)
-
-        # Effective cooling surface Ae = Σ(A0 * b)
-        areas = {
-            "top": w_m * d_m,
-            "bot": w_m * d_m,  # multiplied by 0.0 later
-            "left": h_m * d_m,
-            "right": h_m * d_m,
-            "front": w_m * h_m,
-            "back": w_m * h_m,
-        }
-        b_used = {
-            "top": b_faces["top"],
-            "bot": 0.0,  # standard: floor surface is not taken into account
-            "left": b_faces["left"],
-            "right": b_faces["right"],
-            "front": 0.9,  # exposed side faces (front)
-            "back": 0.5 if wall else 0.9,  # rear side reduced when wall-mounted
-        }
-        Ae = 0.0
-        for face in areas:
-            Ae += areas[face] * b_used[face]
-
-        # power + factors
-        P = max(0.0, t.total_heat())  # W
-        vent = t.is_ventilated
-        curve_no = t.curve_no
-        x = 0.715 if vent else 0.804
-        d_fac = 1.0  # Table IV/V not yet parameterized by n → keep 1.0
-
-        if vent:
-            # Fig.5 and Fig.6: c depends on inlet area + f, k family depends on Ae + inlet area
-            s_cm2 = float(self.sb_opening.value())
-            Ab = max(1e-9, w_m * d_m)
-            f = (h_m ** 1.35) / Ab
-            k = curvefit.k_vents(ae=max(1.0, min(14.0, Ae)), opening_area_cm2=s_cm2)
-            c = curvefit.c_vents(f=f, opening_area_cm2=s_cm2)
-        else:
-            if Ae <= 1.25:
-                # Fig.7 + Fig.8
-                k = curvefit.k_small_no_vents(Ae)
-                g = h_m / max(1e-9, w_m)
-                c = curvefit.c_small_no_vents(g)
-                f = None
-            else:
-                # Fig.3 + Fig.4
-                k = curvefit.k_no_vents(Ae)
-                Ab = max(1e-9, w_m * d_m)
-                f = (h_m ** 1.35) / Ab
-                c = curvefit.c_no_vents(curve_no, f)
-
-        # temperature rises
-        dt_mid = k * d_fac * (P ** x)  # Δt0.5
-        dt_top = c * dt_mid  # Δt1.0
-
-        return dict(
-            tier=t,
-            name=t.name,
-            vent=vent,
-            curve=curve_no,
-            Ae=Ae,
-            P=P,
-            w=w_m, h=h_m, d=d_m,
-            b_faces=b_used,
-            f=f if vent or (Ae > 1.25) else None,
-            g=(h_m / max(1e-9, w_m)) if (not vent and Ae <= 1.25) else None,
-            k=k, c=c, x=x, d_fac=d_fac,
-            dt_mid=dt_mid, dt_top=dt_top
-        )
-
-    # ---- plotting ------------------------------------------------------------
     def _show_plot_for_row(self, row: int):
         if not (0 <= row < len(self._results)):
-            self.ax.cla();
-            self.canvas.draw_idle();
-            self._update_results_panel(None);
+            self.ax.cla()
+            self.canvas.draw_idle()
+            self._update_results_panel(None)
             return
+
         r = self._results[row]
         amb = float(self.ambient_C or 0.0)
 
@@ -258,58 +205,131 @@ class TempRiseTab(QWidget):
         self.ax.set_ylabel("Multiple of enclosure height")
         self.ax.set_ylim(0, 1.02)
 
-        # Characteristic polyline from bottom (ambient, ~0) to mid-height and top
+        import numpy as np
+
+        def _quad_bezier(p0, p1, p2, n=40):
+            t = np.linspace(0.0, 1.0, n)
+            x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t ** 2 * p2[0]
+            y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t ** 2 * p2[1]
+            return x, y
+
+        # ------------------------------------------------------------
+        # IEC 60890 temperature-rise characteristic (straight-line)
+        # ------------------------------------------------------------
+
+        # Ambient → mid-height
         x0, y0 = amb, 0.0
         x1, y1 = amb + r["dt_mid"], 0.5
-        x2, y2 = amb + r["dt_top"], 1.0
-        self.ax.plot([x0, x1, x2], [y0, y1, y2], lw=2)
 
-        self.ax.scatter([x1, x2], [y1, y2], s=35, zorder=5)
-        self.ax.annotate("T@0.5t", (x1, y1), xytext=(6, -6),
-                         textcoords="offset points", fontsize=9)
-        self.ax.annotate("T@1.0t", (x2, y2), xytext=(6, -6),
-                         textcoords="offset points", fontsize=9)
+        self.ax.plot([x0, x1], [y0, y1], lw=2)
 
+        if r.get("dt_075") is not None:
+            # --------------------------------------------------------
+            # Ae ≤ 1.25 m² (IEC 60890 Fig. 2)
+            # --------------------------------------------------------
+            x075, y075 = amb + r["dt_075"], 0.75
+            x2, y2 = amb + r["dt_top"], 1.0  # same x as x075
+
+            # mid → 0.75
+            self.ax.plot([x1, x075], [y1, y075], lw=2)
+
+            # 0.75 → 1.0 (vertical)
+            self.ax.plot([x075, x075], [y075, y2], lw=2)
+
+            self.ax.scatter([x1, x075, x2], [y1, y075, y2], s=35, zorder=5)
+            self.ax.annotate("T@0.5t", (x1, y1), xytext=(6, -6),
+                             textcoords="offset points", fontsize=9)
+            self.ax.annotate("T@0.75t", (x075, y075), xytext=(6, -6),
+                             textcoords="offset points", fontsize=9)
+            self.ax.annotate("T@1.0t", (x2, y2), xytext=(6, -6),
+                             textcoords="offset points", fontsize=9)
+
+        else:
+            # --------------------------------------------------------
+            # Ae > 1.25 m² (IEC 60890 Fig. 1)
+            # --------------------------------------------------------
+            x2, y2 = amb + r["dt_top"], 1.0
+
+            self.ax.plot([x1, x2], [y1, y2], lw=2)
+
+            self.ax.scatter([x1, x2], [y1, y2], s=35, zorder=5)
+            self.ax.annotate("T@0.5t", (x1, y1), xytext=(6, -6),
+                             textcoords="offset points", fontsize=9)
+            self.ax.annotate("T@1.0t", (x2, y2), xytext=(6, -6),
+                             textcoords="offset points", fontsize=9)
+
+        # ------------------------------------------------------------
+        # Title (unchanged)
+        # ------------------------------------------------------------
         title_bits = [r["name"]]
         title_bits.append("Ventilated" if r["vent"] else "No ventilation")
-        title_bits.append(f"Ae={r['Ae']:.3f} m², P={r['P']:.1f} W, k={r['k']:.3f}, c={r['c']:.3f}, x={r['x']:.3f}")
+        title_bits.append(
+            f"Ae={r['Ae']:.3f} m², "
+            f"P={r['P']:.1f} W, "
+            f"k={r['k']:.3f}, "
+            f"c={r['c']:.3f}, "
+            f"x={r['x']:.3f}"
+        )
         if r["f"] is not None:
             title_bits.append(f"f={r['f']:.3f}")
         if r["g"] is not None:
             title_bits.append(f"g={r['g']:.3f}")
         title_bits.append(f"Ambient={amb:.1f}°C")
-        self._title.setText("  ·  ".join(title_bits))
 
+        self._title.setText("  ·  ".join(title_bits))
         self.canvas.draw_idle()
 
         # Update the results panel for this tier
         self._update_results_panel(r)
 
     # ---- results panel + airflow calc ---------------------------------------
+    # ---- results panel + airflow calc ---------------------------------------
     def _update_results_panel(self, r: Optional[Dict]):
         if not r:
-            self.lbl_final_mid.setText("–");
-            self.lbl_final_top.setText("–");
-            self.lbl_guidance.setText("–");
+            self.lbl_final_mid.setText("–")
+            self.lbl_final_top.setText("–")
+            self.lbl_guidance.setText("–")
             return
+
         amb = float(self.ambient_C or 0.0)
-        Tmid = amb + r["dt_mid"]
-        Ttop = amb + r["dt_top"]
+
+        # Effective temperatures from calc
+        Tmid = r["T_mid"]
+        Ttop = r["T_top"]
+        T075 = r.get("T_075")
+
         tier: TierItem = r["tier"]
         maxC = int(getattr(tier, "max_temp_C", 70))
 
+        # ------------------------------------------------------------
+        # Display values
+        # ------------------------------------------------------------
         self.lbl_final_mid.setText(f"{Tmid:.1f} °C")
-        self.lbl_final_top.setText(f"{Ttop:.1f} °C (limit {maxC} °C)")
 
+        if T075 is not None:
+            self.lbl_final_top.setText(
+                f"T(0.75t)={T075:.1f} °C,  T(1.0t)={Ttop:.1f} °C  (limit {maxC} °C)"
+            )
+        else:
+            self.lbl_final_top.setText(
+                f"{Ttop:.1f} °C (limit {maxC} °C)"
+            )
+
+        # ------------------------------------------------------------
+        # Compliance + airflow guidance (based on effective top temp)
+        # ------------------------------------------------------------
         if Ttop <= maxC:
             self.lbl_guidance.setText("No cooling required.")
         else:
             v_m3h = self._min_airflow_m3h(P=r["P"], amb_C=amb, max_C=maxC)
             if v_m3h is None:
-                self.lbl_guidance.setText("Cooling required, but max temp ≤ ambient (check inputs).")
+                self.lbl_guidance.setText(
+                    "Cooling required, but max temp ≤ ambient (check inputs)."
+                )
             else:
                 self.lbl_guidance.setText(
-                    f"Cooling required: ≥ {v_m3h:.0f} m³/h airflow to limit to {maxC} °C."
+                    f"Cooling required: ≥ {v_m3h:.0f} m³/h airflow "
+                    f"to limit to {maxC} °C."
                 )
 
     @staticmethod
@@ -324,31 +344,3 @@ class TempRiseTab(QWidget):
         cp = 1005.0  # J/kg/K
         Vdot_m3_s = P / (rho * cp * dT_allow)
         return Vdot_m3_s * 3600.0  # m³/h
-
-    # ---- shared helpers ------------------------------------------------------
-    @staticmethod
-    def _overlap_x(a: TierItem, b: TierItem) -> bool:
-        ra, rb = a.shapeRect(), b.shapeRect()
-        return not (ra.right() <= rb.left() or rb.right() <= ra.left())
-
-    @staticmethod
-    def _compute_face_bs(t: TierItem, tiers: List[TierItem], wall: bool) -> Dict[str, float]:
-        """Return b per side: left/right/top based on adjacency + wall flag."""
-        left_touch = any(abs(t.shapeRect().left() - o.shapeRect().right()) < 1e-3 and
-                         TempRiseTab._overlap_x(t, o) for o in tiers if o is not t)
-        right_touch = any(abs(t.shapeRect().right() - o.shapeRect().left()) < 1e-3 and
-                          TempRiseTab._overlap_x(t, o) for o in tiers if o is not t)
-        top_covered = any(abs(t.shapeRect().top() - o.shapeRect().bottom()) < 1e-3 and
-                          TempRiseTab._overlap_x(t, o) for o in tiers if o is not t)
-
-        # Side faces:
-        b_left = 0.5 if left_touch else 0.9
-        b_right = 0.5 if right_touch else 0.9
-
-        # Top face:
-        if wall and top_covered:
-            b_top = 0.7  # “covered top surface” per Table III
-        else:
-            b_top = 1.4  # exposed top surface
-
-        return dict(left=b_left, right=b_right, top=b_top)
