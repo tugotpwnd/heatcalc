@@ -1,34 +1,20 @@
+# heatcalc/core/iec60890_calc.py
+from __future__ import annotations
+
 from typing import Dict, List
+
 from . import curvefit
 from ..ui.tier_item import TierItem
 from ..ui.designer_view import GRID
 
+from .iec60890_geometry import (
+    touching_sides,
+    b_map_for_tier,
+    dimensions_m,
+    effective_area_and_fg, tier_geometry,
+)
+
 MM_PER_GRID = 25
-
-def _overlap_x(a: TierItem, b: TierItem) -> bool:
-    ra, rb = a.shapeRect(), b.shapeRect()
-    return not (ra.right() <= rb.left() or rb.right() <= ra.left())
-
-
-def _overlap_y(a: TierItem, b: TierItem) -> bool:
-    ra, rb = a.shapeRect(), b.shapeRect()
-    return not (ra.bottom() <= rb.top() or rb.bottom() <= ra.top())
-
-
-def compute_face_bs(
-    t: TierItem,
-    tiers: List[TierItem],
-    wall: bool
-) -> Dict[str, float]:
-    left_touch  = any(abs(t.shapeRect().left()  - o.shapeRect().right()) < 1e-3 and _overlap_y(t, o) for o in tiers if o is not t)
-    right_touch = any(abs(t.shapeRect().right() - o.shapeRect().left())  < 1e-3 and _overlap_y(t, o) for o in tiers if o is not t)
-    top_covered = any(abs(t.shapeRect().top()   - o.shapeRect().bottom()) < 1e-3 and _overlap_x(t, o) for o in tiers if o is not t)
-
-    b_left  = 0.5 if left_touch  else 0.9
-    b_right = 0.5 if right_touch else 0.9
-    b_top   = 0.7 if (wall and top_covered) else 1.4
-
-    return {"left": b_left, "right": b_right, "top": b_top}
 
 
 def calc_tier_iec60890(
@@ -39,62 +25,47 @@ def calc_tier_iec60890(
     inlet_area_cm2: float,
     ambient_C: float,
 ) -> Dict:
-    # Geometry
-    w_m = (tier._rect.width()  / GRID) * (MM_PER_GRID / 1000.0)
-    h_m = (tier._rect.height() / GRID) * (MM_PER_GRID / 1000.0)
-    d_m = max(0.001, (tier.depth_mm or 400) / 1000.0)
+    # ---------------- Geometry (dimensions) ----------------
+    from .iec60890_geometry import dimensions_m
 
-    # Effective cooling surface
-    b_faces = compute_face_bs(tier, tiers, wall_mounted)
-    areas = {
-        "top":   w_m * d_m,
-        "bot":   w_m * d_m,
-        "left":  h_m * d_m,
-        "right": h_m * d_m,
-        "front": w_m * h_m,
-        "back":  w_m * h_m,
-    }
-    b_used = {
-        "top":   b_faces["top"],
-        "bot":   0.0,
-        "left":  b_faces["left"],
-        "right": b_faces["right"],
-        "front": 0.9,
-        "back":  0.5 if wall_mounted else 0.9,
-    }
+    w_m, h_m, d_m = dimensions_m(tier)
 
-    # ---- NEW: curvefit breakdown for reporting -----------------
-    figures_used: list[str] = []
-    # ---- NEW: per-surface breakdown for reporting -----------------
+    geom = tier_geometry(tier, tiers)
+
+    Ae = geom["Ae"]
+    f = geom["f"]
+    g = geom["g"]
+
+    # ---------------- Per-surface breakdown (for report) ----------------
     surfaces = []
 
-
     def _add_surface(name: str, w: float, h: float, b: float):
-        A0 = w * h
-        surfaces.append({
-            "name": name,
-            "w": w,
-            "h": h,
-            "A0": A0,
-            "b": b,
-            "Ae": A0 * b,
-        })
+        A0 = float(w) * float(h)
+        surfaces.append(
+            {
+                "name": name,
+                "w": float(w),
+                "h": float(h),
+                "A0": A0,
+                "b": float(b),
+                "Ae": A0 * float(b),
+            }
+        )
 
-    _add_surface("Roof",  w_m, d_m, b_used["top"])
-    _add_surface("Front", w_m, h_m, b_used["front"])
-    _add_surface("Rear",  w_m, h_m, b_used["back"])
-    _add_surface("Left",  h_m, d_m, b_used["left"])
-    _add_surface("Right", h_m, d_m, b_used["right"])
+    from .iec60890_geometry import resolved_surfaces
 
+    for name, a, b, bf in resolved_surfaces(tier, tiers):
+        _add_surface(name, a, b, bf)
 
-    Ae = sum(areas[k] * b_used[k] for k in areas)
+    # ---------------- Power and mode ----------------
+    P = max(0.0, float(tier.total_heat()))
+    vent = bool(tier.is_ventilated)
+    curve_no = int(getattr(tier, "curve_no", 1))
 
-    # Power and mode
-    P = max(0.0, tier.total_heat())
-    vent = tier.is_ventilated
-    curve_no = tier.curve_no
     x = 0.715 if vent else 0.804
     d_fac = 1.0
+
+    figures_used: list[str] = []
 
     if vent:
         Ab = max(1e-9, w_m * d_m)
@@ -119,45 +90,48 @@ def calc_tier_iec60890(
             g = None
 
     dt_mid = k * d_fac * (P ** x)
-
-    # "Raw" top rise per the usual relationship
     dt_top_raw = c * dt_mid
 
-    # IEC 60890 Fig.2 adjustment for small enclosures:
-    # Δt0.75 is midpoint between Δt0.5 and Δt1.0(raw),
-    # and Δt1.0(effective) is vertically above Δt0.75 => same x-value.
     if (not vent) and (Ae <= 1.25):
         dt_075 = 0.5 * (dt_mid + dt_top_raw)
-        dt_top = dt_075  # effective top (plotted + reported at 1.0 height)
+        dt_top = dt_075
+        figures_used.append("Fig. 2")
     else:
         dt_075 = None
         dt_top = dt_top_raw
+        figures_used.append("Fig. 1")
 
     T_mid = ambient_C + dt_mid
     T_top = ambient_C + dt_top
     T_075 = (ambient_C + dt_075) if dt_075 is not None else None
 
-    limit_C = tier.effective_max_temp_C()
-
-    # Temperature profile construction
-    figures_used.append("Fig. 2" if (not vent and Ae <= 1.25) else "Fig. 1")
-
+    limit_C = float(tier.effective_max_temp_C())
 
     return {
         "ambient_C": ambient_C,
+
+        # geometry
+        "w_m": w_m,
+        "h_m": h_m,
+        "d_m": d_m,
         "Ae": Ae,
+
+        # thermal model
         "P": P,
         "k": k,
         "c": c,
         "x": x,
         "f": f,
         "g": g,
+        "curve_no": curve_no,
+        "wall_mounted": bool(wall_mounted),
+        "ventilated": bool(vent),
 
         # rises (Δt)
-        "dt_mid": dt_mid,            # Δt at 0.5
-        "dt_top": dt_top,            # Δt at 1.0 (effective)
-        "dt_075": dt_075,            # Δt at 0.75 (only small enclosures)
-        "dt_top_raw": dt_top_raw,    # raw c*dt_mid (for trace/debug)
+        "dt_mid": dt_mid,
+        "dt_top": dt_top,
+        "dt_075": dt_075,
+        "dt_top_raw": dt_top_raw,
 
         # absolute temps
         "T_mid": T_mid,
@@ -168,32 +142,7 @@ def calc_tier_iec60890(
         "compliant_mid": T_mid <= limit_C,
         "compliant_top": T_top <= limit_C,
 
+        # reporting
         "surfaces": surfaces,
         "figures_used": sorted(set(figures_used)),
-
     }
-
-
-def temperature_profile(delta_t_mid: float, delta_t_top: float, Ae: float) -> dict:
-    """
-    IEC 60890 temperature-rise profile construction.
-
-    Returns:
-        {
-            "dt_0_5": Δt at mid-height (0.5),
-            "dt_0_75": Δt at 0.75 height (ONLY if Ae <= 1.25),
-            "dt_1_0": Δt at top (1.0)
-        }
-    """
-    profile = {
-        "dt_0_5": float(delta_t_mid),
-        "dt_1_0": float(delta_t_top),
-    }
-
-    if Ae <= 1.25:
-        # IEC 60890 Fig. 2 geometric construction
-        profile["dt_0_75"] = 0.5 * (delta_t_mid + delta_t_top)
-
-    return profile
-
-

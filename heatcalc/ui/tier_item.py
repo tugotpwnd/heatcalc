@@ -30,6 +30,12 @@ class _Handle(QGraphicsRectItem):
         else:  # "tr","bl"
             self.setCursor(Qt.SizeBDiagCursor)
 
+        self.face_exposure = {
+            "left": True,
+            "right": True,
+            "top": True,
+        }
+
     def mousePressEvent(self, event):
         # lock parent movement while resizing
         parent = self.parentItem()

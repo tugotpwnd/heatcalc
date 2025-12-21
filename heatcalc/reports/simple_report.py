@@ -1044,7 +1044,7 @@ def export_simple_report(
 
             main_rows += [
                 ["Final Temp @ 1.0t (°C)", f"{th.T_top:.1f}"],
-                ["Maximum Allowed (°C)", f"{th.max_C:d}"],
+                ["Maximum Allowed (°C)", f"{th.max_C:.1f}"],
                 ["Compliance @ 0.5t", comp_mid],
                 ["Compliance @ 1.0t", comp_top],
             ]

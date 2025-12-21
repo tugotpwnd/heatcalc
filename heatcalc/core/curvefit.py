@@ -2,6 +2,12 @@
 from __future__ import annotations
 import math
 from typing import List, Tuple
+from ..core.iec60890_geometry import (
+    touching_sides,
+    b_map_for_tier,
+    dimensions_m,
+    effective_area_and_fg,
+)
 
 
 # ---------- utilities ----------

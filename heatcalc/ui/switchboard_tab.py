@@ -22,6 +22,7 @@ from ..core.component_store import (
 )
 from .component_table_model import ComponentTableModel
 from .cable_adder import CableAdderWidget
+from ..core.iec60890_geometry import apply_curve_state_to_tiers
 
 # Enclosure material → effective heat transfer coefficient (W/m²·K)
 ENCLOSURE_MATERIALS = {
@@ -820,27 +821,8 @@ class SwitchboardTab(QWidget):
     def _recompute_all_curves(self):
         wall = self.cb_wall.isChecked()
         tiers = list(self._tiers())
-        for t in tiers:
-            left_touch  = any(abs(t.shapeRect().left()  - o.shapeRect().right()) < 1e-3 and self._overlap_y(t, o) for o in tiers if o is not t)
-            right_touch = any(abs(t.shapeRect().right() - o.shapeRect().left())  < 1e-3 and self._overlap_y(t, o) for o in tiers if o is not t)
-            top_covered = any(abs(t.shapeRect().top()   - o.shapeRect().bottom())< 1e-3 and self._overlap_x(t, o) for o in tiers if o is not t)
+        apply_curve_state_to_tiers(tiers=tiers, wall_mounted=wall, debug=False)
 
-            both = left_touch and right_touch
-            one  = (left_touch ^ right_touch)
-
-            if not left_touch and not right_touch and not top_covered:
-                t.curve_no = 3 if wall else 1
-            elif one and not top_covered:
-                t.curve_no = 4 if wall else 2
-            elif both and not top_covered:
-                t.curve_no = 5 if wall else 3
-            elif wall and both and top_covered:
-                t.curve_no = 4
-            else:
-                t.curve_no = 4 if wall else 3
-
-            t.wall_mounted = wall
-            t.update()
     # ------------------------------------------------------------------ #
     # Depth & Max tempt
     # ------------------------------------------------------------------ #
@@ -891,39 +873,6 @@ class SwitchboardTab(QWidget):
         # Keep label in sync
         self._update_effective_limit_label(it)
         self.tierGeometryCommitted.emit()
-
-
-    # --- persistence API ---------------------------------------------
-    # def export_state(self) -> dict:
-    #     tiers = []
-    #     for it in self.scene.items():
-    #         if isinstance(it, TierItem):
-    #             tiers.append(it.to_dict())
-    #     return {
-    #         "wall_mounted_global": bool(self.cb_wall.isChecked()),
-    #         "use_uniform_depth": bool(getattr(self, "cb_uniform_depth", None) and self.cb_uniform_depth.isChecked()),
-    #         "uniform_depth_mm": int(getattr(self, "sp_uniform_depth", None).value() if getattr(self, "sp_uniform_depth", None) else 400),
-    #         "tiers": list(reversed(tiers)),  # reverse to keep visual stacking order
-    #     }
-    #
-    # def import_state(self, state: dict) -> None:
-    #     # clear existing tiers
-    #     for it in list(self.scene.items()):
-    #         if isinstance(it, TierItem):
-    #             self.scene.removeItem(it)
-    #
-    #     self.cb_wall.setChecked(bool(state.get("wall_mounted_global", False)))
-    #     if getattr(self, "cb_uniform_depth", None):
-    #         self.cb_uniform_depth.setChecked(bool(state.get("use_uniform_depth", False)))
-    #     if getattr(self, "sp_uniform_depth", None):
-    #         self.sp_uniform_depth.setValue(int(state.get("uniform_depth_mm", 400)))
-    #
-    #     for td in state.get("tiers", []):
-    #         t = TierItem.from_dict(td)
-    #         self.scene.addItem(t)
-    #     self._recompute_all_curves()
-    #     self._update_left_from_selection()
-
 
     @staticmethod
     def _overlap_x(a: TierItem, b: TierItem) -> bool:
