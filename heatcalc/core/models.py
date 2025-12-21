@@ -11,6 +11,11 @@ class ProjectMeta:
     designer: str = ""
     date: str = ""
     revision: str = "A"
+    # Project-wide thermal assumptions
+    ambient_C: float = 40.0
+    enclosure_material: str = "Sheet metal"
+    enclosure_k_W_m2K: float = 5.5
+    allow_material_dissipation: bool = False
     # NEW: stores list of {item, condition, result}
     iec60890_checklist: List[Dict[str, str]] = field(default_factory=list)
 

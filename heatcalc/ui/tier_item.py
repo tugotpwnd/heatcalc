@@ -248,9 +248,35 @@ class TierItem(ResizableBox):
 
     def contextMenuEvent(self, event):
         menu = QMenu()
-        act = menu.addAction("Delete tier")
+
+        act_copy = menu.addAction("Copy tier contents")
+        act_paste = menu.addAction("Paste tier contents")
+        menu.addSeparator()
+        act_delete = menu.addAction("Delete tier")
+
         chosen = menu.exec_(event.screenPos())
-        if chosen == act:
+        if not chosen:
+            return
+
+        # Walk up parent chain to find SwitchboardTab
+        switchboard = None
+        for view in self.scene().views():
+            w = view
+            while w is not None:
+                if w.__class__.__name__ == "SwitchboardTab":
+                    switchboard = w
+                    break
+                w = w.parent()
+            if switchboard:
+                break
+
+        if chosen == act_copy and switchboard:
+            switchboard.copy_tier_contents(self)
+
+        elif chosen == act_paste and switchboard:
+            switchboard.paste_tier_contents(self)
+
+        elif chosen == act_delete:
             self.requestDelete.emit(self)
 
     def paint(self, painter, option, widget=None):

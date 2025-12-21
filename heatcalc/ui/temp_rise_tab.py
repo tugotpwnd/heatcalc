@@ -6,7 +6,7 @@ from PyQt5.QtGui import QIntValidator, QColor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSplitter,
     QListWidget, QListWidgetItem, QGroupBox, QFormLayout, QSpinBox, QLabel,
-    QLineEdit
+    QLineEdit, QCheckBox
 )
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -15,6 +15,7 @@ from matplotlib.figure import Figure
 from .tier_item import TierItem
 from .designer_view import GRID
 from ..core import curvefit
+from ..core.airflow import required_airflow_with_wall_loss
 from ..core.iec60890_calc import calc_tier_iec60890
 
 MM_PER_GRID = 25.0  # same mapping you’ve been using
@@ -34,8 +35,9 @@ class TempRiseTab(QWidget):
     - If exceeding, an estimated minimum airflow (m³/h) is computed to meet the max temp.
     """
 
-    def __init__(self, scene, parent=None):
+    def __init__(self, scene, project, parent=None):
         super().__init__(parent)
+        self.project = project
         self._scene_provider = lambda: scene
         self._results: List[Dict] = []  # one dict per tier with calc outputs
         self.ambient_C: Optional[float] = None
@@ -55,6 +57,11 @@ class TempRiseTab(QWidget):
         self.ed_ambient.setValidator(QIntValidator(-50, 90, self))
         self.ed_ambient.textChanged.connect(self._on_ambient_changed)
         of.addRow("Ambient (°C):", self.ed_ambient)
+
+        # Allow enclosure material heat dissipation (project-wide)
+        self.cb_material_diss = QCheckBox("Allow enclosure material heat dissipation")
+        self.cb_material_diss.stateChanged.connect(self._on_material_dissipation_toggled)
+        of.addRow("", self.cb_material_diss)
 
         # Inlet opening area for ventilated enclosures
         self.sb_opening = QSpinBox()
@@ -108,16 +115,52 @@ class TempRiseTab(QWidget):
         lay = QHBoxLayout(self)
         lay.addWidget(split)
 
-    # --------------------------------------------------------------------- UI
-    def _on_ambient_changed(self, text: str):
-        text = (text or "").strip()
-        if text == "":
+        # ------------------------------------------------------------------ #
+        # Load in meta
+        # ------------------------------------------------------------------ #
+        allow = bool(getattr(self.project.meta, "allow_material_dissipation", False))
+        self.cb_material_diss.blockSignals(True)
+        self.cb_material_diss.setChecked(allow)
+        self.cb_material_diss.blockSignals(False)
+
+        # --- Initialise ambient from project meta ---
+        proj = self.project
+        amb = getattr(proj.meta, "ambient_C", None)
+
+        self.ed_ambient.blockSignals(True)
+        if amb is None:
+            self.ed_ambient.clear()
             self.ambient_C = None
         else:
+            self.ed_ambient.setText(f"{int(amb)}")
+            self.ambient_C = float(amb)
+        self.ed_ambient.blockSignals(False)
+
+        self._update_calc_enabled()
+
+    # --------------------------------------------------------------------- UI
+
+    def _on_material_dissipation_toggled(self, state: int):
+        allow = bool(state == Qt.Checked)
+        self.project.meta.allow_material_dissipation = allow
+
+    def _on_ambient_changed(self, text: str):
+        text = (text or "").strip()
+        proj = self.project
+
+
+        if text == "":
+            self.ambient_C = None
+            proj.meta.ambient_C = None
+        else:
             try:
-                self.ambient_C = float(int(text))  # validator ensures int
+                val = float(int(text))  # validator ensures int
+                self.ambient_C = val
+                proj.meta.ambient_C = val
             except Exception:
                 self.ambient_C = None
+                proj.meta.ambient_C = None
+
         self._update_calc_enabled()
 
     def _update_calc_enabled(self):
@@ -283,7 +326,6 @@ class TempRiseTab(QWidget):
         self._update_results_panel(r)
 
     # ---- results panel + airflow calc ---------------------------------------
-    # ---- results panel + airflow calc ---------------------------------------
     def _update_results_panel(self, r: Optional[Dict]):
         if not r:
             self.lbl_final_mid.setText("–")
@@ -302,7 +344,7 @@ class TempRiseTab(QWidget):
         maxC = int(getattr(tier, "max_temp_C", 70))
 
         # ------------------------------------------------------------
-        # Display values
+        # Display values (UNCHANGED)
         # ------------------------------------------------------------
         self.lbl_final_mid.setText(f"{Tmid:.1f} °C")
 
@@ -316,31 +358,41 @@ class TempRiseTab(QWidget):
             )
 
         # ------------------------------------------------------------
-        # Compliance + airflow guidance (based on effective top temp)
+        # Compliance + cooling guidance (NEW LOGIC)
         # ------------------------------------------------------------
         if Ttop <= maxC:
             self.lbl_guidance.setText("No cooling required.")
-        else:
-            v_m3h = self._min_airflow_m3h(P=r["P"], amb_C=amb, max_C=maxC)
-            if v_m3h is None:
-                self.lbl_guidance.setText(
-                    "Cooling required, but max temp ≤ ambient (check inputs)."
-                )
-            else:
-                self.lbl_guidance.setText(
-                    f"Cooling required: ≥ {v_m3h:.0f} m³/h airflow "
-                    f"to limit to {maxC} °C."
-                )
+            return
 
-    @staticmethod
-    def _min_airflow_m3h(P: float, amb_C: float, max_C: float) -> Optional[float]:
-        """Return minimum airflow (m³/h) to keep enclosure ≤ max_C given power P.
-        Uses steady-state heat balance:  \dot{Q} = ρ c_p V̇ ΔT  ⇒  V̇ = P/(ρ c_p ΔT).
-        Assumes air ρ≈1.20 kg/m³, c_p≈1005 J/(kg·K)."""
-        dT_allow = max_C - amb_C
-        if dT_allow <= 0:
-            return None
-        rho = 1.20  # kg/m³
-        cp = 1005.0  # J/kg/K
-        Vdot_m3_s = P / (rho * cp * dT_allow)
-        return Vdot_m3_s * 3600.0  # m³/h
+        # ---- NEW: enclosure wall dissipation + residual airflow ----
+        # Effective enclosure surface area from IEC 60890 calc
+        Ae = r.get("Ae", 0.0)
+
+        res = required_airflow_with_wall_loss(
+            P_W=r["P"],
+            amb_C=amb,
+            max_internal_C=maxC,
+            enclosure_area_m2=Ae,
+            allow_wall_dissipation=self.project.meta.allow_material_dissipation,
+            k_W_per_m2K=self.project.meta.enclosure_k_W_m2K,
+        )
+
+        if res.airflow_m3h is None:
+            self.lbl_guidance.setText(
+                "Cooling required, but max temperature ≤ ambient (check inputs)."
+            )
+            return
+
+        # ---- Build explicit, auditable message ----
+        if self.project.meta.allow_material_dissipation:
+            self.lbl_guidance.setText(
+                f"Cooling required.\n"
+                f"• Heat dissipated via enclosure: {res.q_walls_W:.0f} W\n"
+                f"• Heat remaining for ventilation: {res.q_fans_W:.0f} W\n"
+                f"→ Required airflow: ≥ {res.airflow_m3h:.0f} m³/h"
+            )
+        else:
+            self.lbl_guidance.setText(
+                f"Cooling required: ≥ {res.airflow_m3h:.0f} m³/h airflow "
+                f"to limit to {maxC} °C."
+            )

@@ -62,6 +62,31 @@ def calc_tier_iec60890(
         "front": 0.9,
         "back":  0.5 if wall_mounted else 0.9,
     }
+
+    # ---- NEW: curvefit breakdown for reporting -----------------
+    figures_used: list[str] = []
+    # ---- NEW: per-surface breakdown for reporting -----------------
+    surfaces = []
+
+
+    def _add_surface(name: str, w: float, h: float, b: float):
+        A0 = w * h
+        surfaces.append({
+            "name": name,
+            "w": w,
+            "h": h,
+            "A0": A0,
+            "b": b,
+            "Ae": A0 * b,
+        })
+
+    _add_surface("Roof",  w_m, d_m, b_used["top"])
+    _add_surface("Front", w_m, h_m, b_used["front"])
+    _add_surface("Rear",  w_m, h_m, b_used["back"])
+    _add_surface("Left",  h_m, d_m, b_used["left"])
+    _add_surface("Right", h_m, d_m, b_used["right"])
+
+
     Ae = sum(areas[k] * b_used[k] for k in areas)
 
     # Power and mode
@@ -76,18 +101,21 @@ def calc_tier_iec60890(
         f = (h_m ** 1.35) / Ab
         k = curvefit.k_vents(ae=max(1.0, min(14.0, Ae)), opening_area_cm2=inlet_area_cm2)
         c = curvefit.c_vents(f=f, opening_area_cm2=inlet_area_cm2)
+        figures_used += ["Fig. 5", "Fig. 6"]
         g = None
     else:
         if Ae <= 1.25:
             k = curvefit.k_small_no_vents(Ae)
             g = h_m / max(1e-9, w_m)
             c = curvefit.c_small_no_vents(g)
+            figures_used += ["Fig. 7", "Fig. 8"]
             f = None
         else:
             k = curvefit.k_no_vents(Ae)
             Ab = max(1e-9, w_m * d_m)
             f = (h_m ** 1.35) / Ab
             c = curvefit.c_no_vents(curve_no, f)
+            figures_used += ["Fig. 3", "Fig. 4"]
             g = None
 
     dt_mid = k * d_fac * (P ** x)
@@ -110,6 +138,10 @@ def calc_tier_iec60890(
     T_075 = (ambient_C + dt_075) if dt_075 is not None else None
 
     limit_C = tier.effective_max_temp_C()
+
+    # Temperature profile construction
+    figures_used.append("Fig. 2" if (not vent and Ae <= 1.25) else "Fig. 1")
+
 
     return {
         "ambient_C": ambient_C,
@@ -135,6 +167,10 @@ def calc_tier_iec60890(
         "limit_C": limit_C,
         "compliant_mid": T_mid <= limit_C,
         "compliant_top": T_top <= limit_C,
+
+        "surfaces": surfaces,
+        "figures_used": sorted(set(figures_used)),
+
     }
 
 
@@ -159,3 +195,5 @@ def temperature_profile(delta_t_mid: float, delta_t_top: float, Ae: float) -> di
         profile["dt_0_75"] = 0.5 * (delta_t_mid + delta_t_top)
 
     return profile
+
+

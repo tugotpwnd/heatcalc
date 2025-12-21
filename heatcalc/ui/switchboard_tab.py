@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QFontMetrics
 
 from .designer_view import DesignerView, GRID, snap
-from .tier_item import TierItem, _Handle
+from .tier_item import TierItem, _Handle, CableEntry
 from ..core.component_library import DEFAULT_COMPONENTS  # we’ll enrich this map with catalog entries
 from PyQt5.QtWidgets import QDialog, QDialogButtonBox
 from ..core.component_store import (
@@ -22,6 +22,17 @@ from ..core.component_store import (
 )
 from .component_table_model import ComponentTableModel
 from .cable_adder import CableAdderWidget
+
+# Enclosure material → effective heat transfer coefficient (W/m²·K)
+ENCLOSURE_MATERIALS = {
+    "Sheet metal": 5.5,
+    "Aluminium": 5.5,
+    "Stainless steel": 5.5,
+    "Cast aluminium": 5.5,
+    "Polycarbonate": 3.5,
+    "Plastic": 3.5,
+}
+
 
 class _CatalogProxy(QSortFilterProxyModel):
     """Filter by category + free-text search over part # + description."""
@@ -164,6 +175,24 @@ class SwitchboardTab(QWidget):
         self.cb_wall.stateChanged.connect(self._recompute_all_curves)
         left_lay.addWidget(self.cb_wall)
 
+        # ---- Enclosure material (project-wide) -------------------------------
+        gb_material = QGroupBox("Enclosure material")
+        fm = QFormLayout(gb_material)
+
+        self.cmb_material = QComboBox()
+        self.cmb_material.addItems(ENCLOSURE_MATERIALS.keys())
+        self.cmb_material.currentTextChanged.connect(self._on_material_changed)
+
+        self.lbl_k = QLabel("–")
+        self.lbl_k.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        fm.addRow("Material:", self.cmb_material)
+        fm.addRow("k (W/m²·K):", self.lbl_k)
+
+        left_lay.addWidget(gb_material)
+
+        # ---- Global depth (project-wide) -------------------------------
+
         self.cb_same_depth = QCheckBox("Use same depth for all tiers")  # NEW
         self.sp_same_depth = QSpinBox()  # NEW
         self.sp_same_depth.setRange(10, 5000)
@@ -182,6 +211,8 @@ class SwitchboardTab(QWidget):
         self.cb_same_depth.toggled.connect(self._toggle_uniform_depth)  # NEW
         self.sp_same_depth.valueChanged.connect(self._apply_uniform_depth_value)  # NEW
 
+        # ---- Clip board (Tier copy & paste) -------------------------------
+        self._tier_clipboard: dict | None = None
 
         # Selected tier basics
         gb_sel = CollapsibleGroupBox("Selected tier")
@@ -356,6 +387,21 @@ class SwitchboardTab(QWidget):
         self.cmb_category.currentTextChanged.connect(self.proxy.setCategory)
         self.ed_search.textChanged.connect(self.proxy.setText)
 
+        # ------------------------------------------------------------------ #
+        # Load in meta
+        # ------------------------------------------------------------------ #
+
+        # Initialise enclosure material from project meta
+        mat = getattr(self.project.meta, "enclosure_material", "Sheet metal")
+        k = getattr(self.project.meta, "enclosure_k_W_m2K", ENCLOSURE_MATERIALS.get(mat, 5.5))
+
+        self.cmb_material.blockSignals(True)
+        idx = self.cmb_material.findText(mat)
+        self.cmb_material.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_material.blockSignals(False)
+
+        self.lbl_k.setText(f"{k:.2f}")
+
     # ------------------------------------------------------------------ #
     # Save / Load
     # ------------------------------------------------------------------ #
@@ -394,6 +440,55 @@ class SwitchboardTab(QWidget):
         self._recompute_all_curves()
         self._update_left_from_selection()
         self.tierGeometryCommitted.emit()
+
+    def refresh_from_project(self):
+        mat = getattr(self.project.meta, "enclosure_material", "Sheet metal")
+        k = getattr(
+            self.project.meta,
+            "enclosure_k_W_m2K",
+            ENCLOSURE_MATERIALS.get(mat, 5.5)
+        )
+
+        self.cmb_material.blockSignals(True)
+        idx = self.cmb_material.findText(mat)
+        self.cmb_material.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_material.blockSignals(False)
+
+        self.lbl_k.setText(f"{k:.2f}")
+
+
+    # ------------------------------------------------------------------ #
+    # Copy / Paste
+    # ------------------------------------------------------------------ #
+
+    def copy_tier_contents(self, tier: TierItem):
+        self._tier_clipboard = {
+            "component_entries": [ce.__dict__.copy() for ce in tier.component_entries],
+            "cables": [c.to_dict() for c in tier.cables],
+        }
+
+    def paste_tier_contents(self, tier: TierItem):
+        if not self._tier_clipboard:
+            return
+
+        # --- merge components ---
+        for ce in self._tier_clipboard["component_entries"]:
+            tier.add_component_entry(
+                key=ce["key"],
+                category=ce["category"],
+                part_number=ce["part_number"],
+                description=ce["description"],
+                heat_each_w=ce["heat_each_w"],
+                qty=ce["qty"],
+                max_temp_C=ce.get("max_temp_C", 70),
+            )
+
+        # --- append cables ---
+        for c in self._tier_clipboard["cables"]:
+            tier.cables.append(CableEntry.from_dict(c))
+
+        tier.update()
+        self._refresh_selected_contents()
 
     # ------------------------------------------------------------------ #
     # Scene helpers / selection
@@ -495,6 +590,13 @@ class SwitchboardTab(QWidget):
             return
         it.is_ventilated = on
         self._update_left_from_selection()
+
+    def _on_material_changed(self, text: str):
+        print("Changed project meta ")
+        k = ENCLOSURE_MATERIALS.get(text, 0.0)
+        self.project.meta.enclosure_material = text
+        self.project.meta.enclosure_k_W_m2K = k
+        self.lbl_k.setText(f"{k:.2f}")
 
     # ----- list ops
     def _remove_selected_component(self):

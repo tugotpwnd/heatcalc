@@ -40,7 +40,51 @@ matplotlib.rcParams.update({
 })
 FONT = "Times-Roman"
 FONT_B = "Times-Bold"
-IEC_HEAD = "IEC 60890 Preconditions (Clause 10.10.4.3.1)"
+IEC_HEAD = "IEC 60890 Preconditions (Clause 4)"
+
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib import colors
+
+# ------------------------------------------------------------------
+# Paragraph styles
+# ------------------------------------------------------------------
+_styles = getSampleStyleSheet()
+
+H2 = ParagraphStyle(
+    name="H2",
+    parent=_styles["Heading2"],
+    fontName="Helvetica-Bold",
+    fontSize=14,
+    leading=18,
+    spaceBefore=6,
+    spaceAfter=6,
+    alignment=TA_LEFT,
+)
+
+Body = ParagraphStyle(
+    name="Body",
+    parent=_styles["BodyText"],
+    fontName="Helvetica",
+    fontSize=10,
+    leading=14,
+    spaceBefore=4,
+    spaceAfter=4,
+    alignment=TA_LEFT,
+)
+
+BodySmall = ParagraphStyle(
+    name="BodySmall",
+    parent=_styles["BodyText"],
+    fontName="Helvetica",
+    fontSize=8.5,
+    leading=11,
+    spaceBefore=2,
+    spaceAfter=2,
+    alignment=TA_LEFT,
+    textColor=colors.grey,
+)
+
 
 # ---------------- Times font helper for matplotlib ----------------
 def _times_rc():
@@ -110,14 +154,30 @@ class TierThermal:
     vent: bool
     curve: int
     ambient_C: float
+
     dt_mid: float
     dt_top: float
+
     T_mid: float
     T_top: float
-    max_C: int
+
+    max_C: float
     compliant_mid: bool
     compliant_top: bool
-    airflow_m3h: Optional[float]
+    airflow_m3h: Optional[float] = None
+    T_075: Optional[float] = None    # ← ADD
+    dt_075: Optional[float] = None   # ← ADD
+    enclosure_material: str | None = None
+    enclosure_k: float | None = None
+
+    q_walls_W: float | None = None
+    q_fans_W: float | None = None
+
+    dims_m: tuple[float, float, float] | None = None
+    surfaces: list[dict] | None = None
+    figures_used: list[str] | None = None
+
+
 
 # ---------------- Helpers ----------------
 
@@ -144,38 +204,120 @@ def _make_disclaimer_page(path: Path):
 
 # --- NEW: helper to render a per-tier components table ---
 def _components_table_for_tier(tier: TierRow) -> Table:
-    # Header row
-    rows = [["Description", "Part #", "Qty", "W each", "W total"]]
-    # Data rows
+    styles = getSampleStyleSheet()
+
+    Cell = ParagraphStyle(
+        "Cell",
+        fontName=FONT,
+        fontSize=9,
+        leading=11,
+        spaceAfter=0,
+        spaceBefore=0,
+    )
+
+    CellRight = ParagraphStyle(
+        "CellRight",
+        parent=Cell,
+        alignment=2,  # RIGHT
+    )
+
+    Header = ParagraphStyle(
+        "Header",
+        parent=Cell,
+        fontName=FONT_B,
+    )
+
+    rows = [
+        [
+            Paragraph("<b>Description</b>", Header),
+            Paragraph("<b>Part #</b>", Header),
+            Paragraph("<b>Qty</b>", Header),
+            Paragraph("<b>W each</b>", Header),
+            Paragraph("<b>W total</b>", Header),
+        ]
+    ]
+
     for c in tier.components:
         rows.append([
-            str(c.description or ""),
-            str(c.part_no or ""),
-            f"{int(c.qty)}",
-            f"{float(c.heat_each_w):.1f}",
-            f"{float(c.heat_total_w):.1f}",
+            Paragraph(str(c.description or ""), Cell),
+            Paragraph(str(c.part_no or ""), Cell),
+            Paragraph(f"{int(c.qty)}", CellRight),
+            Paragraph(f"{float(c.heat_each_w):.1f}", CellRight),
+            Paragraph(f"{float(c.heat_total_w):.1f}", CellRight),
         ])
-    # Simple subtotal bar at bottom
-    if tier.components:
-        rows.append(["", "", "", "Subtotal (W):", f"{tier.heat_w:.1f}"])
 
-    t = Table(rows, colWidths=[70*mm, 35*mm, 12*mm, 20*mm, 25*mm])
-    t.setStyle(TableStyle([
-        ("FONT", (0,0), (-1,-1), FONT, 9),
-        ("FONT", (0,0), (-1,0), FONT_B, 9),
-        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
-        ("LINEBELOW", (0,0), (-1,-1), 0.25, colors.whitesmoke),
-        ("ALIGN", (2,1), (4,-1), "RIGHT"),
-        ("LEFTPADDING", (0,0), (-1,-1), 2),
-        ("RIGHTPADDING", (0,0), (-1,-1), 2),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+    if tier.components:
+        rows.append([
+            Paragraph("", Cell),
+            Paragraph("", Cell),
+            Paragraph("", Cell),
+            Paragraph("<b>Subtotal (W):</b>", CellRight),
+            Paragraph(f"<b>{tier.heat_w:.1f}</b>", CellRight),
+        ])
+
+    table = Table(
+        rows,
+        colWidths=[
+            70 * mm,   # Description (wraps)
+            40 * mm,   # Part # (wraps)
+            12 * mm,   # Qty
+            20 * mm,   # W each
+            25 * mm,   # W total
+        ],
+        repeatRows=1,
+    )
+
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.whitesmoke),
+
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
-    return t
+
+    return table
+
 
 
 def _ensure_app():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     return QApplication.instance() or QApplication([])
+
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+
+def boost_png_contrast(path: Path,
+                       gamma: float = 0.6,
+                       contrast: float = 3.0,
+                       sharpen: bool = True) -> None:
+    """
+    Aggressively increase contrast so faint UI lines/text become dark.
+
+    gamma < 1 darkens midtones (0.5–0.7 is effective)
+    contrast > 1 increases separation (2.5–3.5 works well)
+    """
+    img = Image.open(path).convert("L")  # grayscale
+
+    # ---- Gamma correction ----
+    inv_gamma = 1.0 / gamma
+    lut = [int((i / 255.0) ** inv_gamma * 255) for i in range(256)]
+    img = img.point(lut)
+
+    # ---- Contrast boost ----
+    img = ImageEnhance.Contrast(img).enhance(contrast)
+
+    # ---- Optional sharpen (helps thin lines) ----
+    if sharpen:
+        img = img.filter(ImageFilter.SHARPEN)
+
+    # Convert back to RGB for ReportLab compatibility
+    img = img.convert("RGB")
+    img.save(path)
+
 
 def render_scene_to_png(scene: Any, out_path: Path) -> Path:
     _ensure_app()
@@ -189,26 +331,64 @@ def render_scene_to_png(scene: Any, out_path: Path) -> Path:
     p.end()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out_path))
+
+    # Aggressively boost contrast for report readability
+    boost_png_contrast(out_path)
+
     return out_path
 
-def render_temp_profile_png(title: str, ambient_C: float, T_mid: float, T_top: float, out_path: Path) -> Path:
-    """Plot absolute temperature vs normalised height (no on-plot labels)."""
+
+def render_temp_profile_png(
+    title: str,
+    ambient_C: float,
+    T_mid: float,
+    T_top: float,
+    out_path: Path,
+    *,
+    T_075: float | None = None,
+):
+    """
+    Plot absolute temperature vs normalised height (IEC 60890).
+    Straight-line construction, matching UI behaviour.
+    """
     with plt.rc_context(_times_rc()):
-        xs = [ambient_C, T_mid, T_top]
-        ys = [0.0, 0.5, 1.0]
         fig = plt.figure(figsize=(6.0, 3.2), dpi=144)
         ax = plt.gca()
-        ax.plot(xs, ys, linewidth=2.2, marker="o")
-        ax.set_xlim(min(xs) - 2, max(xs) + 2)
+
+        # Ambient → mid-height
+        xs = [ambient_C, T_mid]
+        ys = [0.0, 0.5]
+
+        ax.plot(xs, ys, linewidth=2.2)
+
+        if T_075 is not None:
+            # Ae ≤ 1.25 m² (Fig. 2)
+            ax.plot([T_mid, T_075], [0.5, 0.75], linewidth=2.2)
+            ax.plot([T_075, T_075], [0.75, 1.0], linewidth=2.2)
+
+            ax.scatter(
+                [T_mid, T_075, T_top],
+                [0.5, 0.75, 1.0],
+                zorder=5
+            )
+        else:
+            # Ae > 1.25 m² (Fig. 1)
+            ax.plot([T_mid, T_top], [0.5, 1.0], linewidth=2.2)
+            ax.scatter([T_mid, T_top], [0.5, 1.0], zorder=5)
+
+        ax.set_xlim(min(xs) - 2, max(T_top, T_mid) + 2)
         ax.set_ylim(-0.02, 1.04)
         ax.set_xlabel("Temperature (°C)")
         ax.set_ylabel("Normalised Height")
         ax.grid(True, linestyle=":", linewidth=0.6)
         ax.set_title(title)
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(str(out_path), format="png", bbox_inches="tight")
         plt.close(fig)
+
     return out_path
+
 
 def _scale_to_fit(img_w_px: int, img_h_px: int, max_w_mm: float, max_h_mm: float, dpi: int = 144) -> Tuple[float, float]:
     max_w_pt = max_w_mm * mm
@@ -457,6 +637,153 @@ def iec60890_section_flowables(answers: list[dict]) -> list:
         ])
     ]
 
+# ---------------- IEC60890 Template Table Helpers ----------------
+
+def iec60890_tab_sheet(th: TierThermal) -> Table:
+    rows = [
+        ["Surface", "Dimensions (m)", "A0 (m²)", "b", "Ae (m²)"]
+    ]
+
+    for s in th.surfaces or []:
+        rows.append([
+            s["name"],
+            f"{s['w']:.2f} × {s['h']:.2f}",
+            f"{s['A0']:.2f}",
+            f"{s['b']:.2f}",
+            f"{s['Ae']:.2f}",
+        ])
+
+    rows.append(["", "", "", "Σ Ae", f"{th.Ae:.2f}"])
+
+    tbl = Table(rows, colWidths=[40*mm, 40*mm, 25*mm, 20*mm, 25*mm])
+    tbl.setStyle(TableStyle([
+        ("GRID", (0,0), (-1,-1), 0.25, colors.black),
+        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+        ("ALIGN", (2,1), (-1,-1), "RIGHT"),
+        ("FONT", (0,0), (-1,0), FONT_B),
+        ("FONT", (0,1), (-1,-1), FONT),
+    ]))
+    return tbl
+
+def enclosure_dissipation_table(th: TierThermal) -> Table:
+    if th.airflow_m3h is None:
+        airflow_text = "0"
+    else:
+        airflow_text = f"{th.airflow_m3h:.0f}"
+
+    rows = [
+        ["Enclosure material", th.enclosure_material],
+        ["Material k (W/m²·K)", f"{th.enclosure_k:.2f}"],
+        ["Effective area Ae (m²)", f"{th.Ae:.2f}"],
+        ["Heat dissipated via enclosure (W)", f"{th.q_walls_W:.1f}"],
+        ["Heat for ventilation (W)", f"{th.q_fans_W:.1f}"],
+        ["Required airflow (m³/h)", airflow_text],
+    ]
+
+    tbl = Table(rows, colWidths=[70*mm, 40*mm])
+    tbl.setStyle(TableStyle([
+        ("GRID", (0,0), (-1,-1), 0.25, colors.whitesmoke),
+        ("FONT", (0,0), (-1,-1), FONT),
+        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+    ]))
+    return tbl
+
+
+def iec_scalar_table(th: TierThermal) -> Table:
+    rows = [
+        ["Effective area Ae (m²)", f"{th.Ae:.3f}"],
+        ["k (enclosure constant)", f"{th.k:.3f}"],
+        ["c (distribution factor)", f"{th.c:.3f}"],
+        ["x (exponent factor)", f"{th.x:.3f}"],
+    ]
+
+    if th.f is not None:
+        rows.append(["f (Ae > 1.25 m²)", f"{th.f:.3f}"])
+    if th.g is not None:
+        rows.append(["g (Ae ≤ 1.25 m²)", f"{th.g:.3f}"])
+
+    if th.figures_used:
+        rows.append([
+            "IEC 60890 figures applied",
+            ", ".join(th.figures_used)
+        ])
+
+    rows.append([
+        "Ambient temperature (°C)",
+        f"{th.ambient_C:.1f}"
+    ])
+
+
+    tbl = Table(rows, colWidths=[70*mm, 40*mm])
+    tbl.setStyle(TableStyle([
+        ("GRID", (0,0), (-1,-1), 0.25, colors.whitesmoke),
+        ("FONT", (0,0), (-1,-1), FONT),
+        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+    ]))
+    return tbl
+
+
+def iec_calc_banner(title: str) -> Table:
+    rows = [[
+        Paragraph(f"<b>{title}</b>", H2),
+        Paragraph(
+            "Effective cooling surfaces, IEC correction factors, "
+            "and ventilation balance",
+            BodySmall
+        )
+    ]]
+
+    tbl = Table(rows, colWidths=[120*mm, 60*mm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), colors.whitesmoke),
+        ("BOX", (0,0), (-1,-1), 0.75, colors.grey),
+        ("LEFTPADDING", (0,0), (-1,-1), 8),
+        ("RIGHTPADDING", (0,0), (-1,-1), 8),
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+    ]))
+    return tbl
+
+def section_box(title: str, inner_flowables: list) -> Table:
+    rows = [
+        [Paragraph(f"<b>{title}</b>", Body)],
+        [inner_flowables],
+    ]
+
+    tbl = Table(rows, colWidths=[180*mm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+        ("BOX", (0,0), (-1,-1), 0.75, colors.grey),
+        ("LEFTPADDING", (0,0), (-1,-1), 8),
+        ("RIGHTPADDING", (0,0), (-1,-1), 8),
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+    ]))
+    return tbl
+
+
+def standards_reference_box() -> Table:
+    rows = [[
+        Paragraph(
+            "<b>Method reference</b><br/>"
+            "IEC TR 60890:2022<br/>"
+            "Clause 5 – Temperature rise of air inside enclosures",
+            BodySmall
+        )
+    ]]
+
+    tbl = Table(rows, colWidths=[80*mm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), colors.whitesmoke),
+        ("BOX", (0,0), (-1,-1), 0.5, colors.grey),
+        ("LEFTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+    ]))
+    return tbl
+
 # ---------------- Main: export_simple_report ----------------
 def export_simple_report(
     out_pdf: Path,
@@ -497,13 +824,29 @@ def export_simple_report(
                 + (f" · g = {th.g:.3f}" if th.g is not None else "")
                 + f" · Ae = {th.Ae:.3f} m² · Ambient = {th.ambient_C:.1f} °C"
             )
-            temps_line = (
-                f"· Ambient = {th.ambient_C:.1f} °C<br/>"
-                f"· Temperature at Half Height of Enclosure (0.5t) = {th.T_mid:.1f} °C<br/>"
-                f"· Temperature at Full Height of Enclosure (1.0t) = {th.T_top:.1f} °C"
-            )
+            if getattr(th, "T_075", None) is not None:
+                temps_line = (
+                    f"· Ambient = {th.ambient_C:.1f} °C<br/>"
+                    f"· Temperature at Half Height (0.5t) = {th.T_mid:.1f} °C<br/>"
+                    f"· Temperature at Three-Quarter Height (0.75t) = {th.T_075:.1f} °C<br/>"
+                    f"· Temperature at Full Height (1.0t) = {th.T_top:.1f} °C"
+                )
+            else:
+                temps_line = (
+                    f"· Ambient = {th.ambient_C:.1f} °C<br/>"
+                    f"· Temperature at Half Height (0.5t) = {th.T_mid:.1f} °C<br/>"
+                    f"· Temperature at Full Height (1.0t) = {th.T_top:.1f} °C"
+                )
+
             out_png = assets / f"tier_curve_{th.tag.replace(' ', '_')}.png"
-            render_temp_profile_png(title, th.ambient_C, th.T_mid, th.T_top, out_png)
+            render_temp_profile_png(
+                title,
+                th.ambient_C,
+                th.T_mid,
+                th.T_top,
+                out_png,
+                T_075=getattr(th, "T_075", None),
+            )
             tier_curve_images.append((title, out_png, subtitle, temps_line, th))
 
     if totals is None:
@@ -583,7 +926,7 @@ def export_simple_report(
 
     flow.append(Paragraph("Summary", H2))
     sum_rows = [["Total Heat Loss (W)", f"{totals.get('heat_total_w', 0.0):.1f}"],
-                ["Number of Tiers", f"{len(tiers)}"]]
+                ["Number of Tiers Calculated", f"{len(tiers)}"]]
     t2 = Table(sum_rows, colWidths=[60*mm, 85*mm])
     t2.setStyle(TableStyle([
         ("FONT", (0,0), (-1,-1), FONT, 10),
@@ -627,8 +970,6 @@ def export_simple_report(
                 continue
             flow.append(PageBreak())
             flow.append(Paragraph(f"Temperature Rise Summary — {title}", H2))
-            flow.append(Paragraph("Design Variables", H3))
-            flow.append(Paragraph(subtitle, Body))
             flow.append(Paragraph("Temperature Rise Curve & Slice", H3))
             try:
                 from PIL import Image as PILImage
@@ -687,24 +1028,48 @@ def export_simple_report(
 
             main_rows = [
                 ["Ambient (°C)", f"{th.ambient_C:.1f}"],
-                ["dT @ 0.5t (K)", f"{th.dt_mid:.2f}"],
-                ["dT @ 1.0t (K)", f"{th.dt_top:.2f}"],
+                ["ΔT @ 0.5t (K)", f"{th.dt_mid:.2f}"],
+            ]
+
+            if getattr(th, "dt_075", None) is not None:
+                main_rows.append(["ΔT @ 0.75t (K)", f"{th.dt_075:.2f}"])
+
+            main_rows += [
+                ["ΔT @ 1.0t (K)", f"{th.dt_top:.2f}"],
                 ["Final Temp @ 0.5t (°C)", f"{th.T_mid:.1f}"],
+            ]
+
+            if getattr(th, "T_075", None) is not None:
+                main_rows.append(["Final Temp @ 0.75t (°C)", f"{th.T_075:.1f}"])
+
+            main_rows += [
                 ["Final Temp @ 1.0t (°C)", f"{th.T_top:.1f}"],
                 ["Maximum Allowed (°C)", f"{th.max_C:d}"],
                 ["Compliance @ 0.5t", comp_mid],
                 ["Compliance @ 1.0t", comp_top],
             ]
+
+            # Build table
             tbl = Table(main_rows, colWidths=[60 * mm, 85 * mm])
-            tbl.setStyle(TableStyle([
+
+            style_cmds = [
                 ("FONT", (0, 0), (-1, -1), FONT, 9),
                 ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.whitesmoke),
-                ("TEXTCOLOR", (1, 6), (1, 6), comp_mid_color),
-                ("TEXTCOLOR", (1, 7), (1, 7), comp_top_color),
                 ("LEFTPADDING", (0, 0), (-1, -1), 2),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 2),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ]))
+            ]
+
+            # Find compliance row indices dynamically
+            for i, row in enumerate(main_rows):
+                label = row[0]
+                if label == "Compliance @ 0.5t":
+                    style_cmds.append(("TEXTCOLOR", (1, i), (1, i), comp_mid_color))
+                elif label == "Compliance @ 1.0t":
+                    style_cmds.append(("TEXTCOLOR", (1, i), (1, i), comp_top_color))
+
+            tbl.setStyle(TableStyle(style_cmds))
+
             flow.append(Spacer(1, 6))
             flow.append(tbl)
 
@@ -716,6 +1081,48 @@ def export_simple_report(
                     Body,
                 ))
             flow.append(Spacer(1, 8))
+
+            # ---------------------------------------------------------
+            # PAGE 2 — IEC 60890 CALCULATION SHEET (PER TIER)
+            # ---------------------------------------------------------
+            flow.append(PageBreak())
+
+            # Banner
+            flow.append(iec_calc_banner(f"IEC 60890 Calculation Sheet — {th.tag}"))
+            flow.append(Spacer(1, 10))
+
+            # Surface / effective area table
+            flow.append(
+                section_box(
+                    "Effective cooling surfaces and area factors",
+                    iec60890_tab_sheet(th)
+                )
+            )
+
+            flow.append(Spacer(1, 12))
+
+            # Scalar IEC variables
+            flow.append(
+                section_box(
+                    "IEC 60890 design variables",
+                    iec_scalar_table(th)
+                )
+            )
+
+            flow.append(Spacer(1, 12))
+
+            # Enclosure heat dissipation
+            flow.append(
+                section_box(
+                    "Enclosure heat dissipation and ventilation",
+                    enclosure_dissipation_table(th)
+                )
+            )
+
+            flow.append(Spacer(1, 14))
+
+            # Standards reference (bottom-right feel)
+            flow.append(standards_reference_box())
 
     doc.build(flow)
 

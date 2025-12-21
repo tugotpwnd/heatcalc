@@ -4,10 +4,12 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Tuple, Dict
+import re
 
 # Pull the UI types you already use
 from PyQt5.QtWidgets import QGraphicsScene
 
+from ..core.airflow import required_airflow_with_wall_loss
 # Import the TierItem class to identify items in the scene
 from ..ui.tier_item import TierItem
 from ..core import curvefit
@@ -40,6 +42,18 @@ MM_PER_GRID_MM = float(MM_PER_GRID)
 def _scene_tiers(scene: QGraphicsScene) -> List[TierItem]:
     """Find TierItem instances from the live scene."""
     return [it for it in scene.items() if isinstance(it, TierItem)]
+
+def _natural_tier_key(tag: str):
+    text = str(tag or "").strip()
+    parts = re.findall(r"\d+|[A-Za-z]+", text)
+
+    key = []
+    for p in parts:
+        if p.isdigit():
+            key.append((0, int(p)))
+        else:
+            key.append((1, p.upper()))
+    return key
 
 
 def _dims_m_from_tier(t: TierItem) -> Tuple[float, float, float]:
@@ -93,71 +107,6 @@ def _map_tier_item(t: TierItem) -> ReportTier:
         components=comps, cables=cabs
     )
 
-
-# -------------------------- thermal math ---------------------------
-
-
-def _min_airflow_m3h(
-    P: float,
-    amb_C: float,
-    max_C: float,
-    *,
-    # --- Air properties (defaults suit ~20–35°C, sea level) ---
-    rho_kg_per_m3: float = 1.20,    # Air density [kg/m³]. Typical range 1.15–1.23 for 15–35°C.
-    cp_J_per_kgK: float = 1005.0,   # Air cp [J/(kg·K)]. ~1000–1007 J/kg·K across 0–40°C.
-    # --- Design uplift ---
-    safety_factor: float = 1.2,     # Accounts for mixing inefficiency, filter aging, minor leaks, etc.
-    # --- Output handling ---
-    min_flow_m3h: float = 0.0       # Clamp to non-negative; keep 0.0 if P<=0
-) -> Optional[float]:
-    """
-    Minimum volumetric airflow [m³/h] to keep cabinet at or below max_C for a heat load P.
-
-    Methodology (unchanged from your original):
-        - Perfectly mixed, single-pass energy balance at steady state:
-              Vdot = P / (ρ * cp * ΔT)
-          where:
-              Vdot is volumetric flow [m³/s]
-              P     is total heat to be removed [W]
-              ρ     is air density [kg/m³]
-              cp    is specific heat at constant pressure [J/(kg·K)]
-              ΔT    = (max_C - amb_C) [K]  (allowed air temperature rise)
-        - Convert m³/s → m³/h by × 3600.
-        - Apply a safety factor (>1) to cover non-idealities.
-
-    Notes / justification of defaults:
-        • ρ ≈ 1.20 kg/m³ and cp ≈ 1005 J/kg·K are standard engineering values for warm indoor air.
-        • Schneider’s example uses ρ ≈ 1.1 kg/m³ and c ≈ 1.0 kJ/kg·K; to reproduce that exactly,
-          call with rho_kg_per_m3=1.1 and cp_J_per_kgK=1000.0.
-        • Safety factor 1.2 gives ≈20% headroom for imperfect mixing, grills/filters, and aging.
-          Increase if you expect heavy filters, long ducts, or poor airflow paths.
-
-    Returns:
-        m³/h as float; None if ΔT <= 0 (i.e., max_C <= amb_C makes the problem ill-posed).
-
-    Edge cases:
-        • If P <= 0, returns max(min_flow_m3h, 0.0) (i.e., 0 by default).
-    """
-    # Allowed air temperature rise (K). If non-positive, cannot meet the setpoint by ventilation alone.
-    dT_allow = max_C - amb_C
-    if dT_allow <= 0:
-        return None
-
-    # Trivial non-heating case
-    if P <= 0:
-        return max(min_flow_m3h, 0.0)
-
-    # Ideal required m³/s from steady-state heat balance
-    denom = rho_kg_per_m3 * cp_J_per_kgK * dT_allow
-    Vdot_m3_s_ideal = P / denom
-
-    # Convert to m³/h and apply safety factor
-    Vdot_m3_h = Vdot_m3_s_ideal * 3600.0 * safety_factor
-
-    # Never return negative due to any numerical issue; clamp to user-defined minimum
-    return max(Vdot_m3_h, min_flow_m3h)
-
-
 # -------------------------- meta helpers ---------------------------
 
 def _meta_from_project(project: Any) -> ReportMeta:
@@ -189,10 +138,12 @@ def export_project_report(
     *,
     ambient_C: Optional[float] = None,
     inlet_area_cm2: float = 300.0,
-    header_logo_path: Optional[Path] = None,   # <— NEW
-    footer_image_path: Optional[Path] = None,  # <— NEW
-    iec60890_checklist
+    header_logo_path: Optional[Path] = None,
+    footer_image_path: Optional[Path] = None,
+    iec60890_checklist=None,
+    selected_tier_tags: Optional[List[str]] = None,
 ) -> Path:
+
     """
     Single entry-point you call from UI. No data helpers needed in MainWindow.
 
@@ -213,6 +164,23 @@ def export_project_report(
         raise RuntimeError("SwitchboardTab.scene is not available")
 
     live_tiers = _scene_tiers(scene)
+
+    live_tiers = _scene_tiers(scene)
+
+    # Optional: filter tiers for reporting (does not change the underlying model)
+    if selected_tier_tags:
+        selected_set = {str(s).strip() for s in selected_tier_tags if str(s).strip()}
+        if selected_set:
+            live_tiers = [
+                t for t in live_tiers
+                if str(getattr(t, "name", getattr(t, "tag", ""))).strip() in selected_set
+            ]
+
+    # Always sort tiers in a human-friendly order for the report
+    live_tiers.sort(
+        key=lambda t: _natural_tier_key(str(getattr(t, "name", getattr(t, "tag", ""))))
+    )
+
     report_tiers = [_map_tier_item(t) for t in live_tiers]
     total_w = sum(t.heat_w for t in report_tiers)
     totals = {"heat_total_w": round(total_w, 3)}
@@ -245,6 +213,17 @@ def export_project_report(
                 inlet_area_cm2=inlet_area_cm2,
                 ambient_C=float(ambient_C),
             )
+
+            # enclosure dissipation
+            wall = required_airflow_with_wall_loss(
+                P_W=res["P"],
+                amb_C=ambient_C,
+                max_internal_C=res["limit_C"],
+                enclosure_area_m2=res["Ae"],
+                allow_wall_dissipation=project.meta.allow_material_dissipation,
+                k_W_per_m2K=project.meta.enclosure_k_W_m2K,
+            )
+
             tier_thermals.append(
                 TierThermal(
                     tag=str(getattr(t, "name", getattr(t, "tag", "Tier"))),
@@ -258,14 +237,31 @@ def export_project_report(
                     vent=t.is_ventilated,
                     curve=t.curve_no,
                     ambient_C=res["ambient_C"],
+
+                    # Δt values
                     dt_mid=res["dt_mid"],
                     dt_top=res["dt_top"],
+                    dt_075=res.get("dt_075"),  # ← ADD
+
+                    # absolute temperatures
                     T_mid=res["T_mid"],
                     T_top=res["T_top"],
+                    T_075=res.get("T_075"),  # ← ADD
+
                     max_C=res["limit_C"],
                     compliant_mid=res["compliant_mid"],
                     compliant_top=res["compliant_top"],
-                    airflow_m3h=None,  # unchanged logic for now
+
+                    enclosure_material=project.meta.enclosure_material,
+                    enclosure_k=project.meta.enclosure_k_W_m2K,
+
+                    q_walls_W=wall.q_walls_W,
+                    q_fans_W=wall.q_fans_W,
+                    airflow_m3h=wall.airflow_m3h,
+
+                    dims_m=_dims_m_from_tier(t),
+                    surfaces=res["surfaces"],
+                    figures_used=res.get("figures_used", []),
                 )
             )
 
@@ -285,3 +281,4 @@ def export_project_report(
         footer_image_path=footer_image_path,     # <— NEW
         iec60890_checklist=iec60890_checklist
     )
+
