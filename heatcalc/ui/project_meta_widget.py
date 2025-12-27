@@ -7,9 +7,16 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QFormLayout, QLineEdit, QLabel, QVBoxLayout, QHBoxLayout,
-    QFrame, QStackedLayout, QSizePolicy, QSpacerItem, QGraphicsDropShadowEffect
+    QFrame, QStackedLayout, QSizePolicy, QSpacerItem, QGraphicsDropShadowEffect, QCheckBox
 )
+from PyQt5.QtWidgets import QDoubleSpinBox
+from ..utils.qt import signals
+THERMAL_FIELDS = [
+    ("ambient_C", "Ambient temperature (°C)"),
+]
 
+from ..ui.tier_item import STANDARD_VENTS_CM2
+from PyQt5.QtWidgets import QComboBox
 from ..core.models import Project
 from ..utils.resources import get_resource_path
 
@@ -125,10 +132,38 @@ class ProjectMetaWidget(QWidget):
             form.addRow(label + ":", le)
             self._edits[key] = le
 
-        v.addWidget(form_host)
+        # --- Thermal assumptions ------------------------------------------------
+        self.sp_ambient = QDoubleSpinBox()
+        self.sp_ambient.setRange(-20.0, 80.0)
+        self.sp_ambient.setDecimals(1)
+        self.sp_ambient.setSuffix(" °C")
 
+        amb = getattr(self._project.meta, "ambient_C", 40.0)
+        self.sp_ambient.setValue(float(amb))
+
+        self.sp_ambient.valueChanged.connect(self._on_ambient_changed)
+        form.addRow("Ambient (°C):", self.sp_ambient)
+
+        v.addWidget(form_host)
         # little bottom spacer inside card
         v.addItem(QSpacerItem(0, 4))
+
+        # --- Default vent size (for recommendations) -------------------------------
+        self.cmb_default_vent = QComboBox()
+        self.cmb_default_vent.addItem("— None —", 0.0)
+
+        for label, area in STANDARD_VENTS_CM2.items():
+            self.cmb_default_vent.addItem(f"{label} ({area:.0f} cm²)", area)
+
+        # initialise from project meta
+        meta = self._project.meta
+        if getattr(meta, "default_vent_area_cm2", 0.0) > 0.0:
+            idx = self.cmb_default_vent.findData(meta.default_vent_area_cm2)
+            if idx >= 0:
+                self.cmb_default_vent.setCurrentIndex(idx)
+
+        self.cmb_default_vent.currentIndexChanged.connect(self._on_default_vent_changed)
+        form.addRow("Default vent (IEC):", self.cmb_default_vent)
 
         # ----- Root layout (bg label + centered card) -------------------------
         # keep a reference so we can resize it later
@@ -177,6 +212,7 @@ class ProjectMetaWidget(QWidget):
             }
         """)
 
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if hasattr(self, "_bg") and self._bg is not None:
@@ -200,6 +236,29 @@ class ProjectMetaWidget(QWidget):
                 le.setText(str(val))
                 le.blockSignals(False)
 
+        if hasattr(self, "sp_ambient"):
+            amb = getattr(self._project.meta, "ambient_C", 40.0)
+            self.sp_ambient.blockSignals(True)
+            self.sp_ambient.setValue(float(amb))
+            self.sp_ambient.blockSignals(False)
+
+        # >>> ADD THIS BLOCK <<<
+        if hasattr(self, "cmb_default_vent"):
+            area = float(getattr(self._project.meta, "default_vent_area_cm2", 0.0))
+            self.cmb_default_vent.blockSignals(True)
+
+            if area > 0.0:
+                idx = self.cmb_default_vent.findData(area)
+                if idx >= 0:
+                    self.cmb_default_vent.setCurrentIndex(idx)
+                else:
+                    self.cmb_default_vent.setCurrentIndex(0)  # None
+            else:
+                self.cmb_default_vent.setCurrentIndex(0)
+
+            self.cmb_default_vent.blockSignals(False)
+
+    # --- Meta Set  ---------------------------------------------------------
     def set_meta(self, meta: dict):
         for key, _label in self.FIELDS:
             val = str(meta.get(key, ""))
@@ -213,6 +272,27 @@ class ProjectMetaWidget(QWidget):
                 setattr(self._project.meta, key, val)
             except Exception:
                 pass
+
+    def _on_ambient_changed(self, val: float):
+        try:
+            self._project.meta.ambient_C = float(val)
+            signals.project_changed.emit()
+            signals.project_meta_changed.emit()
+        except Exception:
+            pass
+
+    def _on_default_vent_changed(self, idx: int):
+        try:
+            area = float(self.cmb_default_vent.itemData(idx) or 0.0)
+            label = self.cmb_default_vent.currentText().split(" ")[0] if area > 0 else None
+
+            self._project.meta.default_vent_area_cm2 = area
+            self._project.meta.default_vent_label = label
+
+            signals.project_changed.emit()
+            signals.project_meta_changed.emit()
+        except Exception:
+            pass
 
     def get_meta(self) -> dict:
         out = {}

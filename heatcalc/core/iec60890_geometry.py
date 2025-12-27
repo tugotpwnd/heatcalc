@@ -68,14 +68,14 @@ def b_map_for_tier(t: TierItem, touching: Dict[str, bool]) -> Dict[str, float]:
         "rear": 0.5 if getattr(t, "wall_mounted", False) else 0.9,
     }
 
-    # ---- DEBUG PRINT (SAFE, NO API CHANGES) -----------------------------
-    print(
-        f"[IEC60890][b-factors] Tier '{getattr(t, 'name', '?')}' | "
-        f"top={bmap['top']}, bottom={bmap['bottom']}, "
-        f"left={bmap['left']}, right={bmap['right']}, "
-        f"front={bmap['front']}, rear={bmap['rear']}"
-    )
-    print(f"    touching={touching}, wall_mounted={getattr(t, 'wall_mounted', False)}")
+    # # ---- DEBUG PRINT (SAFE, NO API CHANGES) -----------------------------
+    # print(
+    #     f"[IEC60890][b-factors] Tier '{getattr(t, 'name', '?')}' | "
+    #     f"top={bmap['top']}, bottom={bmap['bottom']}, "
+    #     f"left={bmap['left']}, right={bmap['right']}, "
+    #     f"front={bmap['front']}, rear={bmap['rear']}"
+    # )
+    # print(f"    touching={touching}, wall_mounted={getattr(t, 'wall_mounted', False)}")
     # --------------------------------------------------------------------
 
     return bmap
@@ -275,3 +275,24 @@ def determine_curve_no(
     if exposed == 1:
         return 3
     return 4  # fully enclosed / embedded
+
+def apply_covered_sides_to_tiers(tiers: list[TierItem]) -> None:
+    """
+    Updates TierItem.covered_sides for visual feedback.
+    Covered == face is touching another tier.
+    """
+    for t in tiers:
+        touching = touching_sides(t, tiers)
+
+        # Map directly: touching → covered
+        t.covered_sides = {
+            "left":   bool(touching.get("left")),
+            "right":  bool(touching.get("right")),
+            "top":    bool(touching.get("top")),
+            "bottom": bool(touching.get("bottom", False)),
+        }
+
+        try:
+            t.update()
+        except Exception:
+            pass

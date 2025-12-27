@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QGroupBox,
     QLabel, QFormLayout, QLineEdit, QCheckBox, QSpinBox,
     QSplitter, QListWidget, QListWidgetItem, QAbstractItemView, QTableView,
-    QToolButton, QComboBox, QMessageBox, QSizePolicy
+    QToolButton, QComboBox, QMessageBox, QSizePolicy, QDoubleSpinBox
 )
 from PyQt5.QtGui import QFontMetrics
 
@@ -22,7 +22,9 @@ from ..core.component_store import (
 )
 from .component_table_model import ComponentTableModel
 from .cable_adder import CableAdderWidget
-from ..core.iec60890_geometry import apply_curve_state_to_tiers
+from ..core.iec60890_calc import calc_tier_iec60890
+from ..core.iec60890_geometry import apply_curve_state_to_tiers, apply_covered_sides_to_tiers
+from ..utils.qt import signals
 
 # Enclosure material → effective heat transfer coefficient (W/m²·K)
 ENCLOSURE_MATERIALS = {
@@ -33,6 +35,8 @@ ENCLOSURE_MATERIALS = {
     "Polycarbonate": 3.5,
     "Plastic": 3.5,
 }
+
+from .tier_item import STANDARD_VENTS_CM2
 
 
 class _CatalogProxy(QSortFilterProxyModel):
@@ -187,8 +191,17 @@ class SwitchboardTab(QWidget):
         self.lbl_k = QLabel("–")
         self.lbl_k.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        self.cb_allow_material = QCheckBox("Allow heat dissipation via enclosure material")
+        self.cb_allow_material.stateChanged.connect(self._on_allow_material_changed)
+
+        self.cb_show_live = QCheckBox("Show live thermal overlay")
+        self.cb_show_live.setChecked(True)
+        self.cb_show_live.toggled.connect(self._toggle_live_overlay)
+
         fm.addRow("Material:", self.cmb_material)
         fm.addRow("k (W/m²·K):", self.lbl_k)
+        fm.addRow(self.cb_allow_material)
+        fm.addRow(self.cb_show_live)
 
         left_lay.addWidget(gb_material)
 
@@ -223,8 +236,39 @@ class SwitchboardTab(QWidget):
         self.ed_name = QLineEdit("")
         self.ed_name.editingFinished.connect(self._apply_name)
         self.lbl_size = QLabel("-")
-        self.cb_vent = QCheckBox("Ventilated")
-        self.cb_vent.toggled.connect(self._apply_vent)
+
+        # ---------------- Vent controls (clean layout) ----------------
+
+        self.cb_vent = QCheckBox("Vent enabled")
+        self.cb_vent.toggled.connect(self._apply_vent_enabled)
+
+        self.cmb_vent = QComboBox()
+        self.cmb_vent.addItem("— Select —")
+        for k in STANDARD_VENTS_CM2:
+            self.cmb_vent.addItem(k)
+        self.cmb_vent.addItem("Custom…")
+        self.cmb_vent.currentTextChanged.connect(self._apply_vent_selection)
+
+        self.sp_vent_cm2 = QDoubleSpinBox()
+        self.sp_vent_cm2.setRange(0.0, 1e6)
+        self.sp_vent_cm2.setSuffix(" cm²")
+        self.sp_vent_cm2.setDecimals(1)
+        self.sp_vent_cm2.valueChanged.connect(self._apply_custom_vent)
+
+        # Row: [ Vent size ▼ ][ Custom area ]
+        vent_row = QWidget()
+        vent_row_lay = QHBoxLayout(vent_row)
+        vent_row_lay.setContentsMargins(0, 0, 0, 0)
+        vent_row_lay.setSpacing(6)
+        vent_row_lay.addWidget(self.cmb_vent, 1)
+        vent_row_lay.addWidget(self.sp_vent_cm2, 0)
+
+        # Add to form
+        sel_form.addRow(self.cb_vent)
+        sel_form.addRow("Vent:", vent_row)
+
+        # ---------------- Depth controls ----------------
+
         self.sp_depth = QSpinBox()  # NEW
         self.sp_depth.setRange(10, 5000)
         self.sp_depth.setSuffix(" mm")
@@ -249,8 +293,6 @@ class SwitchboardTab(QWidget):
         sel_form.addRow("Current:", self.lbl_sel_name)
         sel_form.addRow("Rename:", self.ed_name)
         sel_form.addRow("Size (mm):", self.lbl_size)
-        sel_form.addRow("", self.cb_vent)
-
         left_lay.addWidget(gb_sel)
 
         # Selected tier contents (list)
@@ -388,21 +430,6 @@ class SwitchboardTab(QWidget):
         self.cmb_category.currentTextChanged.connect(self.proxy.setCategory)
         self.ed_search.textChanged.connect(self.proxy.setText)
 
-        # ------------------------------------------------------------------ #
-        # Load in meta
-        # ------------------------------------------------------------------ #
-
-        # Initialise enclosure material from project meta
-        mat = getattr(self.project.meta, "enclosure_material", "Sheet metal")
-        k = getattr(self.project.meta, "enclosure_k_W_m2K", ENCLOSURE_MATERIALS.get(mat, 5.5))
-
-        self.cmb_material.blockSignals(True)
-        idx = self.cmb_material.findText(mat)
-        self.cmb_material.setCurrentIndex(idx if idx >= 0 else 0)
-        self.cmb_material.blockSignals(False)
-
-        self.lbl_k.setText(f"{k:.2f}")
-
     # ------------------------------------------------------------------ #
     # Save / Load
     # ------------------------------------------------------------------ #
@@ -443,11 +470,12 @@ class SwitchboardTab(QWidget):
         self.tierGeometryCommitted.emit()
 
     def refresh_from_project(self):
+        # Material
         mat = getattr(self.project.meta, "enclosure_material", "Sheet metal")
         k = getattr(
             self.project.meta,
             "enclosure_k_W_m2K",
-            ENCLOSURE_MATERIALS.get(mat, 5.5)
+            ENCLOSURE_MATERIALS.get(mat, 5.5),
         )
 
         self.cmb_material.blockSignals(True)
@@ -457,6 +485,13 @@ class SwitchboardTab(QWidget):
 
         self.lbl_k.setText(f"{k:.2f}")
 
+        # Allow material dissipation
+        allow = bool(getattr(self.project.meta, "allow_material_dissipation", False))
+        self.cb_allow_material.blockSignals(True)
+        self.cb_allow_material.setChecked(allow)
+        self.cb_allow_material.blockSignals(False)
+
+        self._recompute_all_curves()
 
     # ------------------------------------------------------------------ #
     # Copy / Paste
@@ -520,9 +555,11 @@ class SwitchboardTab(QWidget):
         self._recompute_all_curves()
         self._update_left_from_selection()
 
+
     # ------------------------------------------------------------------ #
     # Actions
     # ------------------------------------------------------------------ #
+
     def _add_tier(self):
         rightmost = 0;
         top = 0
@@ -571,6 +608,7 @@ class SwitchboardTab(QWidget):
     def _on_tier_geometry_committed(self):
         # recompute curve IDs (adjacency can change) and notify others
         self._recompute_all_curves()
+        self._recompute_live_thermal()
         self._update_left_from_selection()
         self.tierGeometryCommitted.emit()
 
@@ -590,14 +628,132 @@ class SwitchboardTab(QWidget):
         if not it:
             return
         it.is_ventilated = on
+        self._recompute_all_curves()
+        self._recompute_live_thermal()
         self._update_left_from_selection()
 
+    # ------------------------------------------------------------------ #
+    # Material dissipation & Material
+    # ------------------------------------------------------------------ #
+
+    def _mark_project_dirty(self):
+        signals.project_changed.emit()
+
     def _on_material_changed(self, text: str):
-        print("Changed project meta ")
         k = ENCLOSURE_MATERIALS.get(text, 0.0)
+
         self.project.meta.enclosure_material = text
         self.project.meta.enclosure_k_W_m2K = k
+
         self.lbl_k.setText(f"{k:.2f}")
+
+        self._mark_project_dirty()  # ✅ autosave trigger
+        self._recompute_live_thermal()
+
+    def _on_allow_material_changed(self, checked: bool):
+        """
+        Project-wide assumption:
+        Allow heat dissipation via enclosure material.
+        """
+        self.project.meta.allow_material_dissipation = bool(checked)
+
+        self._mark_project_dirty()  # ✅ autosave trigger
+        self._recompute_live_thermal()
+
+
+    # ------------------------------------------------------------------ #
+    # Vents
+    # ------------------------------------------------------------------ #
+
+    def _set_vent_controls_enabled(self, enabled: bool):
+        self.cmb_vent.setEnabled(enabled)
+        is_custom = self.cmb_vent.currentText() == "Custom…"
+        self.sp_vent_cm2.setEnabled(enabled and is_custom)
+
+    def _apply_vent_enabled(self, on: bool):
+        it = self._selected_tier()
+        if not it:
+            return
+
+        if not on:
+            it.clear_vent()
+        else:
+            label = next(iter(STANDARD_VENTS_CM2))
+            it.set_vent_preset(label)
+            self.cmb_vent.setCurrentText(label)
+
+        self._set_vent_controls_enabled(on)
+        self._recompute_live_thermal()
+        self._mark_project_dirty()
+
+    def _apply_vent_selection(self, text: str):
+        it = self._selected_tier()
+        if not it or not it.is_ventilated:
+            return
+
+        if text in STANDARD_VENTS_CM2:
+            it.set_vent_preset(text)
+            self.sp_vent_cm2.setEnabled(False)
+
+        elif text == "Custom…":
+            self.sp_vent_cm2.setEnabled(True)
+            it.set_custom_vent_cm2(self.sp_vent_cm2.value())
+
+        self._recompute_live_thermal()
+        self._mark_project_dirty()
+
+    def _apply_custom_vent(self, val: float):
+        it = self._selected_tier()
+        if not it or not it.is_ventilated:
+            return
+        if self.cmb_vent.currentText() == "Custom…":
+            it.set_custom_vent_cm2(val)
+            self._recompute_live_thermal()
+            self._mark_project_dirty()
+
+    # ------------------------------------------------------------------ #
+    # Overlay
+    # ------------------------------------------------------------------ #
+
+    def _toggle_live_overlay(self, on: bool):
+        for t in self._tiers():
+            t.show_live_overlay = bool(on)
+            try:
+                t.update()
+            except Exception:
+                pass
+
+    def _recompute_live_thermal(self):
+        tiers = list(self._tiers())
+
+        # Project-wide meta (safe defaults)
+        ambient = float(getattr(self.project.meta, "ambient_C", 40.0))
+        k_mat = float(getattr(self.project.meta, "enclosure_k_W_m2K", 0.0))
+        allow_mat = bool(getattr(self.project.meta, "allow_material_dissipation", True))
+        wall = bool(self.cb_wall.isChecked())
+        default_vent_area_cm2 = float(getattr(self.project.meta, "default_vent_area_cm2", 0.0))
+
+        for t in tiers:
+            try:
+                t.live_thermal = calc_tier_iec60890(
+                    tier=t,
+                    tiers=tiers,
+                    wall_mounted=wall,
+                    inlet_area_cm2=t.vent_area_for_iec(),  # ← ONLY source
+                    ambient_C=ambient,
+                    enclosure_k_W_m2K=k_mat,
+                    allow_material_dissipation=allow_mat,
+                    default_vent_area_cm2=default_vent_area_cm2,
+                )
+
+
+            except Exception:
+                t.live_thermal = None
+
+            try:
+                t.update()
+            except Exception:
+                pass
 
     # ----- list ops
     def _remove_selected_component(self):
@@ -751,6 +907,19 @@ class SwitchboardTab(QWidget):
         self.cb_vent.blockSignals(True)
         self.cb_vent.setChecked(it.is_ventilated)
         self.cb_vent.blockSignals(False)
+
+        self.cmb_vent.blockSignals(True)
+        if not it.is_ventilated:
+            self.cmb_vent.setCurrentIndex(0)
+        elif it.vent_label in STANDARD_VENTS_CM2:
+            self.cmb_vent.setCurrentText(it.vent_label)
+        else:
+            self.cmb_vent.setCurrentText("Custom…")
+            self.sp_vent_cm2.setValue(it.vent_area_cm2 or 0.0)
+        self.cmb_vent.blockSignals(False)
+
+        self._set_vent_controls_enabled(it.is_ventilated)
+
         self.sp_depth.blockSignals(True)
         self.sp_depth.setValue(it.depth_mm)
         self.sp_depth.blockSignals(False)
@@ -813,6 +982,7 @@ class SwitchboardTab(QWidget):
             # update effective label whenever contents change (affects auto mode)
             self._update_effective_limit_label(it)
 
+        self._recompute_live_thermal()
         self.lbl_total_heat.setText(f"Total heat: {total:.1f} W")
 
     # ------------------------------------------------------------------ #
@@ -821,7 +991,19 @@ class SwitchboardTab(QWidget):
     def _recompute_all_curves(self):
         wall = self.cb_wall.isChecked()
         tiers = list(self._tiers())
-        apply_curve_state_to_tiers(tiers=tiers, wall_mounted=wall, debug=False)
+
+        apply_curve_state_to_tiers(
+            tiers=tiers,
+            wall_mounted=wall,
+            debug=False
+        )
+
+        # visual feedback for covered faces
+        apply_covered_sides_to_tiers(tiers)
+
+        # keep live overlay in sync
+        self._recompute_live_thermal()
+
 
     # ------------------------------------------------------------------ #
     # Depth & Max tempt

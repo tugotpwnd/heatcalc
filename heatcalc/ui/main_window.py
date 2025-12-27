@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self.project_tab_layout.setSpacing(0)
         self.project_tab_layout.addWidget(self.meta_widget)
         self.tabs.addTab(self.project_tab, "Project Info")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # Switchboard Designer
         self.switchboard_tab = SwitchboardTab(self.project, parent=self)
@@ -103,6 +104,11 @@ class MainWindow(QMainWindow):
     # ======================= Autosave Trigger =================================
     def _project_changed(self):
         signals.project_changed.emit()
+
+    def _on_tab_changed(self, idx: int):
+        widget = self.tabs.widget(idx)
+        if hasattr(widget, "refresh_from_project"):
+            widget.refresh_from_project()
 
     # ======================= Menu / Actions =================================
     def _build_menu(self):
@@ -164,6 +170,8 @@ class MainWindow(QMainWindow):
         self.project.meta.enclosure_material = meta.get("enclosure_material", "Sheet metal")
         self.project.meta.enclosure_k_W_m2K = meta.get("enclosure_k_W_m2K", 5.5)
         self.project.meta.allow_material_dissipation = meta.get("allow_material_dissipation", False)
+        self.project.meta.default_vent_area_cm2 = meta.get("default_vent_area_cm2", 0.0)
+        self.project.meta.default_vent_label = meta.get("default_vent_label", None)
 
         # NEW: hydrate IEC 60890 checklist
         self.project.meta.iec60890_checklist = meta.get("iec60890_checklist", [])
@@ -240,6 +248,9 @@ class MainWindow(QMainWindow):
             "enclosure_material": m.enclosure_material,
             "enclosure_k_W_m2K": m.enclosure_k_W_m2K,
             "allow_material_dissipation": m.allow_material_dissipation,
+
+            "default_vent_area_cm2": getattr(m, "default_vent_area_cm2", 0.0),
+            "default_vent_label": getattr(m, "default_vent_label", None),
 
             "iec60890_checklist": getattr(m, "iec60890_checklist", []),
         }
@@ -339,12 +350,6 @@ class MainWindow(QMainWindow):
         else:
             selected_tags = []
 
-        # 2) Ambient
-        amb, ok = QInputDialog.getInt(
-            self, "Ambient Temperature", "Enter ambient temperature (°C):", 25, -20, 90, 1
-        )
-        if not ok:
-            return
 
         # 3) Output PDF path
         out_path_str, _ = QFileDialog.getSaveFileName(self, "Export PDF Report", "", "PDF (*.pdf)")
@@ -361,7 +366,7 @@ class MainWindow(QMainWindow):
                 self.switchboard_tab,
                 self.curvefit_tab,
                 out_path,
-                ambient_C=amb,
+                ambient_C=self.project.meta.ambient_C,
                 header_logo_path=footer_path,
                 footer_image_path=header_path,
                 iec60890_checklist=answers,

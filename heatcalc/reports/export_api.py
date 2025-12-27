@@ -1,12 +1,12 @@
 # reports/export_api.py
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 import re
 
 from PyQt5.QtWidgets import QGraphicsScene
 
-from ..core.airflow import required_airflow_with_wall_loss
 from ..ui.tier_item import TierItem
 from ..core.iec60890_calc import calc_tier_iec60890
 
@@ -20,6 +20,7 @@ from .simple_report import (
 )
 
 try:
+    # Used only to convert drawn grid units -> mm for reporting.
     from ..ui.switchboard_tab import GRID
     MM_PER_GRID = 25
 except Exception:
@@ -118,6 +119,22 @@ def _meta_from_project(project: Any) -> ReportMeta:
     )
 
 
+def _safe_float(obj: Any, name: str, default: float) -> float:
+    try:
+        v = getattr(obj, name)
+        return default if v is None else float(v)
+    except Exception:
+        return float(default)
+
+
+def _safe_bool(obj: Any, name: str, default: bool) -> bool:
+    try:
+        v = getattr(obj, name)
+        return default if v is None else bool(v)
+    except Exception:
+        return bool(default)
+
+
 def export_project_report(
     project: Any,
     switchboard_tab: Any,
@@ -131,26 +148,31 @@ def export_project_report(
     iec60890_checklist=None,
     selected_tier_tags: Optional[List[str]] = None,
 ) -> Path:
+    """
+    Export a PDF report.
 
+    IMPORTANT:
+    - All thermal results (including airflow) come exclusively from calc_tier_iec60890().
+    - No airflow.py usage is permitted.
+    """
     meta = _meta_from_project(project)
 
     scene: QGraphicsScene = getattr(switchboard_tab, "scene", None)
     if scene is None:
         raise RuntimeError("SwitchboardTab.scene is not available")
 
-    # IMPORTANT: refresh curve_no + wall_mounted from the latest geometry
+    # Refresh curve_no + wall_mounted etc from the latest geometry before reporting.
     if hasattr(switchboard_tab, "_recompute_all_curves"):
         try:
             switchboard_tab._recompute_all_curves()
         except Exception:
             pass
 
-    # All tiers for adjacency / thermal calculation truth
+    # All tiers for adjacency / touching checks.
     all_tiers = _scene_tiers(scene)
 
-    # Selected tiers for report content only
+    # Selected tiers for report content.
     report_tier_items = list(all_tiers)
-
     if selected_tier_tags:
         selected_set = {str(s).strip() for s in selected_tier_tags if str(s).strip()}
         if selected_set:
@@ -167,12 +189,13 @@ def export_project_report(
     total_w = sum(t.heat_w for t in report_tiers)
     totals = {"heat_total_w": round(total_w, 3)}
 
-    enclosure = ""
+    enclosure_type = ""
     try:
-        enclosure = getattr(project.meta, "enclosure_type", "") or ""
+        enclosure_type = getattr(project.meta, "enclosure_type", "") or ""
     except Exception:
         pass
 
+    # Curve points (optional) for the report appendix/plots.
     xs, ys = None, None
     for meth in ("export_curve_points", "get_curve_points"):
         if hasattr(curvefit_tab, meth):
@@ -182,61 +205,75 @@ def export_project_report(
             except Exception:
                 pass
 
+    # IEC 60890 / temperature results per tier.
     tier_thermals: List[TierThermal] = []
     if ambient_C is not None:
+        allow_mat = _safe_bool(getattr(project, "meta", object()), "allow_material_dissipation", False)
+        k_m2K = _safe_float(getattr(project, "meta", object()), "enclosure_k_W_m2K", 0.0)
+        enc_mat = getattr(getattr(project, "meta", object()), "enclosure_material", None)
+        default_vent_area_cm2 = _safe_float(getattr(project, "meta", object()), "default_vent_area_cm2", 0.0)
+
         for t in report_tier_items:
+            # Prefer per-tier vent size when present; otherwise fall back to the report/default inlet area.
+            if getattr(t, "is_ventilated", False):
+                tier_inlet_cm2 = float(getattr(t, "vent_area_for_iec", lambda: 0.0)() or 0.0)
+            else:
+                tier_inlet_cm2 = 0.0  # no inlet area
+
             res = calc_tier_iec60890(
                 tier=t,
-                tiers=all_tiers,  # IMPORTANT: use full model for touching checks
+                tiers=all_tiers,  # IMPORTANT: full model for touching checks
                 wall_mounted=bool(getattr(t, "wall_mounted", False)),
-                inlet_area_cm2=inlet_area_cm2,
+                inlet_area_cm2=float(tier_inlet_cm2),
                 ambient_C=float(ambient_C),
-            )
-
-            wall = required_airflow_with_wall_loss(
-                P_W=res["P"],
-                amb_C=ambient_C,
-                max_internal_C=res["limit_C"],
-                enclosure_area_m2=res["Ae"],
-                allow_wall_dissipation=project.meta.allow_material_dissipation,
-                k_W_per_m2K=project.meta.enclosure_k_W_m2K,
+                enclosure_k_W_m2K=float(k_m2K),
+                allow_material_dissipation=bool(allow_mat),
+                default_vent_area_cm2=default_vent_area_cm2
             )
 
             tier_thermals.append(
                 TierThermal(
                     tag=str(getattr(t, "name", getattr(t, "tag", "Tier"))),
-                    Ae=res["Ae"],
-                    P_W=res["P"],
-                    k=res["k"],
-                    c=res["c"],
-                    x=res["x"],
-                    f=res["f"],
-                    g=res["g"],
-                    vent=t.is_ventilated,
-                    curve=t.curve_no,
-                    ambient_C=res["ambient_C"],
+                    Ae=float(res.get("Ae", 0.0)),
+                    P_W=float(res.get("P", 0.0)),
+                    k=float(res.get("k", 0.0)),
+                    c=float(res.get("c", 0.0)),
+                    x=float(res.get("x", 0.0)),
+                    f=res.get("f", None),
+                    g=res.get("g", None),
+                    vent=bool(res.get("ventilated", False)),
+                    curve=int(getattr(t, "curve_no", 1) or 1),
+                    ambient_C=float(res.get("ambient_C", ambient_C)),
 
-                    dt_mid=res["dt_mid"],
-                    dt_top=res["dt_top"],
-                    dt_075=res.get("dt_075"),
+                    dt_mid=float(res.get("dt_mid", 0.0)),
+                    dt_top=float(res.get("dt_top", 0.0)),
+                    dt_075=res.get("dt_075", None),
 
-                    T_mid=res["T_mid"],
-                    T_top=res["T_top"],
-                    T_075=res.get("T_075"),
+                    T_mid=float(res.get("T_mid", 0.0)),
+                    T_top=float(res.get("T_top", 0.0)),
+                    T_075=res.get("T_075", None),
 
-                    max_C=res["limit_C"],
-                    compliant_mid=res["compliant_mid"],
-                    compliant_top=res["compliant_top"],
+                    max_C=float(res.get("limit_C", getattr(t, "max_temp_C", 70))),
+                    compliant_mid=bool(res.get("compliant_mid", False)),
+                    compliant_top=bool(res.get("compliant_top", False)),
 
-                    enclosure_material=project.meta.enclosure_material,
-                    enclosure_k=project.meta.enclosure_k_W_m2K,
+                    # New: IEC calc now returns airflow and dissipation split directly.
+                    airflow_m3h=res.get("airflow_m3h", None),
+                    P_material_W=res.get("P_material", None),
+                    P_cooling_W=res.get("P_cooling", None),
+                    vent_recommended=bool(res.get("vent_recommended", False)),
+                    inlet_area_cm2=float(res.get("inlet_area_cm2", tier_inlet_cm2)),
 
-                    q_walls_W=wall.q_walls_W,
-                    q_fans_W=wall.q_fans_W,
-                    airflow_m3h=wall.airflow_m3h,
+                    naturally_vented=bool(getattr(t, "is_ventilated", False)),
+                    natural_vent_area_cm2=float(getattr(t, "vent_area_cm2", 0.0) or 0.0),
+                    natural_vent_label=getattr(t, "vent_label", None),
+
+                    enclosure_material=str(enc_mat) if enc_mat else None,
+                    enclosure_k=float(res.get("enclosure_k_W_m2K", k_m2K)),
+                    allow_material_dissipation=bool(res.get("allow_material_dissipation", allow_mat)),
 
                     dims_m=_dims_m_from_tier(t),
-                    surfaces=res["surfaces"],
+                    surfaces=res.get("surfaces", None),
                     figures_used=res.get("figures_used", []),
                 )
             )
@@ -245,7 +282,7 @@ def export_project_report(
     return export_simple_report(
         out_pdf=out_pdf,
         meta=meta,
-        enclosure_type=enclosure,
+        enclosure_type=enclosure_type,
         tiers=report_tiers,
         totals=totals,
         scene=scene,

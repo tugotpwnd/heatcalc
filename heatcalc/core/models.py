@@ -16,6 +16,8 @@ class ProjectMeta:
     enclosure_material: str = "Sheet metal"
     enclosure_k_W_m2K: float = 5.5
     allow_material_dissipation: bool = False
+    default_vent_label: str | None = "100×100"
+    default_vent_area_cm2: float = 100.0
     # NEW: stores list of {item, condition, result}
     iec60890_checklist: List[Dict[str, str]] = field(default_factory=list)
 
@@ -76,8 +78,10 @@ class BoardLayout:
 
 @dataclass
 class CalcInputs:
+    # DEPRECATED – ambient now lives in ProjectMeta
     ambient_temp_c: float = 25.0
-    airflow_m3ph: Optional[float] = None  # if vented, placeholder
+    airflow_m3ph: Optional[float] = None
+
 
 @dataclass
 class CalcOutputs:

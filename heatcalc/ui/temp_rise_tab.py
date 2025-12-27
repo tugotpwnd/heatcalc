@@ -15,7 +15,6 @@ from matplotlib.figure import Figure
 from .tier_item import TierItem
 from .designer_view import GRID
 from ..core import curvefit
-from ..core.airflow import required_airflow_with_wall_loss
 from ..core.iec60890_calc import calc_tier_iec60890
 
 MM_PER_GRID = 25.0  # same mapping you’ve been using
@@ -51,27 +50,13 @@ class TempRiseTab(QWidget):
         # Options
         opts = QGroupBox("Options")
         of = QFormLayout(opts)
-        # Ambient temperature (required)
-        self.ed_ambient = QLineEdit()
-        self.ed_ambient.setPlaceholderText("Ambient temperature (°C)")
-        self.ed_ambient.setValidator(QIntValidator(-50, 90, self))
-        self.ed_ambient.textChanged.connect(self._on_ambient_changed)
-        of.addRow("Ambient (°C):", self.ed_ambient)
 
-        # Allow enclosure material heat dissipation (project-wide)
-        self.cb_material_diss = QCheckBox("Allow enclosure material heat dissipation")
-        self.cb_material_diss.stateChanged.connect(self._on_material_dissipation_toggled)
-        of.addRow("", self.cb_material_diss)
-
-        # Inlet opening area for ventilated enclosures
-        self.sb_opening = QSpinBox()
-        self.sb_opening.setRange(0, 5000)
-        self.sb_opening.setValue(CM2_DEFAULT)
-        of.addRow("Inlet area (cm²):", self.sb_opening)
+        self.lbl_ambient = QLabel()
+        self.lbl_ambient.setStyleSheet("color: #888;")
+        of.addRow("Ambient:", self.lbl_ambient)
 
         # Calculate button (disabled until ambient provided)
         self.btn_calc = QPushButton("Calculate")
-        self.btn_calc.setEnabled(False)
         self.btn_calc.clicked.connect(self.calculate_all)
 
         left_l.addWidget(opts)
@@ -115,56 +100,12 @@ class TempRiseTab(QWidget):
         lay = QHBoxLayout(self)
         lay.addWidget(split)
 
-        # ------------------------------------------------------------------ #
-        # Load in meta
-        # ------------------------------------------------------------------ #
-        allow = bool(getattr(self.project.meta, "allow_material_dissipation", False))
-        self.cb_material_diss.blockSignals(True)
-        self.cb_material_diss.setChecked(allow)
-        self.cb_material_diss.blockSignals(False)
-
-        # --- Initialise ambient from project meta ---
-        proj = self.project
-        amb = getattr(proj.meta, "ambient_C", None)
-
-        self.ed_ambient.blockSignals(True)
-        if amb is None:
-            self.ed_ambient.clear()
-            self.ambient_C = None
-        else:
-            self.ed_ambient.setText(f"{int(amb)}")
-            self.ambient_C = float(amb)
-        self.ed_ambient.blockSignals(False)
-
-        self._update_calc_enabled()
+        self.refresh_from_project()
 
     # --------------------------------------------------------------------- UI
-
-    def _on_material_dissipation_toggled(self, state: int):
-        allow = bool(state == Qt.Checked)
-        self.project.meta.allow_material_dissipation = allow
-
-    def _on_ambient_changed(self, text: str):
-        text = (text or "").strip()
-        proj = self.project
-
-
-        if text == "":
-            self.ambient_C = None
-            proj.meta.ambient_C = None
-        else:
-            try:
-                val = float(int(text))  # validator ensures int
-                self.ambient_C = val
-                proj.meta.ambient_C = val
-            except Exception:
-                self.ambient_C = None
-                proj.meta.ambient_C = None
-
-        self._update_calc_enabled()
-
-    def _update_calc_enabled(self):
-        self.btn_calc.setEnabled(self.ambient_C is not None)
+    def refresh_from_project(self):
+        amb = float(getattr(self.project.meta, "ambient_C", 40.0))
+        self.lbl_ambient.setText(f"{amb:.1f} °C")
 
     # --------------------------------------------------------------------- calc
     def calculate_all(self):
@@ -180,7 +121,8 @@ class TempRiseTab(QWidget):
         self.tier_list.clear()
         self._results.clear()
 
-        amb = float(self.ambient_C or 0.0)
+        amb = float(self.project.meta.ambient_C)
+        default_vent_area_cm2=float(self.project.meta.default_vent_area_cm2)
 
         for t in tiers:
             res = calc_tier_iec60890(
@@ -188,7 +130,8 @@ class TempRiseTab(QWidget):
                 tiers=tiers,
                 wall_mounted=t.wall_mounted,
                 inlet_area_cm2=self.sb_opening.value(),
-                ambient_C=self.ambient_C,
+                ambient_C=amb,
+                default_vent_area_cm2=default_vent_area_cm2,
             )
 
             # compute final absolute temp
@@ -240,7 +183,7 @@ class TempRiseTab(QWidget):
             return
 
         r = self._results[row]
-        amb = float(self.ambient_C or 0.0)
+        amb = float(self.project.meta.ambient_C)
 
         self.ax.cla()
         self.ax.grid(True, alpha=0.25)
@@ -333,7 +276,7 @@ class TempRiseTab(QWidget):
             self.lbl_guidance.setText("–")
             return
 
-        amb = float(self.ambient_C or 0.0)
+        amb = float(self.project.meta.ambient_C)
 
         # Effective temperatures from calc
         Tmid = r["T_mid"]

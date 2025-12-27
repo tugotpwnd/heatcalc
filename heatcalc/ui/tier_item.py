@@ -1,6 +1,6 @@
 from typing import Dict, List, Any, Tuple
 from PyQt5.QtCore import QRectF, QPointF, pyqtSignal, Qt, QSizeF
-from PyQt5.QtGui import QPen, QBrush, QFont, QColor
+from PyQt5.QtGui import QPen, QBrush, QFont, QColor, QFontMetrics
 from PyQt5.QtWidgets import (
     QGraphicsObject, QStyleOptionGraphicsItem, QWidget,
     QGraphicsRectItem, QMenu, QGraphicsItem
@@ -13,6 +13,15 @@ from dataclasses import dataclass, asdict
 
 HANDLE = 10  # px
 CORNERS = ("tl", "tr", "bl", "br")
+# --- Vent presets (IEC area in cm²) ----------------------------------------
+STANDARD_VENTS_CM2 = {
+    "50×50": 25.0,     # 50 mm × 50 mm = 25 cm²
+    "75×75": 56.25,
+    "100×100": 100.0,
+    "150×150": 225.0,
+    "200×200": 400.0,
+}
+
 
 
 class _Handle(QGraphicsRectItem):
@@ -193,23 +202,48 @@ class ComponentEntry:
 
 class TierItem(ResizableBox):
     """A tier: draggable/resizable, components, curve tag, context menu delete."""
-    requestDelete = pyqtSignal(object)   # self
-    geometryCommitted = pyqtSignal()    # <- emit once after a resize gesture
-    positionCommitted = pyqtSignal()    # <- emit once after a move gesture
+    requestDelete = pyqtSignal(object)
+    geometryCommitted = pyqtSignal()  # <- emit once after a resize gesture
+    positionCommitted = pyqtSignal()  # <- emit once after a move gesture
 
-    def __init__(self, name: str, x=0, y=0, w=GRID*8, h=GRID*6, depth_mm: int = 200):
+    def __init__(self, name: str, x=0, y=0, w=GRID * 8, h=GRID * 6, depth_mm: int = 200):
         super().__init__(x, y, w, h, QColor("#00aaff"))
+
         self.name = name
-        self.is_ventilated = False
-        self.component_entries: List[ComponentEntry] = []  # persisted components with heat
-        self.cables: List[CableEntry] = []     # <-- NEW: persistent list of cables
+
+        # --- Ventilation ----------------------------------------------------
+        # Ventilation (IEC 60890 uses cm²)
+        self.vent_area_cm2: float | None = None
+        self.vent_label: str | None = None
+        self.is_ventilated: bool = False
+
+        # --- Contents -------------------------------------------------------
+        self.component_entries: list[ComponentEntry] = []
+        self.cables: list[CableEntry] = []
+
+        # --- Geometry / IEC inputs -----------------------------------------
         self.wall_mounted = False
-        self.max_temp_C = 70  # manual limit (used when auto flag is off)
-        self.use_auto_component_temp = False  # NEW: if True, use lowest component rating
         self.curve_no = 1
         self.depth_mm = int(depth_mm)
+
+        # --- Temperature limits --------------------------------------------
+        self.max_temp_C = 70
+        self.use_auto_component_temp = False
+
+        # --- Interaction ---------------------------------------------------
         self.setZValue(5)
         self._last_pos_for_commit = QPointF(self.pos())
+
+        self.covered_sides = {
+            "left": False,
+            "right": False,
+            "top": False,
+            "bottom": False,
+        }
+
+        # --- Live IEC overlay ----------------------------------------------
+        self.live_thermal: dict | None = None
+        self.show_live_overlay: bool = True
 
     def mouseReleaseEvent(self, ev):
         super().mouseReleaseEvent(ev)
@@ -231,6 +265,33 @@ class TierItem(ResizableBox):
 
     def itemChange(self, change, value):
         return super().itemChange(change, value)
+
+    # ------------------------------------------------------------------ Vent
+
+    def set_vent_preset(self, label: str):
+        if label not in STANDARD_VENTS_CM2:
+            raise ValueError(f"Unknown vent preset: {label}")
+
+        self.is_ventilated = True
+        self.vent_label = label
+        self.vent_area_cm2 = float(STANDARD_VENTS_CM2[label])
+        self.update()
+
+    def set_custom_vent_cm2(self, area_cm2: float):
+        self.is_ventilated = area_cm2 > 0
+        self.vent_label = "Custom"
+        self.vent_area_cm2 = max(0.0, float(area_cm2)) or None
+        self.update()
+
+    def clear_vent(self):
+        self.is_ventilated = False
+        self.vent_label = None
+        self.vent_area_cm2 = None
+        self.update()
+
+    def vent_area_for_iec(self) -> float:
+        return float(self.vent_area_cm2 or 0.0)
+
 
     # ----- heat helpers -----------------------------------------------------
 
@@ -288,12 +349,44 @@ class TierItem(ResizableBox):
     def paint(self, painter, option, widget=None):
         super().paint(painter, option, widget)
 
-        # --- title (big) ---
-        painter.setPen(QPen(QColor("#eaf2ff")))
+        # --- cooling state (authoritative) ---
+        cooling_required = False
+        if self.live_thermal:
+            cooling_required = self.live_thermal.get("P_cooling", 0.0) > 0.0
+
+        # --- passive vent indicator (if tier has vents) ---
+        if self.is_ventilated:
+            cx = self._rect.center().x()
+            y = self._rect.top() + 22  # further down
+
+            pen = QPen(QColor("#a8dadc"), 2.5)  # thicker stroke
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+
+            # ~4× larger vent symbol
+            wave_w = 40
+            wave_h = 14
+            gap = 10
+
+            for i in range(3):
+                x0 = cx - wave_w / 2
+                y0 = y + i * gap
+                painter.drawArc(
+                    QRectF(x0, y0, wave_w, wave_h),
+                    0 * 16,
+                    180 * 16
+                )
+
+        # --- title (big, state-coloured) ---
         title_font = QFont()
         title_font.setPointSize(18)
         title_font.setBold(True)
         painter.setFont(title_font)
+
+        if cooling_required:
+            painter.setPen(QPen(QColor("#ff9f1c")))  # orange
+        else:
+            painter.setPen(QPen(QColor("#2ec4b6")))  # green
 
         # draw name centered slightly above middle
         name_rect = QRectF(self._rect.left(), self._rect.center().y() - 18,
@@ -319,6 +412,199 @@ class TierItem(ResizableBox):
         painter.setPen(QPen(QColor("#111")))
         painter.setFont(QFont("", 12))
         painter.drawText(tag, Qt.AlignCenter, str(self.curve_no))
+
+
+        # --- touching faces indicator ---
+        inset = 6.0
+        pen = QPen(QColor("#FFD166"), 2)
+        painter.setPen(pen)
+
+        r = self._rect
+
+        if self.covered_sides.get("left"):
+            painter.drawLine(
+                QPointF(r.left() + inset, r.top() + inset),
+                QPointF(r.left() + inset, r.bottom() - inset),
+            )
+
+        if self.covered_sides.get("right"):
+            painter.drawLine(
+                QPointF(r.right() - inset, r.top() + inset),
+                QPointF(r.right() - inset, r.bottom() - inset),
+            )
+
+        if self.covered_sides.get("top"):
+            painter.drawLine(
+                QPointF(r.left() + inset, r.top() + inset),
+                QPointF(r.right() - inset, r.top() + inset),
+            )
+
+        # --- live IEC 60890 overlay (readable on dark background) ---
+        if self.show_live_overlay and self.live_thermal:
+            lt = self.live_thermal
+
+            lines = [
+                f"Ae: {lt.get('Ae', 0.0):.2f} m²",
+                f"ΔT(1.0t): {lt.get('dt_top', 0.0):.1f} K",
+            ]
+
+            Pmat = lt.get("P_material", 0.0)
+            Pcool = lt.get("P_cooling", 0.0)
+
+            if Pcool > 0.0:
+                lines.append(f"Pmat: {Pmat:.1f} W")
+                lines.append(f"Pcool: {Pcool:.1f} W")
+            else:
+                lines.append("Cooling: NOT REQUIRED")
+
+            airflow = lt.get("airflow_m3h")
+            if airflow is not None and airflow > 0:
+                lines.append(f"Air: {airflow:.0f} m³/h")
+
+            # --- font: fixed-width, crisp ---
+            font = QFont("Consolas")  # Windows-safe, monospaced
+            font.setPointSize(9)
+            painter.setFont(font)
+
+            fm = QFontMetrics(font)
+            line_h = fm.height()
+
+            # --- text position ---
+            x = self._rect.left() + 6
+            y = self._rect.bottom() - (len(lines) * line_h) - 6
+
+            # --- shadow (dark outline for contrast) ---
+            painter.setPen(QColor(0, 0, 0, 200))
+            for i, line in enumerate(lines):
+                painter.drawText(
+                    QRectF(x + 1, y + i * line_h + 1, self._rect.width(), line_h),
+                    Qt.AlignLeft | Qt.AlignVCenter,
+                    line,
+                )
+
+            # --- main text (white) ---
+            painter.setPen(QColor(255, 255, 255, 235))
+            for i, line in enumerate(lines):
+                painter.drawText(
+                    QRectF(x, y + i * line_h, self._rect.width(), line_h),
+                    Qt.AlignLeft | Qt.AlignVCenter,
+                    line,
+                )
+
+            ctx_lines = [
+                f"Curve: {lt.get('curve_no', '—')}",
+                f"k={lt.get('k', 0.0):.3f}",
+                f"c={lt.get('c', 0.0):.3f}",
+                f"x={lt.get('x', 0.0):.3f}",
+            ]
+
+            g = lt.get("g")
+            if g is not None:
+                ctx_lines.append(f"g={g:.3f}")
+            f = lt.get("f")
+            if f is not None:
+                ctx_lines.append(f"f={f:.3f}")
+
+            # d is not always present (wall-mounted cases)
+            if lt.get("d") is not None:
+                ctx_lines.append(f"d={lt.get('d'):.3f}")
+
+            coeffs = lt.get("coeff_sources", [])
+            if coeffs:
+                ctx_lines.append("Coeff: " + ", ".join(coeffs))
+
+            profile = lt.get("profile_source")
+            if profile:
+                ctx_lines.append("Temp Rise: " + profile)
+
+            font = QFont("Consolas")
+            font.setPointSize(8)
+            painter.setFont(font)
+
+            fm = QFontMetrics(font)
+            lh = fm.height()
+
+            # Position: bottom-right, inside tier
+            PAD = 4
+            BLOCK_W = min(160, self._rect.width() - 2 * PAD)
+
+            x = self._rect.right() - BLOCK_W - PAD
+
+            y = self._rect.bottom() - (len(ctx_lines) * lh) - 6
+
+            # Shadow
+            painter.setPen(QColor(0, 0, 0, 200))
+            for i, line in enumerate(ctx_lines):
+                painter.drawText(
+                    QRectF(x + 1, y + i * lh + 1, BLOCK_W, lh),
+                    Qt.AlignLeft | Qt.AlignVCenter,
+                    line,
+                )
+
+            # Text
+            painter.setPen(QColor(255, 255, 255, 220))
+            for i, line in enumerate(ctx_lines):
+                painter.drawText(
+                    QRectF(x, y + i * lh, BLOCK_W, lh),
+                    Qt.AlignLeft | Qt.AlignVCenter,
+                    line,
+                )
+
+            vent_rec = lt.get("vent_recommended", False)
+
+            if vent_rec:
+                font = QFont("Consolas")
+                font.setPointSize(8)
+                font.setBold(True)
+                painter.setFont(font)
+
+                text = "⚠ VENT RECOMMENDED"
+
+                fm = QFontMetrics(font)
+                w = fm.horizontalAdvance(text) + 8
+                h = fm.height() + 4
+
+                x = self._rect.left() + 16  # move right
+                y = self._rect.top() + 14  # move down
+
+                # Background (red, semi-transparent)
+                painter.setBrush(QColor(180, 40, 40, 200))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(QRectF(x, y, w, h), 4, 4)
+
+                # Text
+                painter.setPen(QColor(255, 255, 255))
+                painter.drawText(
+                    QRectF(x + 4, y + 2, w, h),
+                    Qt.AlignLeft | Qt.AlignVCenter,
+                    text,
+                )
+
+            # --- fan indicator (active cooling required) ---
+            if cooling_required:
+                cx = self._rect.center().x()
+                y = self._rect.bottom() - 26  # lift slightly off bottom edge
+
+                pen = QPen(QColor("#ff9f1c"), 2.5)  # orange, matches title
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+
+                radius = 20
+
+                # outer circle
+                painter.drawEllipse(
+                    QPointF(cx, y),
+                    radius,
+                    radius
+                )
+
+                # fan blades (simple 3-blade symbol)
+                for angle_deg in (0, 120, 240):
+                    painter.save()
+                    painter.translate(cx, y)
+                    painter.rotate(angle_deg)
+                    painter.drawLine(0, 0, radius, 0)
+                    painter.restore()
 
     # ----- Cables API -----
     def add_cable(self, payload: Dict[str, Any]) -> CableEntry:
@@ -396,18 +682,30 @@ class TierItem(ResizableBox):
         return rows
 
     # ----- JSON (de)serialisation -----
-    # ----- JSON (de)serialisation ------------------------------------------
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "is_ventilated": self.is_ventilated,
+
+            "vent": {
+                "enabled": self.is_ventilated,
+                "area_cm2": self.vent_area_cm2,
+                "label": self.vent_label,
+            },
+
+            # Contents
             "component_entries": [asdict(ce) for ce in self.component_entries],
             "cables": [asdict(c) for c in self.cables],
+
+            # Geometry / IEC
             "wall_mounted": self.wall_mounted,
             "curve_no": self.curve_no,
             "depth_mm": int(self.depth_mm),
-            "max_temp_C": int(getattr(self, "max_temp_C", 70)),
-            "use_auto_component_temp": bool(getattr(self, "use_auto_component_temp", False)),  # NEW
+
+            # Limits
+            "max_temp_C": int(self.max_temp_C),
+            "use_auto_component_temp": bool(self.use_auto_component_temp),
+
+            # Position
             "x": float(self.pos().x()),
             "y": float(self.pos().y()),
             "w": float(self._rect.width()),
@@ -424,13 +722,23 @@ class TierItem(ResizableBox):
             h=float(d.get("h", GRID * 6)),
             depth_mm=int(d.get("depth_mm", 200)),
         )
-        t.is_ventilated = bool(d.get("is_ventilated", False))
+
+        v = d.get("vent", {})
+        t.is_ventilated = bool(v.get("enabled", False))
+        t.vent_area_cm2 = v.get("area_cm2")
+        t.vent_label = v.get("label")
+
+        # Backward compatibility
+        if t.is_ventilated and t.vent_area_cm2 is None:
+            t.vent_label = "Unspecified"
+
+        # IEC / geometry
         t.wall_mounted = bool(d.get("wall_mounted", False))
         t.curve_no = int(d.get("curve_no", 1))
         t.max_temp_C = int(d.get("max_temp_C", 70))
         t.use_auto_component_temp = bool(d.get("use_auto_component_temp", False))
 
-        # Backward compatible: missing max_temp_C on components defaults to 70
+        # Components
         t.component_entries = [
             ComponentEntry(
                 key=ce.get("key", ""),
@@ -443,6 +751,8 @@ class TierItem(ResizableBox):
             )
             for ce in d.get("component_entries", [])
         ]
+
         t.cables = [CableEntry.from_dict(c) for c in d.get("cables", [])]
+
         t.update()
         return t
