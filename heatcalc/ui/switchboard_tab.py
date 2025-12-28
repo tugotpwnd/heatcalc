@@ -327,6 +327,21 @@ class SwitchboardTab(QWidget):
         tr.addWidget(self.cmb_category, 0); tr.addWidget(self.ed_search, 1)
         v_db.addWidget(top_row)
 
+        self.btn_refresh_components = QToolButton()
+        self.btn_refresh_components.setText("↻")
+        self.btn_refresh_components.setToolTip("Reload components.csv")
+        self.btn_refresh_components.clicked.connect(self._reload_components)
+
+        top_row = QWidget()
+        tr = QHBoxLayout(top_row)
+        tr.setContentsMargins(0, 0, 0, 0)
+
+        tr.addWidget(self.cmb_category, 0)
+        tr.addWidget(self.ed_search, 1)
+        tr.addWidget(self.btn_refresh_components, 0)
+
+        v_db.addWidget(top_row)
+
         self.tbl = QTableView()
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
