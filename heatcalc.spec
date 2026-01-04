@@ -10,15 +10,16 @@ pathex = []
 datas = []
 # --- Data files you need at runtime (csv, png, etc.) ---
 # --- Your app data files ---
+# --- Collect ALL non-.py data under heatcalc/data recursively ---
+datas = collect_data_files(
+    'heatcalc.data',
+    include_py_files=False
+)
 datas += [
-    ('heatcalc/data/cable_table.csv', 'heatcalc/data'),
-    ('heatcalc/data/components.csv', 'heatcalc/data'),
-    ('heatcalc/data/logo.png', 'heatcalc/data'),
-    ('heatcalc/data/title.png', 'heatcalc/data'),
     ('heatcalc/assets/Logo.ico', 'heatcalc/assets'),
-    ('heatcalc/assets/menuwindow.png', 'heatcalc/assets'),
     ('heatcalc/assets/coverpage.pdf', 'heatcalc/assets'),
 ]
+
 datas += [("heatcalc/data/components.csv", ".")]   # <-- put the CSV next to the exe
 
 
@@ -72,7 +73,7 @@ exe = EXE(
     entitlements_file=None,
     icon='heatcalc/assets/Logo.ico',
     optimize=2,           # compile .pyc with -OO
-    onefile=True,      # <-- make it a single .exe
+    onefile=False,      # <-- make it a single .exe
 )
 
 coll = COLLECT(
