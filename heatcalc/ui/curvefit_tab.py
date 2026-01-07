@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTabWidget
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QHBoxLayout, QPushButton
+
 import matplotlib as mpl
 
 from ..core import curvefit
@@ -33,6 +34,19 @@ class CurveFitTab(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+
+        # --- top toolbar ---
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(6, 6, 6, 0)
+
+        btn_reload = QPushButton("Reload curves")
+        btn_reload.setToolTip("Replot IEC curves using current figure definitions")
+        btn_reload.clicked.connect(self.redraw_all)
+
+        toolbar.addWidget(btn_reload)
+        toolbar.addStretch(1)
+
+        lay.addLayout(toolbar)
         lay.addWidget(self.tabs)
 
         # Build one figure tab per IEC figure definition
@@ -120,26 +134,35 @@ class CurveFitTab(QWidget):
                 inlet_area_cm2=inlet_area_cm2 if inlet_area_cm2 > 0 else 300.0,  # fallback
             )
 
-            # used contains keys like "k", "c" → CurvePoint(figure, x, y, value)
+            # used contains keys like "k", "c" → CurvePoint(figure, x, y, snapped_param)
             for coeff_key, cp in used.items():
                 fig_key = cp.figure  # "Fig3"..."Fig8"
                 w = self._widgets.get(fig_key)
                 if not w:
                     continue
 
-                # We plot: x vs (k or c). cp.value is the coefficient
-                # Annotation text: tier name + variable + value
                 var_label = "k" if coeff_key == "k" else "c" if coeff_key == "c" else coeff_key
 
-                text = f"{tier_name}\n{var_label} = {cp.value:.3f}"
+                # Base annotation: tier name + x + y
+                text = (
+                    f"{tier_name}\n"
+                    f"x = {cp.x:.1f}\n"
+                    f"{var_label} = {cp.y:.3f}"
+                )
 
-                # For ventilated figs, cp.x is inlet area. For others, cp.x is Ae/f/g.
+                # If the point was snapped to a defined IEC curve family, show it
+                if cp.snapped_param is not None:
+                    if fig_key == "Fig5":
+                        text += f"\n(Ae = {cp.snapped_param:g} m²)"
+                    elif fig_key == "Fig6":
+                        text += f"\n(f = {cp.snapped_param:g})"
+
                 pt = TierPoint(
                     tier_name=tier_name,
                     x=float(cp.x),
-                    y=float(cp.value),
+                    y=float(cp.y),
                     text=text,
-                    color=None,  # CurveFigureWidget will resolve via its tier color map
+                    color=None,  # CurveFigureWidget resolves via tier color map
                 )
 
                 w.draw_tier_points([pt])

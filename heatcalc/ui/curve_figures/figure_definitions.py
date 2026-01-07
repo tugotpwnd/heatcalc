@@ -1,6 +1,7 @@
 # heatcalc/ui/curve_figures/figure_definitions.py
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -22,40 +23,134 @@ class FigureDef:
 
 def _draw_fig3(ax: Axes) -> None:
     # IEC 60890 Fig.3 — k vs Ae (no ventilation, Ae > 1.25 m²)
-    xs = [i * 0.1 for i in range(5, 121)]  # 0.5 .. 12.0
+
+    # Valid IEC domain ONLY
+    xs = [1.25 + i * 0.05 for i in range(int((12.0 - 1.25) / 0.05) + 1)]
     ys = [curvefit.k_fig3(x) for x in xs]
+
     ax.plot(xs, ys, lw=1.6, label="IEC curve")
+
+    # Axis formatting to match IEC figure
+    ax.set_xlim(1.25, 12.0)
+    ax.set_ylim(0, 1.2)
+
+    ax.set_xlabel(r"$A_e$ (m²)")
+    ax.set_ylabel("Enclosure constant k (—)")
+
+    ax.grid(True, which="major", ls="-", alpha=0.35)
+    ax.grid(True, which="minor", ls=":", alpha=0.25)
+    ax.minorticks_on()
 
 
 def _draw_fig4(ax: Axes) -> None:
-    # IEC 60890 Fig.4 — c vs f (no ventilation)
-    fvals = [1.0 + i * 0.1 for i in range(0, 101)]  # 1.0 .. 11.0
-    for curve_no in (1, 2, 3, 4, 5):
+    # IEC 60890 Fig.4 — c vs f (no ventilation, Ae > 1.25 m²)
+
+    # f range per IEC figure
+    fvals = [i * 0.1 for i in range(1, 171)]  # 0.1 .. 17.0
+
+    # Installation types / curve numbers (ordered top → bottom as IEC)
+    curve_numbers = [1, 2, 3, 4, 5]
+
+    for curve_no in curve_numbers:
         ys = [curvefit.c_fig4(curve_no, f) for f in fvals]
-        ax.plot(fvals, ys, lw=1.2, label=f"Curve {curve_no}")
+        ax.plot(
+            fvals,
+            ys,
+            lw=1.4,
+            label=f"{curve_no}",
+        )
+
+    # Axis formatting to match IEC figure
+    ax.set_xlim(0, 17)
+    ax.set_ylim(1.1, 1.7)
+
+    ax.set_xlabel("f (—)")
+    ax.set_ylabel("Temperature distribution factor c (—)")
+
+    ax.grid(True, which="major", ls="-", alpha=0.35)
+    ax.grid(True, which="minor", ls=":", alpha=0.25)
+    ax.minorticks_on()
 
 
 def _draw_fig5(ax: Axes) -> None:
     # IEC 60890 Fig.5 — k vs inlet opening area (ventilated, Ae > 1.25 m²)
-    areas = [i * 10 for i in range(0, 71)]  # 0 .. 700 cm²
-    for ae in sorted(curvefit.FIG5_CURVES):
+
+    # Inlet opening area range per IEC
+    areas = [i * 10 for i in range(1, 101)]  # 10 .. 1000 cm²
+
+    # Effective cooling surface values shown in IEC figure
+    ae_values = [1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14]
+
+    for ae in ae_values:
         ys = [curvefit.k_fig5(ae, a) for a in areas]
-        ax.plot(areas, ys, lw=1.0, alpha=0.85, label=f"Ae = {ae:g} m²")
+        ax.plot(
+            areas,
+            ys,
+            lw=1.3,
+            label=f"{ae:g}",
+        )
+
+    # Axis formatting to match IEC figure
+    ax.set_xlim(0, 1000)
+    ax.set_ylim(0.05, 0.50)
+
+    ax.set_xlabel(r"$S_{air}$ (cm²)")
+    ax.set_ylabel("Enclosure constant k (—)")
+
+    ax.grid(True, which="major", ls="-", alpha=0.35)
+    ax.grid(True, which="minor", ls=":", alpha=0.25)
+    ax.minorticks_on()
 
 
 def _draw_fig6(ax: Axes) -> None:
     # IEC 60890 Fig.6 — c vs inlet opening area (ventilated, Ae > 1.25 m²)
-    areas = [i * 10 for i in range(0, 71)]  # 0 .. 700 cm²
-    for f in sorted(curvefit.FIG6_CURVES):
-        ys = [curvefit.c_fig6(f, a) for a in areas]
-        ax.plot(areas, ys, lw=1.0, alpha=0.85, label=f"f = {f:g}")
 
+    # Inlet opening area range per IEC
+    areas = [i * 10 for i in range(1, 101)]  # 10 .. 1000 cm²
+
+    # Representative height/base factors (ordered as in IEC legend)
+    f_values = [1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    for f in f_values:
+        ys = [curvefit.c_fig6(f, a) for a in areas]
+        ax.plot(
+            areas,
+            ys,
+            lw=1.4,
+            label=f"{f:g}",
+        )
+
+    # Axis formatting to match IEC figure
+    ax.set_xlim(0, 1000)
+    ax.set_ylim(1.2, 2.3)
+
+    ax.set_xlabel(r"$S_{air}$ (cm²)")
+    ax.set_ylabel("Temperature distribution factor c (—)")
+
+    ax.grid(True, which="major", ls="-", alpha=0.35)
+    ax.grid(True, which="minor", ls=":", alpha=0.25)
+
+    ax.minorticks_on()
 
 def _draw_fig7(ax: Axes) -> None:
     # IEC 60890 Fig.7 — k vs Ae (no ventilation, Ae ≤ 1.25 m²)
-    xs = [0.05 + i * 0.02 for i in range(0, 65)]  # 0.05 .. 1.35
+
+    # Log-spaced Ae values (≈ 0.01 → 1.25 m²)
+    xs = [10 ** (-2 + i * (math.log10(1.25) + 2) / 200) for i in range(201)]
     ys = [curvefit.k_fig7(x) for x in xs]
+
     ax.plot(xs, ys, lw=1.6, label="IEC curve")
+
+    # Log–log axes to match IEC figure
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+
+    # Axis limits aligned with the standard figure
+    ax.set_xlim(0.01, 1.25)
+    ax.set_ylim(0.1, 10)
+
+    ax.grid(True, which="both", ls="--", alpha=0.4)
+
 
 
 def _draw_fig8(ax: Axes) -> None:

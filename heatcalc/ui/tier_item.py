@@ -441,10 +441,28 @@ class TierItem(ResizableBox):
 
         # --- live IEC 60890 overlay (readable on dark background) ---
         if self.show_live_overlay and self.live_thermal:
+
+            def fmt_snap(label, raw, snapped, unit=""):
+                if raw is None or snapped is None:
+                    return f"{label}: {raw}{unit}"
+                return f"{label}: {raw}{unit} → {snapped}{unit}"
+
             lt = self.live_thermal
+            curvefit = lt.get("curvefit") or {}
+            curve_snapped = curvefit.get("snapped", False)
+            k_meta = curvefit.get("k")
+            c_meta = curvefit.get("c")
+            Ae_raw = lt.get("Ae")
+
+            Ae_snap = k_meta.get("used_ae") if k_meta else None
 
             lines = [
-                f"Ae: {lt.get('Ae', 0.0):.2f} m²",
+                fmt_snap(
+                    "Ae",
+                    f"{Ae_raw:.2f}",
+                    f"{Ae_snap:.2f}" if Ae_snap and abs(Ae_raw - Ae_snap) > 1e-3 else None,
+                    " m²",
+                ),
                 f"ΔT(1.0t): {lt.get('dt_top', 0.0):.1f} K",
             ]
 
@@ -498,12 +516,22 @@ class TierItem(ResizableBox):
                 f"x={lt.get('x', 0.0):.3f}",
             ]
 
+            # --- show snapping (vented only) ---
+            if curve_snapped:
+                painter.setPen(QColor(255, 200, 80, 230))  # amber
+                ctx_lines.append("⚠ IEC curve snapped")
+
             g = lt.get("g")
             if g is not None:
                 ctx_lines.append(f"g={g:.3f}")
-            f = lt.get("f")
-            if f is not None:
-                ctx_lines.append(f"f={f:.3f}")
+            f_raw = lt.get("f")
+            f_snap = c_meta.get("used_f") if c_meta else None
+
+            if f_raw is not None:
+                if f_snap and abs(f_raw - f_snap) > 1e-3:
+                    ctx_lines.append(f"f={f_raw:.3f} → {f_snap:.2f}")
+                else:
+                    ctx_lines.append(f"f={f_raw:.3f}")
 
             # d is not always present (wall-mounted cases)
             if lt.get("d") is not None:

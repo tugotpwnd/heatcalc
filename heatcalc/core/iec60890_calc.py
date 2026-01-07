@@ -65,15 +65,34 @@ def calc_tier_iec60890(
     coeff_sources = []
     profile_source = None
 
+    vent_curvefit_info = {
+        "k": None,
+        "c": None,
+        "snapped": False,
+    }
+
     # ---------------- IEC 60890 coefficients ----------------
     if vent_effective:
         Ab = max(1e-9, w_m * d_m)
         f = (h_m ** 1.35) / Ab
-        k = curvefit.k_vents(
+        k_res = curvefit.k_vents(
             ae=max(1.0, min(14.0, Ae)),
             opening_area_cm2=inlet_area_cm2,
         )
-        c = curvefit.c_vents(f=f, opening_area_cm2=inlet_area_cm2)
+        c_res = curvefit.c_vents(
+            f=f,
+            opening_area_cm2=inlet_area_cm2,
+        )
+
+        k = k_res.value
+        c = c_res.value
+
+        vent_curvefit_info = {
+            "k": k_res.meta,
+            "c": c_res.meta,
+            "snapped": k_res.snapped or c_res.snapped,
+        }
+
         coeff_sources += ["Fig. 5", "Fig. 6"]
         g = None
     else:
@@ -145,6 +164,7 @@ def calc_tier_iec60890(
             "surfaces": surfaces,
             "coeff_sources": sorted(set(coeff_sources)),
             "profile_source": profile_source,
+            "curvefit": vent_curvefit_info,
         }
 
     # -------- STAGE 2: Material dissipation --------
@@ -188,6 +208,7 @@ def calc_tier_iec60890(
             "surfaces": surfaces,
             "coeff_sources": sorted(set(coeff_sources)),
             "profile_source": profile_source,
+            "curvefit": vent_curvefit_info,
         }
 
     # -------- STAGE 3: Vent recommendation --------
@@ -201,14 +222,17 @@ def calc_tier_iec60890(
         print(f"[VENT-CHK] Using project default vent area = {rec_area_cm2:.1f} cm²")
 
         if rec_area_cm2 > 0.0 and f is not None:
-            k_v = curvefit.k_vents(
+            k_v_res = curvefit.k_vents(
                 ae=max(1.0, min(14.0, Ae)),
                 opening_area_cm2=rec_area_cm2,
             )
-            c_v = curvefit.c_vents(
+            c_v_res = curvefit.c_vents(
                 f=f,
                 opening_area_cm2=rec_area_cm2,
             )
+
+            k_v = k_v_res.value
+            c_v = c_v_res.value
 
             dt_mid_v = k_v * (P ** 0.715)
             dt_top_v = c_v * dt_mid_v
@@ -229,10 +253,47 @@ def calc_tier_iec60890(
         else:
             print("[VENT-CHK] ✖ Invalid vent test (area<=0 or f undefined)")
 
-    # -------- STAGE 4: Active cooling --------
+    # -------- STAGE 4: Active cooling (IEC TR 60890 Annex K) --------
+    # P_cooling should represent (P - P_890) in W, i.e. the heat shortfall that must be removed by forced airflow.
+    # delta_allow should represent (T_int,max - T_a) in K (same numeric as °C difference).
+
+    def air_k_factor_from_altitude_m(alt_m: float) -> float:
+        """
+        IEC TR 60890 Annex K, Table K.1 (altitude above sea level).
+        Linear interpolation between tabulated points.
+        """
+        table = [
+            (0, 1.00),
+            (500, 0.95),
+            (1000, 0.89),
+            (1500, 0.84),
+            (2000, 0.80),
+            (2500, 0.75),
+            (3000, 0.71),
+        ]
+        if alt_m is None:
+            return 1.0
+        alt_m = max(0.0, float(alt_m))
+
+        if alt_m <= table[0][0]:
+            return table[0][1]
+        if alt_m >= table[-1][0]:
+            return table[-1][1]
+
+        for (a0, k0), (a1, k1) in zip(table[:-1], table[1:]):
+            if a0 <= alt_m <= a1:
+                t = (alt_m - a0) / (a1 - a0)
+                return k0 + t * (k1 - k0)
+
+        return 1.0
+
+    k_alt = air_k_factor_from_altitude_m(project_altitude_m)
+
+    VOL_HEAT_CAP_J_M3K = 1160.0 * k_alt  # per IEC TR 60890 Annex K (based on 35°C, 50% RH + altitude factor)
+
     airflow_m3h = (
-        P_cooling / (AIR_RHO_KG_M3 * AIR_CP_J_KG_K * delta_allow)
-    ) * 3600.0 if delta_allow > 0 else None
+            (P_cooling / (VOL_HEAT_CAP_J_M3K * delta_allow)) * 3600.0
+    ) if (delta_allow and delta_allow > 0 and P_cooling and P_cooling > 0) else 0.0
 
     return {
         "ambient_C": ambient_C,
@@ -261,4 +322,5 @@ def calc_tier_iec60890(
         "surfaces": surfaces,
         "coeff_sources": sorted(set(coeff_sources)),
         "profile_source": profile_source,
+        "curvefit": vent_curvefit_info,
     }
