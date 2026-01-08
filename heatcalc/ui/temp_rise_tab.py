@@ -19,7 +19,12 @@ from ..core.iec60890_calc import calc_tier_iec60890
 
 MM_PER_GRID = 25.0  # same mapping you’ve been using
 CM2_DEFAULT = 300  # default inlet cross-section (cm^2) when ventilated
-
+# Compliance colours (IEC 60890 – explicit states)
+COL_COMPLIANT_TEMP        = QColor(0, 150, 0)    # Green: base IEC compliant
+COL_COMPLIANT_DISS        = QColor(230, 140, 0)  # Orange: compliant via enclosure dissipation
+COL_COMPLIANT_VENT_SEL    = QColor(0, 120, 200)  # Blue: compliant via SELECTED ventilation
+COL_VENT_OPTIONAL         = QColor(150, 150, 150)# Grey: not compliant, ventilation could help
+COL_NON_COMPLIANT         = QColor(200, 0, 0)    # Red: active cooling required
 
 class TempRiseTab(QWidget):
     """
@@ -67,6 +72,31 @@ class TempRiseTab(QWidget):
         self.tier_list.currentRowChanged.connect(self._show_plot_for_row)
         left_l.addWidget(QLabel("Tiers"))
         left_l.addWidget(self.tier_list, 1)
+
+        # -------- Compliance legend ---------------------------------
+        legend = QGroupBox("Compliance legend")
+        lf = QVBoxLayout(legend)
+        lf.setContentsMargins(8, 6, 8, 6)
+
+        def _legend_row(col: QColor, text: str) -> QWidget:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            swatch = QLabel("■")
+            swatch.setStyleSheet(f"color: {col.name()}; font-size: 14px;")
+            lbl = QLabel(text)
+            h.addWidget(swatch)
+            h.addWidget(lbl)
+            h.addStretch()
+            return w
+
+        lf.addWidget(_legend_row(COL_COMPLIANT_TEMP, "Base IEC temperature compliant"))
+        lf.addWidget(_legend_row(COL_COMPLIANT_DISS, "Compliant via enclosure dissipation"))
+        lf.addWidget(_legend_row(COL_COMPLIANT_VENT_SEL, "Compliant via selected ventilation"))
+        lf.addWidget(_legend_row(COL_VENT_OPTIONAL, "Ventilation optional to achieve compliance"))
+        lf.addWidget(_legend_row(COL_NON_COMPLIANT, "Active cooling required"))
+
+        left_l.addWidget(legend)
 
         # Results placeholder under the tier list (final temps + cooling guidance)
         results = QGroupBox("Results (selected tier)")
@@ -129,9 +159,11 @@ class TempRiseTab(QWidget):
                 tier=t,
                 tiers=tiers,
                 wall_mounted=t.wall_mounted,
-                inlet_area_cm2=self.sb_opening.value(),
+                inlet_area_cm2=t.vent_area_for_iec(),
                 ambient_C=amb,
-                default_vent_area_cm2=default_vent_area_cm2,
+                enclosure_k_W_m2K=float(self.project.meta.enclosure_k_W_m2K),
+                allow_material_dissipation=bool(self.project.meta.allow_material_dissipation),
+                default_vent_area_cm2=float(self.project.meta.default_vent_area_cm2),
             )
 
             # compute final absolute temp
@@ -145,8 +177,37 @@ class TempRiseTab(QWidget):
 
             # Use the tier's effective limit (manual or auto-lowest-component)
             eff_limit = int(getattr(t, "effective_max_temp_C", lambda: int(getattr(t, "max_temp_C", 70)))())
-            within = res["T_top"] <= eff_limit
-            colour = QColor(0, 150, 0) if within else QColor(200, 0, 0)
+            # ------------------------------------------------------------
+            # Determine IEC compliance mode (explicit + selected)
+            # ------------------------------------------------------------
+            print(
+                f"[TEMP-RISE] {t.name} | "
+                f"is_ventilated={t.is_ventilated} | "
+                f"P_cooling={res.get('P_cooling')} | "
+                f"P_material={res.get('P_material')} | "
+                f"compliant_top={res.get('compliant_top')} | "
+                f"vent_recommended={res.get('vent_recommended')}"
+            )
+
+            if res["compliant_top"]:
+                if t.is_ventilated:
+                    colour = COL_COMPLIANT_VENT_SEL
+                    compliance_tag = "IEC compliant (with ventilation selected)"
+                else:
+                    colour = COL_COMPLIANT_TEMP
+                    compliance_tag = "IEC compliant (base)"
+
+            elif res["P_cooling"] <= 0.0:
+                colour = COL_COMPLIANT_DISS
+                compliance_tag = "Compliant via enclosure dissipation"
+
+            elif (not t.is_ventilated) and res.get("vent_recommended"):
+                colour = COL_VENT_OPTIONAL
+                compliance_tag = "Ventilation optional for compliance"
+
+            else:
+                colour = COL_NON_COMPLIANT
+                compliance_tag = "Active cooling required"
 
             mode = "auto" if getattr(t, "use_auto_component_temp", False) else "manual"
             if res.get("T_075") is not None:
@@ -154,13 +215,14 @@ class TempRiseTab(QWidget):
                     f"{t.name} — T(0.5t)={res['T_mid']:.1f}°C, "
                     f"T(0.75t)={res['T_075']:.1f}°C, "
                     f"T(1.0t)={res['T_top']:.1f}°C  "
-                    f"[limit {eff_limit}°C, {mode}]"
+                    f"[limit {eff_limit}°C, {mode} — {compliance_tag}]"
+
                 )
             else:
                 text = (
                     f"{t.name} — T(0.5t)={res['T_mid']:.1f}°C, "
                     f"T(1.0t)={res['T_top']:.1f}°C  "
-                    f"[limit {eff_limit}°C, {mode}]"
+                    f"[limit {eff_limit}°C, {mode} — {compliance_tag}]"
                 )
 
             item = QListWidgetItem(text)
@@ -262,6 +324,15 @@ class TempRiseTab(QWidget):
             title_bits.append(f"g={r['g']:.3f}")
         title_bits.append(f"Ambient={amb:.1f}°C")
 
+        cf = r.get("curvefit", {})
+        if cf.get("snapped"):
+            used = []
+            if cf.get("k"):
+                used.append(f"k→Ae={cf['k']['used_ae']}")
+            if cf.get("c"):
+                used.append(f"c→f={cf['c']['used_f']}")
+            title_bits.append("Snapped: " + ", ".join(used))
+
         self._title.setText("  ·  ".join(title_bits))
         self.canvas.draw_idle()
 
@@ -284,7 +355,8 @@ class TempRiseTab(QWidget):
         T075 = r.get("T_075")
 
         tier: TierItem = r["tier"]
-        maxC = int(getattr(tier, "max_temp_C", 70))
+        maxC = int(tier.effective_max_temp_C())
+        mode = "auto" if tier.use_auto_component_temp else "manual"
 
         # ------------------------------------------------------------
         # Display values (UNCHANGED)
@@ -293,49 +365,55 @@ class TempRiseTab(QWidget):
 
         if T075 is not None:
             self.lbl_final_top.setText(
-                f"T(0.75t)={T075:.1f} °C,  T(1.0t)={Ttop:.1f} °C  (limit {maxC} °C)"
+                f"T(0.75t)={T075:.1f} °C,  T(1.0t)={Ttop:.1f} °C  (limit {maxC} °C, {mode})"
             )
         else:
             self.lbl_final_top.setText(
-                f"{Ttop:.1f} °C (limit {maxC} °C)"
+                f"{Ttop:.1f} °C (limit {maxC} °C, {mode})"
             )
 
         # ------------------------------------------------------------
         # Compliance + cooling guidance (NEW LOGIC)
         # ------------------------------------------------------------
-        if Ttop <= maxC:
-            self.lbl_guidance.setText("No cooling required.")
+        # ------------------------------------------------------------
+        # Compliance + cooling guidance (IEC order of precedence)
+        # ------------------------------------------------------------
+
+        if r["compliant_top"]:
+            self.lbl_guidance.setText(
+                "IEC 60890 compliant.\n"
+                "Base temperature rise is within the effective tier limit.\n"
+                "→ No mitigation required."
+            )
             return
 
-        # ---- NEW: enclosure wall dissipation + residual airflow ----
-        # Effective enclosure surface area from IEC 60890 calc
-        Ae = r.get("Ae", 0.0)
+        if r["P_cooling"] <= 0.0:
+            self.lbl_guidance.setText(
+                "IEC 60890 base temperature rise exceeds the effective limit,\n"
+                "however heat dissipation via the enclosure is sufficient.\n"
+                "→ Active cooling is NOT required.\n\n"
+                "Assessment performed in accordance with IEC 60890 order of precedence."
+            )
+            return
 
-        res = required_airflow_with_wall_loss(
-            P_W=r["P"],
-            amb_C=amb,
-            max_internal_C=maxC,
-            enclosure_area_m2=Ae,
-            allow_wall_dissipation=self.project.meta.allow_material_dissipation,
-            k_W_per_m2K=self.project.meta.enclosure_k_W_m2K,
+        msg = (
+            "IEC 60890 base temperature rise exceeds the effective limit.\n"
+            "Residual heat remains after enclosure dissipation.\n\n"
+            f"• Heat via enclosure: {r['P_material']:.0f} W\n"
+            f"• Heat for cooling: {r['P_cooling']:.0f} W\n"
+            f"→ Required airflow: ≥ {r['airflow_m3h']:.0f} m³/h"
         )
 
-        if res.airflow_m3h is None:
-            self.lbl_guidance.setText(
-                "Cooling required, but max temperature ≤ ambient (check inputs)."
-            )
-            return
+        if r.get("vent_recommended"):
+            msg += "\n\n✓ Natural ventilation may be sufficient."
 
-        # ---- Build explicit, auditable message ----
-        if self.project.meta.allow_material_dissipation:
-            self.lbl_guidance.setText(
-                f"Cooling required.\n"
-                f"• Heat dissipated via enclosure: {res.q_walls_W:.0f} W\n"
-                f"• Heat remaining for ventilation: {res.q_fans_W:.0f} W\n"
-                f"→ Required airflow: ≥ {res.airflow_m3h:.0f} m³/h"
-            )
-        else:
-            self.lbl_guidance.setText(
-                f"Cooling required: ≥ {res.airflow_m3h:.0f} m³/h airflow "
-                f"to limit to {maxC} °C."
-            )
+        self.lbl_guidance.setToolTip(
+            "Temperature rise values shown are per IEC 60890 base calculation.\n"
+            "Compliance is determined using the IEC order of precedence:\n"
+            "1) Base compliance\n"
+            "2) Enclosure dissipation\n"
+            "3) Ventilation / cooling"
+        )
+
+        self.lbl_guidance.setText(msg)
+
