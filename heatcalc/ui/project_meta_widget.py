@@ -148,6 +148,18 @@ class ProjectMetaWidget(QWidget):
         # little bottom spacer inside card
         v.addItem(QSpacerItem(0, 4))
 
+        # --- Altitude (IEC TR 60890 Annex K) -------------------------------
+        self.sp_altitude = QDoubleSpinBox()
+        self.sp_altitude.setRange(0.0, 4000.0)
+        self.sp_altitude.setDecimals(0)
+        self.sp_altitude.setSuffix(" m")
+
+        alt = getattr(self._project.meta, "altitude_m", 0.0)
+        self.sp_altitude.setValue(float(alt))
+
+        self.sp_altitude.valueChanged.connect(self._on_altitude_changed)
+        form.addRow("Altitude above sea level:", self.sp_altitude)
+
         # --- Default vent size (for recommendations) -------------------------------
         self.cmb_default_vent = QComboBox()
         self.cmb_default_vent.addItem("— None —", 0.0)
@@ -242,6 +254,12 @@ class ProjectMetaWidget(QWidget):
             self.sp_ambient.setValue(float(amb))
             self.sp_ambient.blockSignals(False)
 
+        if hasattr(self, "sp_altitude"):
+            alt = getattr(self._project.meta, "altitude_m", 0.0)
+            self.sp_altitude.blockSignals(True)
+            self.sp_altitude.setValue(float(alt))
+            self.sp_altitude.blockSignals(False)
+
         # >>> ADD THIS BLOCK <<<
         if hasattr(self, "cmb_default_vent"):
             area = float(getattr(self._project.meta, "default_vent_area_cm2", 0.0))
@@ -276,6 +294,14 @@ class ProjectMetaWidget(QWidget):
     def _on_ambient_changed(self, val: float):
         try:
             self._project.meta.ambient_C = float(val)
+            signals.project_changed.emit()
+            signals.project_meta_changed.emit()
+        except Exception:
+            pass
+
+    def _on_altitude_changed(self, val: float):
+        try:
+            self._project.meta.altitude_m = float(val)
             signals.project_changed.emit()
             signals.project_meta_changed.emit()
         except Exception:

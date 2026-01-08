@@ -3,22 +3,27 @@ block_cipher = None
 
 from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT
 from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.building.datastruct import Tree
+
 
 # --- App entrypoint (module with your run()) ---
 entry_script = "heatcalc/main.py"   # or "heatcalc/app.py" if that is your entry
 pathex = []
 datas = []
-# --- Data files you need at runtime (csv, png, etc.) ---
-# --- Your app data files ---
-# --- Collect ALL non-.py data under heatcalc/data recursively ---
-datas = collect_data_files(
-    'heatcalc.data',
-    include_py_files=False
-)
+
+# ---- IEC 60890 curve CSVs (REQUIRED) ----
+datas += [
+    ("heatcalc/data/figure_5/*.csv", "heatcalc/data/figure_5"),
+    ("heatcalc/data/figure_6/*.csv", "heatcalc/data/figure_6"),
+    ("heatcalc/data/cable_table.csv", "heatcalc/data"),
+]
+
+
 datas += [
     ('heatcalc/assets/Logo.ico', 'heatcalc/assets'),
     ('heatcalc/assets/coverpage.pdf', 'heatcalc/assets'),
 ]
+
 
 datas += [("heatcalc/data/components.csv", ".")]   # <-- put the CSV next to the exe
 

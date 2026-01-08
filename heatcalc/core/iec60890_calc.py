@@ -18,6 +18,39 @@ MM_PER_GRID = 25
 AIR_RHO_KG_M3 = 1.2
 AIR_CP_J_KG_K = 1005.0
 
+def air_k_factor_from_altitude_m(alt_m: float) -> float:
+    """
+    IEC TR 60890:2022 Annex K, Table K.1
+    Altitude derating factor for air volumetric heat capacity.
+    Linear interpolation between tabulated points.
+    """
+    table = [
+        (0,    1.00),
+        (500,  0.95),
+        (1000, 0.89),
+        (1500, 0.84),
+        (2000, 0.80),
+        (2500, 0.75),
+        (3000, 0.71),
+    ]
+
+    if alt_m is None:
+        return 1.0
+
+    alt_m = max(0.0, float(alt_m))
+
+    if alt_m <= table[0][0]:
+        return table[0][1]
+    if alt_m >= table[-1][0]:
+        return table[-1][1]
+
+    for (a0, k0), (a1, k1) in zip(table[:-1], table[1:]):
+        if a0 <= alt_m <= a1:
+            t = (alt_m - a0) / (a1 - a0)
+            return k0 + t * (k1 - k0)
+
+    return 1.0
+
 
 def calc_tier_iec60890(
     *,
@@ -253,47 +286,21 @@ def calc_tier_iec60890(
         else:
             print("[VENT-CHK] ✖ Invalid vent test (area<=0 or f undefined)")
 
-    # -------- STAGE 4: Active cooling (IEC TR 60890 Annex K) --------
-    # P_cooling should represent (P - P_890) in W, i.e. the heat shortfall that must be removed by forced airflow.
-    # delta_allow should represent (T_int,max - T_a) in K (same numeric as °C difference).
+    # -------- STAGE 4: Active cooling (IEC TR 60890:2022 Annex K) --------
+    # P_cooling = P - P_890
+    # delta_allow = (T_int,max - T_a)
 
-    def air_k_factor_from_altitude_m(alt_m: float) -> float:
-        """
-        IEC TR 60890 Annex K, Table K.1 (altitude above sea level).
-        Linear interpolation between tabulated points.
-        """
-        table = [
-            (0, 1.00),
-            (500, 0.95),
-            (1000, 0.89),
-            (1500, 0.84),
-            (2000, 0.80),
-            (2500, 0.75),
-            (3000, 0.71),
-        ]
-        if alt_m is None:
-            return 1.0
-        alt_m = max(0.0, float(alt_m))
-
-        if alt_m <= table[0][0]:
-            return table[0][1]
-        if alt_m >= table[-1][0]:
-            return table[-1][1]
-
-        for (a0, k0), (a1, k1) in zip(table[:-1], table[1:]):
-            if a0 <= alt_m <= a1:
-                t = (alt_m - a0) / (a1 - a0)
-                return k0 + t * (k1 - k0)
-
-        return 1.0
+    project_altitude_m = float(getattr(tier, "project_altitude_m", 0.0))
 
     k_alt = air_k_factor_from_altitude_m(project_altitude_m)
 
-    VOL_HEAT_CAP_J_M3K = 1160.0 * k_alt  # per IEC TR 60890 Annex K (based on 35°C, 50% RH + altitude factor)
+    # Volumetric heat capacity per Annex K
+    # Assumes 35 °C ambient, 50 % RH, adjusted for altitude
+    VOL_HEAT_CAP_J_M3K = 1160.0 * k_alt
 
     airflow_m3h = (
             (P_cooling / (VOL_HEAT_CAP_J_M3K * delta_allow)) * 3600.0
-    ) if (delta_allow and delta_allow > 0 and P_cooling and P_cooling > 0) else 0.0
+    ) if (delta_allow > 0.0 and P_cooling > 0.0) else 0.0
 
     return {
         "ambient_C": ambient_C,

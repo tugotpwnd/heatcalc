@@ -13,6 +13,7 @@ class ProjectMeta:
     revision: str = "A"
     # Project-wide thermal assumptions
     ambient_C: float = 40.0
+    altitude_m: float = 0.0   # IEC TR 60890 Annex K altitude
     enclosure_material: str = "Sheet metal"
     enclosure_k_W_m2K: float = 5.5
     allow_material_dissipation: bool = False
