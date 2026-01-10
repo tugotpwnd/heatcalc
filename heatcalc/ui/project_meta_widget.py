@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QFormLayout, QLineEdit, QLabel, QVBoxLayout, QHBoxLayout,
-    QFrame, QStackedLayout, QSizePolicy, QSpacerItem, QGraphicsDropShadowEffect, QCheckBox
+    QFrame, QStackedLayout, QSizePolicy, QSpacerItem, QGraphicsDropShadowEffect, QCheckBox, QMessageBox
 )
 from PyQt5.QtWidgets import QDoubleSpinBox
 from ..utils.qt import signals
@@ -15,7 +15,6 @@ THERMAL_FIELDS = [
     ("ambient_C", "Ambient temperature (°C)"),
 ]
 
-from ..ui.tier_item import STANDARD_VENTS_CM2
 from PyQt5.QtWidgets import QComboBox
 from ..core.models import Project
 from ..utils.resources import get_resource_path
@@ -36,9 +35,15 @@ class ProjectMetaWidget(QWidget):
         ("revision", "Revision"),
     ]
 
-    def __init__(self, project: Project, parent=None):
+    def __init__(
+            self,
+            project: Project,
+            switchboard,
+            parent=None,
+    ):
         super().__init__(parent)
         self._project = project
+        self._switchboard = switchboard
         self._edits: dict[str, QLineEdit] = {}
 
         # ----- Background layer ------------------------------------------------
@@ -160,22 +165,21 @@ class ProjectMetaWidget(QWidget):
         self.sp_altitude.valueChanged.connect(self._on_altitude_changed)
         form.addRow("Altitude above sea level:", self.sp_altitude)
 
-        # --- Default vent size (for recommendations) -------------------------------
-        self.cmb_default_vent = QComboBox()
-        self.cmb_default_vent.addItem("— None —", 0.0)
+        # --- IP Rating (Solids only) -------------------------------
+        self.cmb_ip = QComboBox()
+        for n in range(0, 7):
+            self.cmb_ip.addItem(f"IP{n}X", n)
 
-        for label, area in STANDARD_VENTS_CM2.items():
-            self.cmb_default_vent.addItem(f"{label} ({area:.0f} cm²)", area)
+        self.cmb_ip.currentIndexChanged.connect(self._on_ip_changed)
+        form.addRow("IP Rating – Solids (IP N X):", self.cmb_ip)
 
-        # initialise from project meta
-        meta = self._project.meta
-        if getattr(meta, "default_vent_area_cm2", 0.0) > 0.0:
-            idx = self.cmb_default_vent.findData(meta.default_vent_area_cm2)
-            if idx >= 0:
-                self.cmb_default_vent.setCurrentIndex(idx)
-
-        self.cmb_default_vent.currentIndexChanged.connect(self._on_default_vent_changed)
-        form.addRow("Default vent (IEC):", self.cmb_default_vent)
+        # Initialise IP rating from project meta (IMPORTANT)
+        n = int(getattr(self._project.meta, "ip_rating_n", 2))
+        idx = self.cmb_ip.findData(n)
+        if idx >= 0:
+            self.cmb_ip.blockSignals(True)
+            self.cmb_ip.setCurrentIndex(idx)
+            self.cmb_ip.blockSignals(False)
 
         # ----- Root layout (bg label + centered card) -------------------------
         # keep a reference so we can resize it later
@@ -260,21 +264,13 @@ class ProjectMetaWidget(QWidget):
             self.sp_altitude.setValue(float(alt))
             self.sp_altitude.blockSignals(False)
 
-        # >>> ADD THIS BLOCK <<<
-        if hasattr(self, "cmb_default_vent"):
-            area = float(getattr(self._project.meta, "default_vent_area_cm2", 0.0))
-            self.cmb_default_vent.blockSignals(True)
-
-            if area > 0.0:
-                idx = self.cmb_default_vent.findData(area)
-                if idx >= 0:
-                    self.cmb_default_vent.setCurrentIndex(idx)
-                else:
-                    self.cmb_default_vent.setCurrentIndex(0)  # None
-            else:
-                self.cmb_default_vent.setCurrentIndex(0)
-
-            self.cmb_default_vent.blockSignals(False)
+        if hasattr(self, "cmb_ip"):
+            n = int(getattr(self._project.meta, "ip_rating_n", 2))
+            idx = self.cmb_ip.findData(n)
+            if idx >= 0:
+                self.cmb_ip.blockSignals(True)
+                self.cmb_ip.setCurrentIndex(idx)
+                self.cmb_ip.blockSignals(False)
 
     # --- Meta Set  ---------------------------------------------------------
     def set_meta(self, meta: dict):
@@ -307,18 +303,33 @@ class ProjectMetaWidget(QWidget):
         except Exception:
             pass
 
-    def _on_default_vent_changed(self, idx: int):
-        try:
-            area = float(self.cmb_default_vent.itemData(idx) or 0.0)
-            label = self.cmb_default_vent.currentText().split(" ")[0] if area > 0 else None
+    def _on_ip_changed(self, idx: int):
+        n = int(self.cmb_ip.currentData())
+        print(f"[IP] IP changed → IP{n}X")
 
-            self._project.meta.default_vent_area_cm2 = area
-            self._project.meta.default_vent_label = label
+        if n >= 5 and self._switchboard.any_tiers_ventilated():
+            names = ", ".join(self._switchboard.ventilated_tier_names())
 
-            signals.project_changed.emit()
-            signals.project_meta_changed.emit()
-        except Exception:
-            pass
+            r = QMessageBox.warning(
+                self,
+                "Ventilation not permitted",
+                f"IP{n}X does not permit natural ventilation.\n\n"
+                f"The following tiers have vents enabled:\n{names}\n\n"
+                "Proceeding will disable ventilation on ALL tiers.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+
+            if r != QMessageBox.Yes:
+                self.refresh_from_project()
+                return
+
+            self._switchboard.disable_all_vents()
+
+        # Persist meta
+        self._project.meta.ip_rating_n = n
+        signals.project_meta_changed.emit()
+        signals.project_changed.emit()
 
     def get_meta(self) -> dict:
         out = {}

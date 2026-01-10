@@ -39,11 +39,11 @@ class TempRiseTab(QWidget):
     - If exceeding, an estimated minimum airflow (m³/h) is computed to meet the max temp.
     """
 
-    def __init__(self, scene, project, parent=None):
+    def __init__(self, scene_provider, project, parent=None):
         super().__init__(parent)
         self.project = project
-        self._scene_provider = lambda: scene
-        self._results: List[Dict] = []  # one dict per tier with calc outputs
+        self._scene_provider = scene_provider  # callable → returns current scene
+        self._results: List[Dict] = []
         self.ambient_C: Optional[float] = None
 
         # -------- Left: controls + tier list --------
@@ -153,6 +153,8 @@ class TempRiseTab(QWidget):
 
         amb = float(self.project.meta.ambient_C)
         default_vent_area_cm2=float(self.project.meta.default_vent_area_cm2)
+        project_altitude_m=float(self.project.meta.altitude_m)
+
 
         for t in tiers:
             res = calc_tier_iec60890(
@@ -161,9 +163,11 @@ class TempRiseTab(QWidget):
                 wall_mounted=t.wall_mounted,
                 inlet_area_cm2=t.vent_area_for_iec(),
                 ambient_C=amb,
+                altitude_m=project_altitude_m,
                 enclosure_k_W_m2K=float(self.project.meta.enclosure_k_W_m2K),
                 allow_material_dissipation=bool(self.project.meta.allow_material_dissipation),
                 default_vent_area_cm2=float(self.project.meta.default_vent_area_cm2),
+                ip_rating_n=int(self.project.meta.ip_rating_n),
             )
 
             # compute final absolute temp
@@ -180,14 +184,6 @@ class TempRiseTab(QWidget):
             # ------------------------------------------------------------
             # Determine IEC compliance mode (explicit + selected)
             # ------------------------------------------------------------
-            print(
-                f"[TEMP-RISE] {t.name} | "
-                f"is_ventilated={t.is_ventilated} | "
-                f"P_cooling={res.get('P_cooling')} | "
-                f"P_material={res.get('P_material')} | "
-                f"compliant_top={res.get('compliant_top')} | "
-                f"vent_recommended={res.get('vent_recommended')}"
-            )
 
             if res["compliant_top"]:
                 if t.is_ventilated:

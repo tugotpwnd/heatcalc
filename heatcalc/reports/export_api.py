@@ -212,6 +212,7 @@ def export_project_report(
         k_m2K = _safe_float(getattr(project, "meta", object()), "enclosure_k_W_m2K", 0.0)
         enc_mat = getattr(getattr(project, "meta", object()), "enclosure_material", None)
         default_vent_area_cm2 = _safe_float(getattr(project, "meta", object()), "default_vent_area_cm2", 0.0)
+        project_altitude_m = float(getattr(getattr(project, "meta", None), "altitude_m", 0.0))
 
         for t in report_tier_items:
             # Prefer per-tier vent size when present; otherwise fall back to the report/default inlet area.
@@ -226,6 +227,7 @@ def export_project_report(
                 wall_mounted=bool(getattr(t, "wall_mounted", False)),
                 inlet_area_cm2=float(tier_inlet_cm2),
                 ambient_C=float(ambient_C),
+                altitude_m=project_altitude_m,
                 enclosure_k_W_m2K=float(k_m2K),
                 allow_material_dissipation=bool(allow_mat),
                 default_vent_area_cm2=default_vent_area_cm2

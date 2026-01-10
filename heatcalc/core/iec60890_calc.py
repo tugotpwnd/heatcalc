@@ -59,10 +59,14 @@ def calc_tier_iec60890(
     wall_mounted: bool,
     inlet_area_cm2: float,
     ambient_C: float,
+    altitude_m: float,
     enclosure_k_W_m2K: float,
     allow_material_dissipation: bool,
     default_vent_area_cm2: float,
+    ip_rating_n: int,
+    vent_test_area_cm2: float | None = None,   # ✅ ADD THIS
 ) -> Dict:
+
 
     # ---------------- Geometry ----------------
     w_m, h_m, d_m = dimensions_m(tier)
@@ -71,6 +75,9 @@ def calc_tier_iec60890(
     Ae = geom["Ae"]
     f = geom["f"]
     g = geom["g"]
+
+    # ---------------- IP protection rule ----------------
+    vents_permitted_by_ip = int(ip_rating_n) < 5
 
     # ---------------- Per-surface breakdown ----------------
     surfaces = []
@@ -90,7 +97,11 @@ def calc_tier_iec60890(
     curve_no = int(getattr(tier, "curve_no", 1))
 
     vent_requested = bool(tier.is_ventilated)
-    vent_effective = vent_requested and (Ae > 1.25)
+    vent_effective = (
+            vent_requested
+            and (Ae > 1.25)
+            and vents_permitted_by_ip
+    )
 
     x = 0.715 if vent_effective else 0.804
     d_fac = 1.0
@@ -198,6 +209,7 @@ def calc_tier_iec60890(
             "coeff_sources": sorted(set(coeff_sources)),
             "profile_source": profile_source,
             "curvefit": vent_curvefit_info,
+            "inlet_area_cm2": inlet_area_cm2,
         }
 
     # -------- STAGE 2: Material dissipation --------
@@ -242,17 +254,21 @@ def calc_tier_iec60890(
             "coeff_sources": sorted(set(coeff_sources)),
             "profile_source": profile_source,
             "curvefit": vent_curvefit_info,
+            "inlet_area_cm2": inlet_area_cm2,
         }
 
     # -------- STAGE 3: Vent recommendation --------
     vent_recommended = False
 
-    if not vent_effective and Ae > 1.25 and P_cooling > 0.0:
-        print("[VENT-CHK] Preconditions met → testing hypothetical vents")
+    if (
+            vents_permitted_by_ip  # ← NEW HARD GATE
+            and not vent_effective
+            and Ae > 1.25
+            and P_cooling > 0.0
+    ):
 
-        rec_area_cm2 = float(default_vent_area_cm2)
-
-        print(f"[VENT-CHK] Using project default vent area = {rec_area_cm2:.1f} cm²")
+        # Prefer “maximum possible vents for this tier” when provided.
+        rec_area_cm2 = float(vent_test_area_cm2) if (vent_test_area_cm2 is not None) else float(default_vent_area_cm2)
 
         if rec_area_cm2 > 0.0 and f is not None:
             k_v_res = curvefit.k_vents(
@@ -271,28 +287,14 @@ def calc_tier_iec60890(
             dt_top_v = c_v * dt_mid_v
             T_top_v = ambient_C + dt_top_v
 
-            print(f"Variables k : {k_v} , c : {c_v} , amb : {ambient_C}, dt_mid : {dt_mid_v}, dt_top : {dt_top_v}")
-
-            print(
-                f"[VENT-CHK] Vent test | "
-                f"T_top_v={T_top_v:.2f} °C | limit={limit_C:.2f} °C"
-            )
-
             if T_top_v <= limit_C:
                 vent_recommended = True
-                print("[VENT-CHK] ✔ Vent recommended")
-            else:
-                print("[VENT-CHK] ✖ Vent insufficient")
-        else:
-            print("[VENT-CHK] ✖ Invalid vent test (area<=0 or f undefined)")
 
     # -------- STAGE 4: Active cooling (IEC TR 60890:2022 Annex K) --------
     # P_cooling = P - P_890
     # delta_allow = (T_int,max - T_a)
 
-    project_altitude_m = float(getattr(tier, "project_altitude_m", 0.0))
-
-    k_alt = air_k_factor_from_altitude_m(project_altitude_m)
+    k_alt = air_k_factor_from_altitude_m(altitude_m)
 
     # Volumetric heat capacity per Annex K
     # Assumes 35 °C ambient, 50 % RH, adjusted for altitude
@@ -330,4 +332,5 @@ def calc_tier_iec60890(
         "coeff_sources": sorted(set(coeff_sources)),
         "profile_source": profile_source,
         "curvefit": vent_curvefit_info,
+        "inlet_area_cm2": inlet_area_cm2,
     }

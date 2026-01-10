@@ -7,6 +7,8 @@ class ProjectSignals(QObject):
     project_changed = pyqtSignal()
     # Emitted when autosave policy toggled
     autosave_changed = pyqtSignal(bool)
+    project_meta_changed = pyqtSignal()
+
 
 
 signals = ProjectSignals()

@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QFontMetrics
 
 from .designer_view import DesignerView, GRID, snap
-from .tier_item import TierItem, _Handle, CableEntry
+from .tier_item import TierItem, _Handle, CableEntry, tier_effective_inlet_area_cm2
 from ..core.component_library import DEFAULT_COMPONENTS  # we’ll enrich this map with catalog entries
 from PyQt5.QtWidgets import QDialog, QDialogButtonBox
 from ..core.component_store import (
@@ -24,6 +24,7 @@ from .component_table_model import ComponentTableModel
 from .cable_adder import CableAdderWidget
 from ..core.iec60890_calc import calc_tier_iec60890
 from ..core.iec60890_geometry import apply_curve_state_to_tiers, apply_covered_sides_to_tiers
+from ..core.louvre_calc import tier_max_effective_inlet_area_cm2
 from ..utils.qt import signals
 
 # Enclosure material → effective heat transfer coefficient (W/m²·K)
@@ -36,7 +37,14 @@ ENCLOSURE_MATERIALS = {
     "Plastic": 3.5,
 }
 
-from .tier_item import STANDARD_VENTS_CM2
+def _vents_allowed_by_ip(project) -> bool:
+    """
+    Natural ventilation is NOT permitted for above IP4X.
+    """
+    try:
+        return int(getattr(project.meta, "ip_rating_n", 2)) < 5
+    except Exception:
+        return True  # fail-safe
 
 
 class _CatalogProxy(QSortFilterProxyModel):
@@ -238,34 +246,44 @@ class SwitchboardTab(QWidget):
         self.lbl_size = QLabel("-")
 
         # ---------------- Vent controls (clean layout) ----------------
+        # ---- Vent controls (single-line layout) ------------------------
 
-        self.cb_vent = QCheckBox("Vent enabled")
+        self.cb_vent = QCheckBox("Vents enabled")
         self.cb_vent.toggled.connect(self._apply_vent_enabled)
+        self.cb_vent.setToolTip(
+            "Natural ventilation is disabled automatically for IP ≥ 5X enclosures."
+        )
 
-        self.cmb_vent = QComboBox()
-        self.cmb_vent.addItem("— Select —")
-        for k in STANDARD_VENTS_CM2:
-            self.cmb_vent.addItem(k)
-        self.cmb_vent.addItem("Custom…")
-        self.cmb_vent.currentTextChanged.connect(self._apply_vent_selection)
+        self.sp_vent_rows = QSpinBox()
+        self.sp_vent_rows.setRange(1, 50)
+        self.sp_vent_rows.valueChanged.connect(self._apply_vent_grid)
 
-        self.sp_vent_cm2 = QDoubleSpinBox()
-        self.sp_vent_cm2.setRange(0.0, 1e6)
-        self.sp_vent_cm2.setSuffix(" cm²")
-        self.sp_vent_cm2.setDecimals(1)
-        self.sp_vent_cm2.valueChanged.connect(self._apply_custom_vent)
+        self.sp_vent_cols = QSpinBox()
+        self.sp_vent_cols.setRange(1, 50)
+        self.sp_vent_cols.valueChanged.connect(self._apply_vent_grid)
 
-        # Row: [ Vent size ▼ ][ Custom area ]
+        # Single compact row
         vent_row = QWidget()
-        vent_row_lay = QHBoxLayout(vent_row)
-        vent_row_lay.setContentsMargins(0, 0, 0, 0)
-        vent_row_lay.setSpacing(6)
-        vent_row_lay.addWidget(self.cmb_vent, 1)
-        vent_row_lay.addWidget(self.sp_vent_cm2, 0)
+        vent_lay = QHBoxLayout(vent_row)
+        vent_lay.setContentsMargins(0, 0, 0, 0)
+        vent_lay.setSpacing(6)
 
-        # Add to form
-        sel_form.addRow(self.cb_vent)
-        sel_form.addRow("Vent:", vent_row)
+        vent_lay.addWidget(self.cb_vent)
+        vent_lay.addWidget(QLabel("Rows"))
+        vent_lay.addWidget(self.sp_vent_rows)
+        vent_lay.addWidget(QLabel("Cols"))
+        vent_lay.addWidget(self.sp_vent_cols)
+        vent_lay.addStretch(1)
+
+        sel_form.addRow("Vents:", vent_row)
+
+        # Informational note
+        self.lbl_vent_note = QLabel(
+            "Vents are applied to top and bottom faces.\n"
+            "Top vents include +1 ROW for chimney effect."
+        )
+        self.lbl_vent_note.setWordWrap(True)
+        sel_form.addRow("", self.lbl_vent_note)
 
         # ---------------- Depth controls ----------------
 
@@ -445,6 +463,11 @@ class SwitchboardTab(QWidget):
         self.cmb_category.currentTextChanged.connect(self.proxy.setCategory)
         self.ed_search.textChanged.connect(self.proxy.setText)
 
+        # On project meta update, recalculate the live thermal overlay so it's not stale.
+        signals.project_meta_changed.connect(self._on_project_meta_changed)
+
+        signals.project_changed.connect(self._on_louvre_definition_changed)
+
     # ------------------------------------------------------------------ #
     # Save / Load
     # ------------------------------------------------------------------ #
@@ -477,12 +500,40 @@ class SwitchboardTab(QWidget):
 
         for td in state.get("tiers", []):
             t = TierItem.from_dict(td)
+
+            # 🔑 REQUIRED: inject louvre definition provider
+            t.get_louvre_definition = self._get_louvre_definition
+
             self._wire_tier_signals(t)
             self.scene.addItem(t)
 
         self._recompute_all_curves()
         self._update_left_from_selection()
         self.tierGeometryCommitted.emit()
+
+    def _on_project_meta_changed(self):
+        """
+        Project-wide meta changed (ambient, altitude, enclosure, etc).
+        Live overlay must be recalculated.
+        """
+        self.refresh_from_project()  # keeps UI in sync (material, k, etc)
+
+        vents_allowed = _vents_allowed_by_ip(self.project)
+
+
+        if not vents_allowed:
+            # Enforce model state (belt + braces)
+            for t in self._tiers():
+                if t.is_ventilated:
+                    t.clear_vent()
+
+        self._recompute_live_thermal()  # 🔥 this is the key line
+        self._update_left_from_selection()
+
+    def _on_louvre_definition_changed(self):
+        for t in self._tiers():
+            if t.is_ventilated:
+                t.update()  # force repaint with new geometry
 
     def refresh_from_project(self):
         # Material
@@ -549,6 +600,10 @@ class SwitchboardTab(QWidget):
             if isinstance(item, TierItem):
                 yield item
 
+    def get_tiers(self) -> list[TierItem]:
+        print(list(self._tiers()))
+        return list(self._tiers())
+
     def _selected_tier(self) -> TierItem | None:
         for it in self._tiers():
             if it.isSelected():
@@ -570,6 +625,27 @@ class SwitchboardTab(QWidget):
         self._recompute_all_curves()
         self._update_left_from_selection()
 
+    # ------------------------------------------------------------------ #
+    # IP Rating related helpers
+    # ------------------------------------------------------------------ #
+
+    def any_tiers_ventilated(self) -> bool:
+        return any(
+            t.is_ventilated
+            for t in self._tiers()
+        )
+
+    def ventilated_tier_names(self) -> list[str]:
+        return [
+            t.name or "<unnamed>"
+            for t in self._tiers()
+            if t.is_ventilated
+        ]
+
+    def disable_all_vents(self):
+        for t in self._tiers():
+            if t.is_ventilated:
+                t.clear_vent()
 
     # ------------------------------------------------------------------ #
     # Actions
@@ -590,6 +666,8 @@ class SwitchboardTab(QWidget):
         self.scene.clearSelection()
         depth = self.sp_same_depth.value() if self.cb_same_depth.isChecked() else 200
         t = TierItem(name, x, y, w, h, depth_mm=depth)
+        t.get_louvre_definition = self._get_louvre_definition
+
         self._wire_tier_signals(t)
 
         # Live left-panel size while dragging
@@ -680,51 +758,72 @@ class SwitchboardTab(QWidget):
     # Vents
     # ------------------------------------------------------------------ #
 
+    def _get_louvre_definition(self) -> dict | None:
+        meta = self.project.meta
+        return getattr(meta, "louvre_definition", None)
+
     def _set_vent_controls_enabled(self, enabled: bool):
-        self.cmb_vent.setEnabled(enabled)
-        is_custom = self.cmb_vent.currentText() == "Custom…"
-        self.sp_vent_cm2.setEnabled(enabled and is_custom)
+        self.sp_vent_rows.setEnabled(enabled)
+        self.sp_vent_cols.setEnabled(enabled)
 
     def _apply_vent_enabled(self, on: bool):
         it = self._selected_tier()
         if not it:
             return
 
-        if not on:
-            it.clear_vent()
-        else:
-            label = next(iter(STANDARD_VENTS_CM2))
-            it.set_vent_preset(label)
-            self.cmb_vent.setCurrentText(label)
+        vents_allowed = _vents_allowed_by_ip(self.project)
 
-        self._set_vent_controls_enabled(on)
+        if on and not vents_allowed:
+            QMessageBox.warning(
+                self,
+                "Ventilation Not Permitted",
+                f"Natural ventilation is not permitted for IP{self.project.meta.ip_rating_n}X enclosures."
+            )
+            self.cb_vent.blockSignals(True)
+            self.cb_vent.setChecked(False)
+            self.cb_vent.blockSignals(False)
+            return
+
+        it.is_ventilated = bool(on)
+
+        # initialise defaults when enabling
+        if on:
+            it.vent_rows = max(1, getattr(it, "vent_rows", 1))
+            it.vent_cols = max(1, getattr(it, "vent_cols", 1))
+
+        self._update_left_from_selection()
         self._recompute_live_thermal()
         self._mark_project_dirty()
 
-    def _apply_vent_selection(self, text: str):
+    def _apply_vent_grid(self):
         it = self._selected_tier()
         if not it or not it.is_ventilated:
             return
 
-        if text in STANDARD_VENTS_CM2:
-            it.set_vent_preset(text)
-            self.sp_vent_cm2.setEnabled(False)
+        d = self._get_louvre_definition()
+        if not d:
+            return
 
-        elif text == "Custom…":
-            self.sp_vent_cm2.setEnabled(True)
-            it.set_custom_vent_cm2(self.sp_vent_cm2.value())
+        max_rows, max_cols = it.max_louvre_grid(d)
 
+        # Clamp user input
+        rows = min(self.sp_vent_rows.value(), max_rows)
+        cols = min(self.sp_vent_cols.value(), max_cols)
+
+        it.vent_rows = rows
+        it.vent_cols = cols
+
+        # Reflect back to UI if clipped
+        self.sp_vent_rows.blockSignals(True)
+        self.sp_vent_cols.blockSignals(True)
+        self.sp_vent_rows.setValue(rows)
+        self.sp_vent_cols.setValue(cols)
+        self.sp_vent_rows.blockSignals(False)
+        self.sp_vent_cols.blockSignals(False)
+
+        it.update()
         self._recompute_live_thermal()
         self._mark_project_dirty()
-
-    def _apply_custom_vent(self, val: float):
-        it = self._selected_tier()
-        if not it or not it.is_ventilated:
-            return
-        if self.cmb_vent.currentText() == "Custom…":
-            it.set_custom_vent_cm2(val)
-            self._recompute_live_thermal()
-            self._mark_project_dirty()
 
     # ------------------------------------------------------------------ #
     # Overlay
@@ -747,20 +846,44 @@ class SwitchboardTab(QWidget):
         allow_mat = bool(getattr(self.project.meta, "allow_material_dissipation", True))
         wall = bool(self.cb_wall.isChecked())
         default_vent_area_cm2 = float(getattr(self.project.meta, "default_vent_area_cm2", 0.0))
+        project_altitude_m = float(getattr(self.project.meta, "altitude_m", 0.0))
+        ip_rating_n = int(getattr(self.project.meta, "ip_rating_n", 0))
+
+        louvre_def = self._get_louvre_definition()
 
         for t in tiers:
             try:
+                inlet_area_cm2 = 0.0
+                vent_test_area_cm2 = None
+
+                if louvre_def:
+                    # Current (what user has configured)
+                    inlet_area_cm2 = tier_effective_inlet_area_cm2(
+                        tier=t,
+                        louvre_def=louvre_def,
+                        ip_rating_n=ip_rating_n,
+                    )
+
+                    # Max possible (for “would vents help?” test)
+                    vent_test_area_cm2 = tier_max_effective_inlet_area_cm2(
+                        tier=t,
+                        louvre_def=louvre_def,
+                        ip_rating_n=ip_rating_n,
+                    )
+
                 t.live_thermal = calc_tier_iec60890(
                     tier=t,
                     tiers=tiers,
                     wall_mounted=wall,
-                    inlet_area_cm2=t.vent_area_for_iec(),  # ← ONLY source
+                    inlet_area_cm2=inlet_area_cm2,
                     ambient_C=ambient,
+                    altitude_m=project_altitude_m,
                     enclosure_k_W_m2K=k_mat,
                     allow_material_dissipation=allow_mat,
                     default_vent_area_cm2=default_vent_area_cm2,
+                    ip_rating_n=ip_rating_n,
+                    vent_test_area_cm2=vent_test_area_cm2,  # ✅ NEW
                 )
-
 
             except Exception:
                 t.live_thermal = None
@@ -881,35 +1004,63 @@ class SwitchboardTab(QWidget):
         # 2) Refresh the table/preview (now pulls cables from the tier)
         self._refresh_selected_contents()
 
-
-
     # ------------------------------------------------------------------ #
     # UI refresh helpers
     # ------------------------------------------------------------------ #
     def _update_left_from_selection(self):
         it = self._selected_tier()
-        if not it:
+        vents_allowed = _vents_allowed_by_ip(self.project)
+
+        # ============================================================
+        # NO TIER SELECTED
+        # ============================================================
+        if it is None:
             self.lbl_sel_name.setText("-")
             self.ed_name.setText("")
             self.lbl_size.setText("-")
-            self.cb_vent.blockSignals(True);
-            self.cb_vent.setChecked(False);
+
+            # Vent checkbox
+            self.cb_vent.blockSignals(True)
+            self.cb_vent.setChecked(False)
+            self.cb_vent.setEnabled(False)
             self.cb_vent.blockSignals(False)
+
+            # Vent grid
+            self.sp_vent_rows.blockSignals(True)
+            self.sp_vent_cols.blockSignals(True)
+            self.sp_vent_rows.setValue(1)
+            self.sp_vent_cols.setValue(1)
+            self.sp_vent_rows.setEnabled(False)
+            self.sp_vent_cols.setEnabled(False)
+            self.sp_vent_rows.blockSignals(False)
+            self.sp_vent_cols.blockSignals(False)
+
+            # Clear remainder
             self.list_contents.clear()
             self.lbl_total_heat.setText("Total heat: 0.0 W")
+
             self.sp_depth.blockSignals(True)
-            self.sp_depth.setValue(self.sp_same_depth.value() if self.cb_same_depth.isChecked() else 200)
+            self.sp_depth.setValue(
+                self.sp_same_depth.value() if self.cb_same_depth.isChecked() else 200
+            )
             self.sp_depth.blockSignals(False)
             self.sp_depth.setEnabled(not self.cb_same_depth.isChecked())
+
             self.sp_max_temp.blockSignals(True)
             self.sp_max_temp.setValue(70)
             self.sp_max_temp.blockSignals(False)
             self.sp_max_temp.setEnabled(True)
-            self.cb_auto_limit.blockSignals(True);
-            self.cb_auto_limit.setChecked(False);
+
+            self.cb_auto_limit.blockSignals(True)
+            self.cb_auto_limit.setChecked(False)
             self.cb_auto_limit.blockSignals(False)
+
             self.lbl_effective_limit.setText("Effective limit: –")
             return
+
+        # ============================================================
+        # TIER SELECTED
+        # ============================================================
 
         self.lbl_sel_name.setText(it.name)
         self.ed_name.setText(it.name)
@@ -919,27 +1070,35 @@ class SwitchboardTab(QWidget):
         hmm = int(it._rect.height() / GRID * mm_per_grid)
         self.lbl_size.setText(f"{wmm} × {hmm}")
 
+        # -------- Vent logic (IP aware) --------
+        vent_on = bool(it.is_ventilated and vents_allowed)
+
+        # Vent enabled checkbox
         self.cb_vent.blockSignals(True)
-        self.cb_vent.setChecked(it.is_ventilated)
+        self.cb_vent.setChecked(vent_on)
+        self.cb_vent.setEnabled(vents_allowed)
         self.cb_vent.blockSignals(False)
 
-        self.cmb_vent.blockSignals(True)
-        if not it.is_ventilated:
-            self.cmb_vent.setCurrentIndex(0)
-        elif it.vent_label in STANDARD_VENTS_CM2:
-            self.cmb_vent.setCurrentText(it.vent_label)
-        else:
-            self.cmb_vent.setCurrentText("Custom…")
-            self.sp_vent_cm2.setValue(it.vent_area_cm2 or 0.0)
-        self.cmb_vent.blockSignals(False)
+        # Rows / Columns
+        self.sp_vent_rows.blockSignals(True)
+        self.sp_vent_cols.blockSignals(True)
 
-        self._set_vent_controls_enabled(it.is_ventilated)
+        self.sp_vent_rows.setValue(getattr(it, "vent_rows", 1))
+        self.sp_vent_cols.setValue(getattr(it, "vent_cols", 1))
 
+        self.sp_vent_rows.setEnabled(vent_on)
+        self.sp_vent_cols.setEnabled(vent_on)
+
+        self.sp_vent_rows.blockSignals(False)
+        self.sp_vent_cols.blockSignals(False)
+
+        # -------- Depth --------
         self.sp_depth.blockSignals(True)
         self.sp_depth.setValue(it.depth_mm)
         self.sp_depth.blockSignals(False)
         self.sp_depth.setEnabled(not self.cb_same_depth.isChecked())
 
+        # -------- Max temperature --------
         self.sp_max_temp.blockSignals(True)
         self.sp_max_temp.setValue(int(getattr(it, "max_temp_C", 70)))
         self.sp_max_temp.blockSignals(False)
@@ -947,6 +1106,7 @@ class SwitchboardTab(QWidget):
         self.cb_auto_limit.blockSignals(True)
         self.cb_auto_limit.setChecked(bool(getattr(it, "use_auto_component_temp", False)))
         self.cb_auto_limit.blockSignals(False)
+
         self.sp_max_temp.setEnabled(not self.cb_auto_limit.isChecked())
         self._update_effective_limit_label(it)
 

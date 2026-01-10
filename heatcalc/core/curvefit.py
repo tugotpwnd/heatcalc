@@ -216,19 +216,26 @@ def evaluate_tier(
     vent_effective = vent_requested and (Ae > 1.25)
 
     if vent_effective:
-        k, ae_used = k_fig5(Ae, inlet_area_cm2)
-        c, f_used = c_fig6(f, inlet_area_cm2)
+        S_air_raw = inlet_area_cm2
+        S_air_used = clamp(S_air_raw, 10.0, 1000.0)
+
+        k, ae_used = k_fig5(Ae, S_air_used)
+
+        S_air_raw = inlet_area_cm2
+        S_air_used = clamp(S_air_raw, 10.0, 1000.0)
+
+        c, f_used = c_fig6(f, S_air_used)
 
         result["k"] = CurvePoint(
             figure="Fig5",
-            x=inlet_area_cm2,
+            x=S_air_used,  # what is actually plotted
             y=k,
             snapped_param=ae_used,
         )
 
         result["c"] = CurvePoint(
             figure="Fig6",
-            x=inlet_area_cm2,
+            x=S_air_used,  # bounded S_air is what is plotted
             y=c,
             snapped_param=f_used,
         )

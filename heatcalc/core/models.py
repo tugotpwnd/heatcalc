@@ -1,4 +1,5 @@
 # heatcalc/core/models.py
+import json
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
 from ..utils.qt import signals
@@ -6,21 +7,40 @@ from ..utils.qt import signals
 @dataclass
 class ProjectMeta:
     job_number: str = ""
-    title: str = ""
+    project_title: str = ""          # ✅ rename
     enclosure: str = ""
-    designer: str = ""
+    designer_name: str = ""          # ✅ rename
     date: str = ""
     revision: str = "A"
-    # Project-wide thermal assumptions
+
+    # ---- Louvre definition (PROJECT-WIDE, AUTHORITATIVE) ----
+    louvre_definition: Dict[str, Any] = field(default_factory=lambda: {
+        "draw_width_mm": 45.0,
+        "draw_height_mm": 15.0,
+        "inlet_area_cm2": 6.5,          # manufacturer free area PER louvre
+        "edge_margin_mm": 15.0,
+        "louvre_spacing_mm": 10.0,
+        "mesh": {
+            "ip_rating_n": 2,
+            "aperture_mm": None,
+            "open_area_factor": 1.0,
+        },
+    })
+
+    # Thermal assumptions
     ambient_C: float = 40.0
-    altitude_m: float = 0.0   # IEC TR 60890 Annex K altitude
+    altitude_m: float = 0.0
+    ip_rating_n: int = 2  # IP2X default (finger-safe, vent-compatible)
     enclosure_material: str = "Sheet metal"
     enclosure_k_W_m2K: float = 5.5
     allow_material_dissipation: bool = False
     default_vent_label: str | None = "100×100"
     default_vent_area_cm2: float = 100.0
-    # NEW: stores list of {item, condition, result}
     iec60890_checklist: List[Dict[str, str]] = field(default_factory=list)
+
+    def mark_changed(self):
+        signals.project_meta_changed.emit()
+
 
 @dataclass
 class Component:
@@ -103,7 +123,25 @@ class Project:
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> "Project":
-        meta = ProjectMeta(**data.get("meta", {}))
+        meta_data = data.get("meta", {})
+
+        meta = ProjectMeta(**{
+            k: v for k, v in meta_data.items()
+            if k != "louvre_definition"
+        })
+
+        if "louvre_definition" in meta_data:
+            merged = dict(meta.louvre_definition)
+            merged.update(meta_data.get("louvre_definition", {}))
+            meta.louvre_definition = merged
+
+            print("[LOAD] Louvre definition after merge:")
+            print(json.dumps(meta.louvre_definition, indent=2))
+
+        if "louvre_definition" in meta_data:
+            merged = dict(meta.louvre_definition)
+            merged.update(meta_data.get("louvre_definition", {}))
+            meta.louvre_definition = merged
 
         layout_data = data.get("layout", {})
         tiers = []

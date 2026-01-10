@@ -126,12 +126,18 @@ class CurveFitTab(QWidget):
 
             # IMPORTANT:
             # For ventilated figures, use the tier’s selected vent area as the inlet area.
-            inlet_area_cm2 = float(getattr(tier, "vent_area_for_iec", lambda: 0.0)())
+            from .tier_item import tier_effective_inlet_area_cm2
+
+            inlet_area_cm2 = tier_effective_inlet_area_cm2(
+                tier=tier,
+                louvre_def=self.project.meta.louvre_definition,
+                ip_rating_n=int(getattr(self.project.meta, "ip_rating_n", 2)),
+            )
 
             used = curvefit.evaluate_tier(
                 tier=tier,
                 all_tiers=tiers,
-                inlet_area_cm2=inlet_area_cm2 if inlet_area_cm2 > 0 else 300.0,  # fallback
+                inlet_area_cm2=inlet_area_cm2,
             )
 
             # used contains keys like "k", "c" → CurvePoint(figure, x, y, snapped_param)

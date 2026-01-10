@@ -23,6 +23,7 @@ from .curvefit_tab import CurveFitTab
 from .temp_rise_tab import TempRiseTab
 from .toast_message import ToastMessage
 from .tier_select_dialog import select_tiers_for_report
+from .louvre_definition_tab import LouvreDefinitionTab
 
 
 # >>> NEW: simple report exporter types/functions
@@ -46,8 +47,16 @@ class MainWindow(QMainWindow):
         self.tabs.setTabsClosable(False)
         self.setCentralWidget(self.tabs)
 
+
+        # Has to innit before meta widget
+        self.switchboard_tab = SwitchboardTab(self.project, parent=self)
+
         # Project Info
-        self.meta_widget = ProjectMetaWidget(self.project)
+        self.meta_widget = ProjectMetaWidget(
+            project=self.project,
+            switchboard=self.switchboard_tab,
+        )
+
         self.project_tab = QWidget()
         self.project_tab_layout = QVBoxLayout(self.project_tab)
         self.project_tab_layout.setContentsMargins(0, 0, 0, 0)
@@ -57,7 +66,7 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # Switchboard Designer
-        self.switchboard_tab = SwitchboardTab(self.project, parent=self)
+
         self.tabs.addTab(self.switchboard_tab, "Switchboard Designer")
 
         self.curvefit_tab = CurveFitTab(self.project, self.switchboard_tab.scene, parent=self)
@@ -74,12 +83,19 @@ class MainWindow(QMainWindow):
         self.switchboard_tab.tierContentsChanged.connect(
             self._project_changed
         )
+
         # ---------------------------------------------------------------------------------------------------
 
         # Temperature rise (per-tier) – manual calculate
-        self.temp_tab = TempRiseTab(self.switchboard_tab.scene, self.project,parent=self)
+        self.temp_tab = TempRiseTab(lambda: self.switchboard_tab.scene, self.project, parent=self)
         self.tabs.addTab(self.temp_tab, "Temperature rise")
 
+        # ---------------------------------------------------------------------------------------------------
+        # Louvre tab
+        self.louvre_tab = LouvreDefinitionTab(self.project, parent=self)
+        self.tabs.addTab(self.louvre_tab, "Louvre definition")
+
+        # ---------------------------------------------------------------------------------------------------
         # autosave toggle
         self.cb_autosave = QCheckBox("Autosave")
         self.cb_autosave.setChecked(self.settings.autosave_enabled)
@@ -87,6 +103,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.cb_autosave)
 
         self.statusBar().showMessage("Ready")
+
 
         # ---- Persistence / autosave ----------------------------------------
         self.persistence = ProjectPersistence()
@@ -105,8 +122,51 @@ class MainWindow(QMainWindow):
     def _project_changed(self):
         signals.project_changed.emit()
 
+    # =======================  Vent and Lovure helpers. (Dont belong here but fuck you)=================================
+
+    def _update_louvre_lock_state(self, widget: LouvreDefinitionTab):
+        sb = self.switchboard_tab
+        ip = int(getattr(self.project.meta, "ip_rating_n", 2))
+
+        # Case 1: IP too high
+        if ip > 4:
+            widget.set_locked(
+                True,
+                f"Louvre definition is locked for IP{ip}X.\n"
+                "Natural louvre ventilation is not permitted above IP4X."
+            )
+            return
+
+        # Case 2: tiers already ventilated
+        if sb.any_tiers_ventilated():
+            names = ", ".join(sb.ventilated_tier_names())
+            widget.set_locked(
+                True,
+                "Louvre definition is locked while tiers have ventilation enabled.\n\n"
+                "Disable vents on all tiers to edit this tab.\n\n"
+                f"Ventilated tiers:\n• {names}"
+            )
+            return
+
+        # Otherwise editable
+        widget.set_locked(False)
+
+    # =======================  Tab change, with vent and lovure shit sorry. =================================
+
     def _on_tab_changed(self, idx: int):
         widget = self.tabs.widget(idx)
+
+        # -------------------------------------------------
+        # Louvre definition guard: ZERO ventilated tiers
+        # -------------------------------------------------
+        if isinstance(widget, LouvreDefinitionTab):
+            self._update_louvre_lock_state(widget)
+            widget.refresh()  # read-only refresh
+            return
+
+        # -------------------------------------------------
+        # Default behaviour
+        # -------------------------------------------------
         if hasattr(widget, "refresh_from_project"):
             widget.refresh_from_project()
 
@@ -149,45 +209,39 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "JSON (*.json)")
         if not path:
             return
+
         with open(path, "r") as f:
             data = json.load(f)
 
-        # Support both new payloads {"meta":..., "designer":...} and old ones {"tiers":[...]}.
+        # ---- Load project safely via model ------------------------------------
+        try:
+            self.project = Project.from_json(data)
+        except Exception as e:
+            QMessageBox.critical(self, "Open Failed", f"Could not load project:\n\n{e}")
+            return
+
+        # ---- Rebuild all tabs so they bind to the new Project ------------------
+        self._rebuild_tabs()
+
+        # ---- Backward compatibility: legacy files without 'designer' ----------
         designer_state = data.get("designer", data)
 
-        # Restore switchboard (tiers + toggles) via the tab’s API
+        # Restore switchboard layout
         self.switchboard_tab.import_state(designer_state)
 
-        # 2) Meta: set both the data model and the UI
-        meta = data.get("meta", {})
-        self.project.meta.job_number = meta.get("job_number", "")
-        self.project.meta.project_title = meta.get("project_title", "")
-        self.project.meta.enclosure = meta.get("enclosure", "")
-        self.project.meta.designer_name = meta.get("designer_name", "")
-        self.project.meta.date = meta.get("date", "")
-        self.project.meta.revision = meta.get("revision", "")
-        self.project.meta.ambient_C = meta.get("ambient_C", 40.0)
-        self.project.meta.enclosure_material = meta.get("enclosure_material", "Sheet metal")
-        self.project.meta.enclosure_k_W_m2K = meta.get("enclosure_k_W_m2K", 5.5)
-        self.project.meta.allow_material_dissipation = meta.get("allow_material_dissipation", False)
-        self.project.meta.default_vent_area_cm2 = meta.get("default_vent_area_cm2", 0.0)
-        self.project.meta.default_vent_label = meta.get("default_vent_label", None)
-
-        # NEW: hydrate IEC 60890 checklist
-        self.project.meta.iec60890_checklist = meta.get("iec60890_checklist", [])
-
-        # Refresh UI from model ONLY
+        # ---- Refresh all UIs from model ----------------------------------------
         self.meta_widget.refresh_from_project()
-        # Refresh Switchboard tab UI from loaded meta
+
         if hasattr(self.switchboard_tab, "refresh_from_project"):
             self.switchboard_tab.refresh_from_project()
 
-        self.curvefit_tab.on_tier_geometry_committed() # Refresh the curve fitting UI
-        self.current_path = Path(path)  # NEW
-        self.autosaver.set_current_path(self.current_path)  # NEW
+        self.curvefit_tab.on_tier_geometry_committed()
+
+        # ---- Autosave plumbing ------------------------------------------------
+        self.current_path = Path(path)
+        self.autosaver.set_current_path(self.current_path)
+
         self.statusBar().showMessage(f"Opened: {Path(path).name}")
-
-
 
     # --- SAVE (Save As) ---
     def _do_save(self):
@@ -205,19 +259,70 @@ class MainWindow(QMainWindow):
     # ======================= Internals ======================================
     def _rebuild_tabs(self):
         """Recreate tab contents that depend on the current Project instance."""
-        # Project Info
-        self.project_tab_layout.removeWidget(self.meta_widget)
-        self.meta_widget.setParent(None)
-        self.meta_widget = ProjectMetaWidget(self.project)
-        self.project_tab_layout.addWidget(self.meta_widget)
 
-        # Switchboard Designer
-        idx = self.tabs.indexOf(self.switchboard_tab)
-        if idx != -1:
-            self.tabs.removeTab(idx)
-        self.switchboard_tab.setParent(None)
+        # ---- Remove old widgets --------------------------------------------
+        if self.meta_widget:
+            self.project_tab_layout.removeWidget(self.meta_widget)
+            self.meta_widget.setParent(None)
+
+        if self.switchboard_tab:
+            idx = self.tabs.indexOf(self.switchboard_tab)
+            if idx != -1:
+                self.tabs.removeTab(idx)
+            self.switchboard_tab.setParent(None)
+
+        if self.curvefit_tab:
+            idx = self.tabs.indexOf(self.curvefit_tab)
+            if idx != -1:
+                self.tabs.removeTab(idx)
+            self.curvefit_tab.setParent(None)
+
+        if self.temp_tab:
+            idx = self.tabs.indexOf(self.temp_tab)
+            if idx != -1:
+                self.tabs.removeTab(idx)
+            self.temp_tab.setParent(None)
+
+        if getattr(self, "louvre_tab", None):
+            idx = self.tabs.indexOf(self.louvre_tab)
+            if idx != -1:
+                self.tabs.removeTab(idx)
+            self.louvre_tab.setParent(None)
+
+        # ---- Recreate Switchboard FIRST ------------------------------------
         self.switchboard_tab = SwitchboardTab(self.project, parent=self)
         self.tabs.insertTab(1, self.switchboard_tab, "Switchboard Designer")
+
+        # ---- Recreate Project Meta (needs switchboard) ---------------------
+        self.meta_widget = ProjectMetaWidget(
+            project=self.project,
+            switchboard=self.switchboard_tab,
+            parent=self,
+        )
+        self.project_tab_layout.addWidget(self.meta_widget)
+
+        # ---- Recreate Curve Fit --------------------------------------------
+        self.curvefit_tab = CurveFitTab(
+            self.project,
+            self.switchboard_tab.scene,
+            parent=self,
+        )
+        self.tabs.insertTab(2, self.curvefit_tab, "Curve fitting")
+
+        # ---- Recreate Temperature Rise -------------------------------------
+        self.temp_tab = TempRiseTab(
+            lambda: self.switchboard_tab.scene,
+            self.project,
+            parent=self,
+        )
+        self.tabs.insertTab(3, self.temp_tab, "Temperature rise")
+
+        # ---- Recreate Louvre -------------------------------------
+        self.louvre_tab = LouvreDefinitionTab(
+            self.project,
+            parent=self
+        )
+        self.tabs.insertTab(4, self.louvre_tab, "Louvre definition")
 
     def _toggle_autosave(self, state: int):
         enabled = state == Qt.Checked
@@ -244,14 +349,20 @@ class MainWindow(QMainWindow):
             "revision": m.revision,
 
             # Thermal assumptions
-            "ambient_C": m.ambient_C,
+            "ambient_C": float(getattr(m, "ambient_C", 40.0)),
+            "altitude_m": float(getattr(m, "altitude_m", 0.0)),
+            "ip_rating_n": int(getattr(m, "ip_rating_n", 2)),
+
             "enclosure_material": m.enclosure_material,
             "enclosure_k_W_m2K": m.enclosure_k_W_m2K,
             "allow_material_dissipation": m.allow_material_dissipation,
 
+            # ---- Louvre definition (NEW) ----
+            "louvre_definition": getattr(m, "louvre_definition", {}),
+
+            # Legacy / misc
             "default_vent_area_cm2": getattr(m, "default_vent_area_cm2", 0.0),
             "default_vent_label": getattr(m, "default_vent_label", None),
-
             "iec60890_checklist": getattr(m, "iec60890_checklist", []),
         }
 

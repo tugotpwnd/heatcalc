@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Optional, Dict, Any
 from PyQt5.QtCore import QObject, QTimer
@@ -29,6 +30,7 @@ class AutoSaveController(QObject):
         self._current_path = path
 
     def _on_project_changed(self) -> None:
+        print("[AUTOSAVE] project_changed received")
         if self._settings.autosave_enabled:
             self._timer.start()
 
@@ -39,11 +41,18 @@ class AutoSaveController(QObject):
             self._on_timeout()
 
     def _on_timeout(self) -> None:
+        print("[AUTOSAVE] debounce timeout fired")
+        project = self._get_project_json.__self__.project
+        print("[DEBUG] project id in autosave:", id(project))
+
         if not self._settings.autosave_enabled or self._current_path is None:
+            print("[AUTOSAVE] aborted (autosave off or no path)")
             return
+
         data = self._get_project_json()
-        try:
-            self._persist.save_project(data, self._current_path)
-        except Exception:
-            # error already logged in persistence
-            pass
+
+        print("[AUTOSAVE] JSON payload (meta.louvre_definition):")
+        print(json.dumps(data["meta"]["louvre_definition"], indent=2))
+
+        self._persist.save_project(data, self._current_path)
+        print("[AUTOSAVE] JSON written to disk")

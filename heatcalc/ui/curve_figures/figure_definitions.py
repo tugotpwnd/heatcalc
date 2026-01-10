@@ -82,7 +82,9 @@ def _draw_fig5(ax: Axes) -> None:
     ae_values = [1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14]
 
     for ae in ae_values:
-        ys = [curvefit.k_fig5(ae, a) for a in areas]
+        # k_fig5 returns (k, ae_snap) → we must take ONLY k
+        ys = [curvefit.k_fig5(ae, a)[0] for a in areas]
+
         ax.plot(
             areas,
             ys,
@@ -102,17 +104,13 @@ def _draw_fig5(ax: Axes) -> None:
     ax.minorticks_on()
 
 
+
 def _draw_fig6(ax: Axes) -> None:
-    # IEC 60890 Fig.6 — c vs inlet opening area (ventilated, Ae > 1.25 m²)
-
-    # Inlet opening area range per IEC
     areas = [i * 10 for i in range(1, 101)]  # 10 .. 1000 cm²
-
-    # Representative height/base factors (ordered as in IEC legend)
     f_values = [1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
     for f in f_values:
-        ys = [curvefit.c_fig6(f, a) for a in areas]
+        ys = [curvefit.c_fig6(f, a)[0] for a in areas]  # ← FIX
         ax.plot(
             areas,
             ys,
@@ -120,17 +118,14 @@ def _draw_fig6(ax: Axes) -> None:
             label=f"{f:g}",
         )
 
-    # Axis formatting to match IEC figure
     ax.set_xlim(0, 1000)
     ax.set_ylim(1.2, 2.3)
-
     ax.set_xlabel(r"$S_{air}$ (cm²)")
     ax.set_ylabel("Temperature distribution factor c (—)")
-
     ax.grid(True, which="major", ls="-", alpha=0.35)
     ax.grid(True, which="minor", ls=":", alpha=0.25)
-
     ax.minorticks_on()
+
 
 def _draw_fig7(ax: Axes) -> None:
     # IEC 60890 Fig.7 — k vs Ae (no ventilation, Ae ≤ 1.25 m²)

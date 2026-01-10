@@ -38,4 +38,5 @@ class ProjectSignals(QObject):
     autosave_changed = pyqtSignal(bool)
 
 
+
 signals = ProjectSignals()

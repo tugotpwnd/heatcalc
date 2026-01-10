@@ -11,17 +11,164 @@ from ..core.component_library import DEFAULT_COMPONENTS  # <-- you said core
 # tier_item.py  (add near the other imports)
 from dataclasses import dataclass, asdict
 
+from ..core.louvre_calc import effective_louvre_area_cm2
+
 HANDLE = 10  # px
 CORNERS = ("tl", "tr", "bl", "br")
-# --- Vent presets (IEC area in cm²) ----------------------------------------
-STANDARD_VENTS_CM2 = {
-    "50×50": 25.0,     # 50 mm × 50 mm = 25 cm²
-    "75×75": 56.25,
-    "100×100": 100.0,
-    "150×150": 225.0,
-    "200×200": 400.0,
-}
 
+# --- Lovure helper  ----------------------------------------
+def tier_effective_inlet_area_cm2(
+    *,
+    tier,
+    louvre_def: dict,
+    ip_rating_n: int,
+) -> float:
+    """
+    Computes total effective inlet area for a tier, including:
+    - bottom louvres
+    - top louvres (+1 chimney row)
+    - IP mesh derating
+
+    Returns cm²
+    """
+
+    # Hard IP gate
+    if not tier.is_ventilated:
+        return 0.0
+    if int(ip_rating_n) >= 5:
+        return 0.0  # ventilation not permitted
+
+    per_louvre = effective_louvre_area_cm2(
+        louvre_def,
+        ip_rating_n=ip_rating_n,
+    )
+
+    cols = max(1, int(getattr(tier, "vent_cols", 1)))
+    rows_bottom = max(1, int(getattr(tier, "vent_rows", 1)))
+    rows_top = rows_bottom + 1  # chimney effect
+
+    total_louvres = cols * (rows_bottom + rows_top)
+
+    return total_louvres * per_louvre
+
+
+# -------------------------------------------
+
+from PyQt5.QtWidgets import QGraphicsItem
+from PyQt5.QtGui import (
+    QPainter, QFont, QFontMetrics, QColor
+)
+from PyQt5.QtCore import QRectF, Qt
+
+
+class TierOverlayItem(QGraphicsItem):
+    def __init__(self, tier):
+        super().__init__(tier)  # 👈 child of TierItem
+        self.tier = tier
+        self.setZValue(tier.zValue() + 1)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def boundingRect(self) -> QRectF:
+        # same local coord system as TierItem
+        return self.tier._rect
+
+    def paint(self, painter: QPainter, option, widget=None):
+        lt = self.tier.live_thermal
+        if not lt or not self.tier.show_live_overlay:
+            return
+
+        PAD = 6
+        font_main = QFont("Consolas", 9)
+        painter.setFont(font_main)
+
+        # ---- build lines ----
+        curvefit = lt.get("curvefit") or {}
+        k_meta = curvefit.get("k") or {}
+        c_meta = curvefit.get("c") or {}
+
+        Ae_raw = lt.get("Ae")
+        Ae_snap = k_meta.get("used_ae")
+
+        lines = [
+            f"Ae: {Ae_raw:.2f} m²" if Ae_snap is None else
+            f"Ae: {Ae_raw:.2f} → {Ae_snap:.2f} m²",
+            f"ΔT(1.0t): {lt.get('dt_top', 0.0):.1f} K",
+        ]
+
+        Pcool = lt.get("P_cooling", 0.0)
+        if Pcool > 0:
+            lines += [
+                f"Pmat: {lt.get('P_material', 0.0):.1f} W",
+                f"Pcool: {Pcool:.1f} W",
+            ]
+        else:
+            lines.append("Cooling: NOT REQUIRED")
+
+        # --- NEW: vent recommendation status ---
+        if lt.get("vent_recommended"):
+            lines.append("Ventilation: RECOMMENDED")
+        # --- Vent inlet area (effective, IEC-used) ---
+        if lt.get("ventilated"):
+            Ain = lt.get("inlet_area_cm2", 0.0)
+            if Ain > 0:
+                lines.append(f"Vent Ae(in): {Ain:.0f} cm²")
+
+        airflow = lt.get("airflow_m3h")
+        if airflow:
+            lines.append(f"Air: {airflow:.0f} m³/h")
+
+        ctx = [
+            f"Curve: {lt.get('curve_no', '—')}",
+            f"k={lt.get('k', 0.0):.3f}",
+            f"c={lt.get('c', 0.0):.3f}",
+            f"x={lt.get('x', 0.0):.3f}",
+        ]
+
+        if curvefit.get("snapped"):
+            ctx.append("⚠ IEC curve snapped")
+
+        if lt.get("g") is not None:
+            ctx.append(f"g={lt['g']:.3f}")
+
+        f_raw = lt.get("f")
+        f_snap = c_meta.get("used_f")
+        if f_raw is not None:
+            ctx.append(
+                f"f={f_raw:.3f}" if not f_snap
+                else f"f={f_raw:.3f} → {f_snap:.2f}"
+            )
+
+        if lt.get("d") is not None:
+            ctx.append(f"d={lt['d']:.3f}")
+
+        all_lines = lines + [""] + ctx
+
+        fm = QFontMetrics(font_main)
+        lh = fm.height()
+        block_w = min(
+            max(fm.horizontalAdvance(s) for s in all_lines) + 2 * PAD,
+            self.boundingRect().width() - 8,
+        )
+        block_h = len(all_lines) * lh + 2 * PAD
+
+        x = self.boundingRect().left() + 4
+        y = self.boundingRect().bottom() - block_h - 4
+
+        # ---- background ----
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 210))
+        painter.drawRoundedRect(QRectF(x, y, block_w, block_h), 6, 6)
+
+        # ---- text ----
+        painter.setPen(QColor(20, 20, 20))
+        ty = y + PAD
+        for line in all_lines:
+            painter.drawText(
+                QRectF(x + PAD, ty, block_w - 2 * PAD, lh),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                line,
+            )
+            ty += lh
 
 
 class _Handle(QGraphicsRectItem):
@@ -216,6 +363,9 @@ class TierItem(ResizableBox):
         self.vent_area_cm2: float | None = None
         self.vent_label: str | None = None
         self.is_ventilated: bool = False
+        self.vent_rows = 1
+        self.vent_cols = 1
+        self.get_louvre_definition = None  # callable injected by owner
 
         # --- Contents -------------------------------------------------------
         self.component_entries: list[ComponentEntry] = []
@@ -244,6 +394,7 @@ class TierItem(ResizableBox):
         # --- Live IEC overlay ----------------------------------------------
         self.live_thermal: dict | None = None
         self.show_live_overlay: bool = True
+        self.overlay_item = TierOverlayItem(self)
 
     def mouseReleaseEvent(self, ev):
         super().mouseReleaseEvent(ev)
@@ -292,6 +443,12 @@ class TierItem(ResizableBox):
     def vent_area_for_iec(self) -> float:
         return float(self.vent_area_cm2 or 0.0)
 
+    def vent_louvre_count(self) -> int:
+        # bottom vents
+        bottom = self.vent_rows * self.vent_cols
+        # top vents (+1 row for chimney)
+        top = (self.vent_rows + 1) * self.vent_cols
+        return bottom + top
 
     # ----- heat helpers -----------------------------------------------------
 
@@ -346,65 +503,149 @@ class TierItem(ResizableBox):
         elif chosen == act_delete:
             self.requestDelete.emit(self)
 
+    def max_louvre_grid(self, d: dict) -> tuple[int, int]:
+        """
+        Returns (max_rows, max_cols) allowed by tier geometry.
+        rows refers to BOTTOM rows (top will be rows + 1).
+        """
+        # Convert mm → scene units
+        w = d["draw_width_mm"] / 25.0 * GRID
+        h = d["draw_height_mm"] / 25.0 * GRID
+        edge = d["edge_margin_mm"] / 25.0 * GRID
+        gap = d["louvre_spacing_mm"] / 25.0 * GRID
+
+        tier_w = self._rect.width()
+        tier_h = self._rect.height()
+
+        # ---------------- Horizontal ----------------
+        usable_w = tier_w - 2 * edge
+        max_cols = 0
+        while True:
+            test = max_cols * w + max(0, max_cols - 1) * gap
+            if test > usable_w:
+                break
+            max_cols += 1
+        max_cols = max(1, max_cols - 1)
+
+        # ---------------- Vertical (per face) ----------------
+        usable_h = tier_h / 2.0 - edge
+
+        max_rows = 0
+        while True:
+            # TOP governs (rows + 1)
+            rows_top = max_rows + 1
+            test = rows_top * h + max(0, rows_top - 1) * gap
+            if test > usable_h:
+                break
+            max_rows += 1
+        max_rows = max(1, max_rows - 1)
+
+        return max_rows, max_cols
+
+    def _draw_louvres(self, painter):
+        if not self.is_ventilated:
+            return
+
+        if not callable(self.get_louvre_definition):
+            return
+
+        d = self.get_louvre_definition()
+        if not d:
+            return
+
+        # Convert mm → item units
+        try:
+            w = float(d["draw_width_mm"]) / 25.0 * GRID
+            h = float(d["draw_height_mm"]) / 25.0 * GRID
+            edge = float(d["edge_margin_mm"]) / 25.0 * GRID
+            gap = float(d["louvre_spacing_mm"]) / 25.0 * GRID
+        except Exception:
+            return
+
+        rect = self._rect  # LOCAL coords
+
+        cols = max(1, int(self.vent_cols))
+        rows_bottom = max(1, int(self.vent_rows))
+        rows_top = rows_bottom + 1  # chimney row
+
+        total_w = cols * w + (cols - 1) * gap
+        total_h_bot = rows_bottom * h + (rows_bottom - 1) * gap
+        total_h_top = rows_top * h + (rows_top - 1) * gap
+
+        x0 = rect.center().x() - total_w / 2.0
+        y_bottom = rect.bottom() - edge - total_h_bot
+        y_top = rect.top() + edge
+
+        painter.save()
+        painter.setPen(QPen(QColor(190, 190, 190), 1.5))  # light grey
+        painter.setBrush(Qt.NoBrush)
+
+        def draw_block(y0, rows):
+            for r in range(rows):
+                y = y0 + r * (h + gap)
+                for c in range(cols):
+                    x = x0 + c * (w + gap)
+                    painter.drawRect(QRectF(x, y, w, h))
+
+        draw_block(y_bottom, rows_bottom)
+        draw_block(y_top, rows_top)
+
+        painter.restore()
+
     def paint(self, painter, option, widget=None):
         super().paint(painter, option, widget)
 
-        # --- cooling state (authoritative) ---
-        cooling_required = False
-        if self.live_thermal:
-            cooling_required = self.live_thermal.get("P_cooling", 0.0) > 0.0
 
-        # --- passive vent indicator (if tier has vents) ---
+        # 2. LOUVRES ON TOP
         if self.is_ventilated:
-            cx = self._rect.center().x()
-            y = self._rect.top() + 22  # further down
-
-            pen = QPen(QColor("#a8dadc"), 2.5)  # thicker stroke
-            painter.setPen(pen)
+            painter.save()
+            painter.setPen(QPen(Qt.darkGray, 1))
             painter.setBrush(Qt.NoBrush)
+            self._draw_louvres(painter)
+            painter.restore()
 
-            # ~4× larger vent symbol
-            wave_w = 40
-            wave_h = 14
-            gap = 10
+        # --- cooling state (authoritative) ---
+        cooling_required = (
+                bool(self.live_thermal)
+                and self.live_thermal.get("P_cooling", 0.0) > 0.0
+        )
 
-            for i in range(3):
-                x0 = cx - wave_w / 2
-                y0 = y + i * gap
-                painter.drawArc(
-                    QRectF(x0, y0, wave_w, wave_h),
-                    0 * 16,
-                    180 * 16
-                )
-
-        # --- title (big, state-coloured) ---
-        title_font = QFont()
+        # --- title ---
+        title_font = QFont("Segoe UI")  # or Arial
         title_font.setPointSize(18)
         title_font.setBold(True)
         painter.setFont(title_font)
+        painter.setPen(QPen(Qt.white))  # or your colour logic
 
-        if cooling_required:
-            painter.setPen(QPen(QColor("#ff9f1c")))  # orange
-        else:
-            painter.setPen(QPen(QColor("#2ec4b6")))  # green
+        painter.setPen(
+            QPen(QColor("#ff9f1c") if cooling_required else QColor("#2ec4b6"))
+        )
 
-        # draw name centered slightly above middle
-        name_rect = QRectF(self._rect.left(), self._rect.center().y() - 18,
-                           self._rect.width(), 22)
-        painter.drawText(name_rect, Qt.AlignCenter, self.name)
+        painter.drawText(
+            QRectF(
+                self._rect.left(),
+                self._rect.center().y() - 18,
+                self._rect.width(),
+                22,
+            ),
+            Qt.AlignCenter,
+            self.name,
+        )
 
-        # --- total heat (small) ---
-        heat_text = f"{self.total_heat():.1f} W"
-        small_font = QFont()
-        small_font.setPointSize(10)  # ~half of 18
-        small_font.setBold(False)
-        painter.setFont(small_font)
+        # --- total heat ---
+        painter.setFont(QFont("Segoe UI", 10))
+        painter.drawText(
+            QRectF(
+                self._rect.left(),
+                self._rect.center().y() + 2,
+                self._rect.width(),
+                16,
+            ),
+            Qt.AlignCenter,
+            f"{self.total_heat():.1f} W",
+        )
 
-        heat_rect = QRectF(self._rect.left(), self._rect.center().y() + 2,
-                           self._rect.width(), 16)
-        painter.drawText(heat_rect, Qt.AlignCenter, heat_text)
-
-        # --- curve tag (top-right) ---
+        # --- curve tag ---
         tag = QRectF(self._rect.right() - 40, self._rect.top() + 8, 32, 24)
         painter.setPen(QPen(QColor("#222")))
         painter.setBrush(QBrush(QColor("#ffd166")))
@@ -412,227 +653,6 @@ class TierItem(ResizableBox):
         painter.setPen(QPen(QColor("#111")))
         painter.setFont(QFont("", 12))
         painter.drawText(tag, Qt.AlignCenter, str(self.curve_no))
-
-
-        # --- touching faces indicator ---
-        inset = 6.0
-        pen = QPen(QColor("#FFD166"), 2)
-        painter.setPen(pen)
-
-        r = self._rect
-
-        if self.covered_sides.get("left"):
-            painter.drawLine(
-                QPointF(r.left() + inset, r.top() + inset),
-                QPointF(r.left() + inset, r.bottom() - inset),
-            )
-
-        if self.covered_sides.get("right"):
-            painter.drawLine(
-                QPointF(r.right() - inset, r.top() + inset),
-                QPointF(r.right() - inset, r.bottom() - inset),
-            )
-
-        if self.covered_sides.get("top"):
-            painter.drawLine(
-                QPointF(r.left() + inset, r.top() + inset),
-                QPointF(r.right() - inset, r.top() + inset),
-            )
-
-        # --- live IEC 60890 overlay (readable on dark background) ---
-        if self.show_live_overlay and self.live_thermal:
-
-            def fmt_snap(label, raw, snapped, unit=""):
-                if raw is None or snapped is None:
-                    return f"{label}: {raw}{unit}"
-                return f"{label}: {raw}{unit} → {snapped}{unit}"
-
-            lt = self.live_thermal
-            curvefit = lt.get("curvefit") or {}
-            curve_snapped = curvefit.get("snapped", False)
-            k_meta = curvefit.get("k")
-            c_meta = curvefit.get("c")
-            Ae_raw = lt.get("Ae")
-
-            Ae_snap = k_meta.get("used_ae") if k_meta else None
-
-            lines = [
-                fmt_snap(
-                    "Ae",
-                    f"{Ae_raw:.2f}",
-                    f"{Ae_snap:.2f}" if Ae_snap and abs(Ae_raw - Ae_snap) > 1e-3 else None,
-                    " m²",
-                ),
-                f"ΔT(1.0t): {lt.get('dt_top', 0.0):.1f} K",
-            ]
-
-            Pmat = lt.get("P_material", 0.0)
-            Pcool = lt.get("P_cooling", 0.0)
-
-            if Pcool > 0.0:
-                lines.append(f"Pmat: {Pmat:.1f} W")
-                lines.append(f"Pcool: {Pcool:.1f} W")
-            else:
-                lines.append("Cooling: NOT REQUIRED")
-
-            airflow = lt.get("airflow_m3h")
-            if airflow is not None and airflow > 0:
-                lines.append(f"Air: {airflow:.0f} m³/h")
-
-            # --- font: fixed-width, crisp ---
-            font = QFont("Consolas")  # Windows-safe, monospaced
-            font.setPointSize(9)
-            painter.setFont(font)
-
-            fm = QFontMetrics(font)
-            line_h = fm.height()
-
-            # --- text position ---
-            x = self._rect.left() + 6
-            y = self._rect.bottom() - (len(lines) * line_h) - 6
-
-            # --- shadow (dark outline for contrast) ---
-            painter.setPen(QColor(0, 0, 0, 200))
-            for i, line in enumerate(lines):
-                painter.drawText(
-                    QRectF(x + 1, y + i * line_h + 1, self._rect.width(), line_h),
-                    Qt.AlignLeft | Qt.AlignVCenter,
-                    line,
-                )
-
-            # --- main text (white) ---
-            painter.setPen(QColor(255, 255, 255, 235))
-            for i, line in enumerate(lines):
-                painter.drawText(
-                    QRectF(x, y + i * line_h, self._rect.width(), line_h),
-                    Qt.AlignLeft | Qt.AlignVCenter,
-                    line,
-                )
-
-            ctx_lines = [
-                f"Curve: {lt.get('curve_no', '—')}",
-                f"k={lt.get('k', 0.0):.3f}",
-                f"c={lt.get('c', 0.0):.3f}",
-                f"x={lt.get('x', 0.0):.3f}",
-            ]
-
-            # --- show snapping (vented only) ---
-            if curve_snapped:
-                painter.setPen(QColor(255, 200, 80, 230))  # amber
-                ctx_lines.append("⚠ IEC curve snapped")
-
-            g = lt.get("g")
-            if g is not None:
-                ctx_lines.append(f"g={g:.3f}")
-            f_raw = lt.get("f")
-            f_snap = c_meta.get("used_f") if c_meta else None
-
-            if f_raw is not None:
-                if f_snap and abs(f_raw - f_snap) > 1e-3:
-                    ctx_lines.append(f"f={f_raw:.3f} → {f_snap:.2f}")
-                else:
-                    ctx_lines.append(f"f={f_raw:.3f}")
-
-            # d is not always present (wall-mounted cases)
-            if lt.get("d") is not None:
-                ctx_lines.append(f"d={lt.get('d'):.3f}")
-
-            coeffs = lt.get("coeff_sources", [])
-            if coeffs:
-                ctx_lines.append("Coeff: " + ", ".join(coeffs))
-
-            profile = lt.get("profile_source")
-            if profile:
-                ctx_lines.append("Temp Rise: " + profile)
-
-            font = QFont("Consolas")
-            font.setPointSize(8)
-            painter.setFont(font)
-
-            fm = QFontMetrics(font)
-            lh = fm.height()
-
-            # Position: bottom-right, inside tier
-            PAD = 4
-            BLOCK_W = min(160, self._rect.width() - 2 * PAD)
-
-            x = self._rect.right() - BLOCK_W - PAD
-
-            y = self._rect.bottom() - (len(ctx_lines) * lh) - 6
-
-            # Shadow
-            painter.setPen(QColor(0, 0, 0, 200))
-            for i, line in enumerate(ctx_lines):
-                painter.drawText(
-                    QRectF(x + 1, y + i * lh + 1, BLOCK_W, lh),
-                    Qt.AlignLeft | Qt.AlignVCenter,
-                    line,
-                )
-
-            # Text
-            painter.setPen(QColor(255, 255, 255, 220))
-            for i, line in enumerate(ctx_lines):
-                painter.drawText(
-                    QRectF(x, y + i * lh, BLOCK_W, lh),
-                    Qt.AlignLeft | Qt.AlignVCenter,
-                    line,
-                )
-
-            vent_rec = lt.get("vent_recommended", False)
-
-            if vent_rec:
-                font = QFont("Consolas")
-                font.setPointSize(8)
-                font.setBold(True)
-                painter.setFont(font)
-
-                text = "⚠ VENT RECOMMENDED"
-
-                fm = QFontMetrics(font)
-                w = fm.horizontalAdvance(text) + 8
-                h = fm.height() + 4
-
-                x = self._rect.left() + 16  # move right
-                y = self._rect.top() + 14  # move down
-
-                # Background (red, semi-transparent)
-                painter.setBrush(QColor(180, 40, 40, 200))
-                painter.setPen(Qt.NoPen)
-                painter.drawRoundedRect(QRectF(x, y, w, h), 4, 4)
-
-                # Text
-                painter.setPen(QColor(255, 255, 255))
-                painter.drawText(
-                    QRectF(x + 4, y + 2, w, h),
-                    Qt.AlignLeft | Qt.AlignVCenter,
-                    text,
-                )
-
-            # --- fan indicator (active cooling required) ---
-            if cooling_required:
-                cx = self._rect.center().x()
-                y = self._rect.bottom() - 26  # lift slightly off bottom edge
-
-                pen = QPen(QColor("#ff9f1c"), 2.5)  # orange, matches title
-                painter.setPen(pen)
-                painter.setBrush(Qt.NoBrush)
-
-                radius = 20
-
-                # outer circle
-                painter.drawEllipse(
-                    QPointF(cx, y),
-                    radius,
-                    radius
-                )
-
-                # fan blades (simple 3-blade symbol)
-                for angle_deg in (0, 120, 240):
-                    painter.save()
-                    painter.translate(cx, y)
-                    painter.rotate(angle_deg)
-                    painter.drawLine(0, 0, radius, 0)
-                    painter.restore()
 
     # ----- Cables API -----
     def add_cable(self, payload: Dict[str, Any]) -> CableEntry:
@@ -718,6 +738,8 @@ class TierItem(ResizableBox):
                 "enabled": self.is_ventilated,
                 "area_cm2": self.vent_area_cm2,
                 "label": self.vent_label,
+                "rows": int(getattr(self, "vent_rows", 1)),
+                "cols": int(getattr(self, "vent_cols", 1)),
             },
 
             # Contents
@@ -752,9 +774,14 @@ class TierItem(ResizableBox):
         )
 
         v = d.get("vent", {})
+
         t.is_ventilated = bool(v.get("enabled", False))
         t.vent_area_cm2 = v.get("area_cm2")
         t.vent_label = v.get("label")
+
+        # NEW: vent grid persistence
+        t.vent_rows = int(v.get("rows", 1))
+        t.vent_cols = int(v.get("cols", 1))
 
         # Backward compatibility
         if t.is_ventilated and t.vent_area_cm2 is None:
