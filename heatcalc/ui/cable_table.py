@@ -25,8 +25,6 @@ def load_cable_table(csv_path: str | Path = cable_path) -> TableIndex:
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         headers = reader.fieldnames or []
-        print(f"[cable_table] Loading: {csv_path}")
-        print(f"[cable_table] Headers: {headers}")
 
         # map (temp, inst) -> {'IN': colname, 'PN': colname}
         col_map: Dict[Tuple[int,int], Dict[str,str]] = {}
@@ -43,8 +41,7 @@ def load_cable_table(csv_path: str | Path = cable_path) -> TableIndex:
 
         if not col_map:
             print("[cable_table] !! No (temp,install) column pairs detected. Check CSV headers and regex.")
-        else:
-            print(f"[cable_table] Detected keys: {sorted(col_map.keys())}")
+
 
         f.seek(0); reader = csv.DictReader(f)
         for rec in reader:
@@ -66,9 +63,6 @@ def load_cable_table(csv_path: str | Path = cable_path) -> TableIndex:
     # sort by CSA and print series coverage
     for key, series in rows_per_key.items():
         series.sort(key=lambda r: r.csa)
-        if series:
-            print(f"[cable_table] Series {key}: n={len(series)} CSA points, "
-                  f"minCSA={series[0].csa}, maxCSA={series[-1].csa}")
     return rows_per_key
 
 def _interp(series: List[CableRowInstall], x_csa: float, attr: str) -> float:

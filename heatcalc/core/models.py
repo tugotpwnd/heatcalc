@@ -135,8 +135,6 @@ class Project:
             merged.update(meta_data.get("louvre_definition", {}))
             meta.louvre_definition = merged
 
-            print("[LOAD] Louvre definition after merge:")
-            print(json.dumps(meta.louvre_definition, indent=2))
 
         if "louvre_definition" in meta_data:
             merged = dict(meta.louvre_definition)

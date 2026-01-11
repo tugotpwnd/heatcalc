@@ -7,7 +7,8 @@ import re
 
 from PyQt5.QtWidgets import QGraphicsScene
 
-from ..ui.tier_item import TierItem
+from ..core.louvre_calc import tier_max_effective_inlet_area_cm2
+from ..ui.tier_item import TierItem, tier_effective_inlet_area_cm2
 from ..core.iec60890_calc import calc_tier_iec60890
 
 from .simple_report import (
@@ -116,6 +117,7 @@ def _meta_from_project(project: Any) -> ReportMeta:
         designer=g(m, "designer_name", "designer"),
         revision=g(m, "revision"),
         date=g(m, "date"),
+        ip_rating_n=g(m,"ip_rating_n"),
     )
 
 
@@ -142,7 +144,6 @@ def export_project_report(
     out_pdf: Path,
     *,
     ambient_C: Optional[float] = None,
-    inlet_area_cm2: float = 300.0,
     header_logo_path: Optional[Path] = None,
     footer_image_path: Optional[Path] = None,
     iec60890_checklist=None,
@@ -206,76 +207,100 @@ def export_project_report(
                 pass
 
     # IEC 60890 / temperature results per tier.
-    tier_thermals: List[TierThermal] = []
+    tier_thermals: list[TierThermal] = []
+
     if ambient_C is not None:
-        allow_mat = _safe_bool(getattr(project, "meta", object()), "allow_material_dissipation", False)
-        k_m2K = _safe_float(getattr(project, "meta", object()), "enclosure_k_W_m2K", 0.0)
-        enc_mat = getattr(getattr(project, "meta", object()), "enclosure_material", None)
-        default_vent_area_cm2 = _safe_float(getattr(project, "meta", object()), "default_vent_area_cm2", 0.0)
-        project_altitude_m = float(getattr(getattr(project, "meta", None), "altitude_m", 0.0))
+
+        # ---------------- Project-wide meta ----------------
+        ambient = float(ambient_C)
+        k_mat = float(getattr(project.meta, "enclosure_k_W_m2K", 0.0))
+        allow_mat = bool(getattr(project.meta, "allow_material_dissipation", True))
+        project_altitude_m = float(getattr(project.meta, "altitude_m", 0.0))
+        ip_rating_n = int(getattr(project.meta, "ip_rating_n", 0))
+        enc_mat = getattr(project.meta, "enclosure_material", None)
+
+        # Louvre definition (same source as live calc)
+        louvre_def = None
+        try:
+            louvre_def = switchboard_tab.get_louvre_definition()
+        except Exception:
+            pass
 
         for t in report_tier_items:
-            # Prefer per-tier vent size when present; otherwise fall back to the report/default inlet area.
-            if getattr(t, "is_ventilated", False):
-                tier_inlet_cm2 = float(getattr(t, "vent_area_for_iec", lambda: 0.0)() or 0.0)
-            else:
-                tier_inlet_cm2 = 0.0  # no inlet area
 
+            # ---------------- Vent areas via louvre model ----------------
+            inlet_area_cm2 = 0.0
+            vent_test_area_cm2 = None
+
+            if louvre_def:
+                inlet_area_cm2 = tier_effective_inlet_area_cm2(
+                    tier=t,
+                    louvre_def=louvre_def,
+                    ip_rating_n=ip_rating_n,
+                )
+
+                vent_test_area_cm2 = tier_max_effective_inlet_area_cm2(
+                    tier=t,
+                    louvre_def=louvre_def,
+                    ip_rating_n=ip_rating_n,
+                )
+
+            # ---------------- IEC 60890 calculation ----------------
             res = calc_tier_iec60890(
                 tier=t,
-                tiers=all_tiers,  # IMPORTANT: full model for touching checks
+                tiers=all_tiers,  # full geometry context
                 wall_mounted=bool(getattr(t, "wall_mounted", False)),
-                inlet_area_cm2=float(tier_inlet_cm2),
-                ambient_C=float(ambient_C),
+                inlet_area_cm2=float(inlet_area_cm2),
+                ambient_C=ambient,
                 altitude_m=project_altitude_m,
-                enclosure_k_W_m2K=float(k_m2K),
-                allow_material_dissipation=bool(allow_mat),
-                default_vent_area_cm2=default_vent_area_cm2
+                enclosure_k_W_m2K=k_mat,
+                allow_material_dissipation=allow_mat,
+                ip_rating_n=ip_rating_n,
+                vent_test_area_cm2=vent_test_area_cm2,  # ✅ NEW
             )
 
+            # ---------------- Normalise into TierThermal ----------------
             tier_thermals.append(
                 TierThermal(
                     tag=str(getattr(t, "name", getattr(t, "tag", "Tier"))),
+
                     Ae=float(res.get("Ae", 0.0)),
                     P_W=float(res.get("P", 0.0)),
+
                     k=float(res.get("k", 0.0)),
                     c=float(res.get("c", 0.0)),
                     x=float(res.get("x", 0.0)),
-                    f=res.get("f", None),
-                    g=res.get("g", None),
+                    f=res.get("f"),
+                    g=res.get("g"),
+
                     vent=bool(res.get("ventilated", False)),
                     curve=int(getattr(t, "curve_no", 1) or 1),
-                    ambient_C=float(res.get("ambient_C", ambient_C)),
+                    ambient_C=float(res.get("ambient_C", ambient)),
 
                     dt_mid=float(res.get("dt_mid", 0.0)),
                     dt_top=float(res.get("dt_top", 0.0)),
-                    dt_075=res.get("dt_075", None),
+                    dt_075=res.get("dt_075"),
 
                     T_mid=float(res.get("T_mid", 0.0)),
                     T_top=float(res.get("T_top", 0.0)),
-                    T_075=res.get("T_075", None),
+                    T_075=res.get("T_075"),
 
-                    max_C=float(res.get("limit_C", getattr(t, "max_temp_C", 70))),
+                    max_C=float(res.get("limit_C", getattr(t, "max_temp_C", 70.0))),
                     compliant_mid=bool(res.get("compliant_mid", False)),
                     compliant_top=bool(res.get("compliant_top", False)),
 
-                    # New: IEC calc now returns airflow and dissipation split directly.
-                    airflow_m3h=res.get("airflow_m3h", None),
-                    P_material_W=res.get("P_material", None),
-                    P_cooling_W=res.get("P_cooling", None),
+                    airflow_m3h=res.get("airflow_m3h"),
+                    P_material_W=res.get("P_material"),
+                    P_cooling_W=res.get("P_cooling"),
                     vent_recommended=bool(res.get("vent_recommended", False)),
-                    inlet_area_cm2=float(res.get("inlet_area_cm2", tier_inlet_cm2)),
-
-                    naturally_vented=bool(getattr(t, "is_ventilated", False)),
-                    natural_vent_area_cm2=float(getattr(t, "vent_area_cm2", 0.0) or 0.0),
-                    natural_vent_label=getattr(t, "vent_label", None),
+                    inlet_area_cm2=float(res.get("inlet_area_cm2", inlet_area_cm2)),
 
                     enclosure_material=str(enc_mat) if enc_mat else None,
-                    enclosure_k=float(res.get("enclosure_k_W_m2K", k_m2K)),
+                    enclosure_k=float(res.get("enclosure_k_W_m2K", k_mat)),
                     allow_material_dissipation=bool(res.get("allow_material_dissipation", allow_mat)),
 
                     dims_m=_dims_m_from_tier(t),
-                    surfaces=res.get("surfaces", None),
+                    surfaces=res.get("surfaces"),
                     figures_used=res.get("figures_used", []),
                 )
             )

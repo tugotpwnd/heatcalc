@@ -62,7 +62,6 @@ def calc_tier_iec60890(
     altitude_m: float,
     enclosure_k_W_m2K: float,
     allow_material_dissipation: bool,
-    default_vent_area_cm2: float,
     ip_rating_n: int,
     vent_test_area_cm2: float | None = None,   # ✅ ADD THIS
 ) -> Dict:
@@ -159,8 +158,10 @@ def calc_tier_iec60890(
     dt_top_raw = c * dt_mid
 
     if (not vent_effective) and (Ae <= 1.25):
-        dt_075 = 0.5 * (dt_mid + dt_top_raw)
-        dt_top = dt_075
+        # Keep "top" as the normal computed rise, and set the 0.75-height rise
+        # to be equal to the top rise (do NOT overwrite dt_top).
+        dt_top = dt_top_raw
+        dt_075 = dt_top
         profile_source = "Fig. 2"
     else:
         dt_075 = None
@@ -268,7 +269,7 @@ def calc_tier_iec60890(
     ):
 
         # Prefer “maximum possible vents for this tier” when provided.
-        rec_area_cm2 = float(vent_test_area_cm2) if (vent_test_area_cm2 is not None) else float(default_vent_area_cm2)
+        rec_area_cm2 = float(vent_test_area_cm2) if (vent_test_area_cm2 is not None) else None
 
         if rec_area_cm2 > 0.0 and f is not None:
             k_v_res = curvefit.k_vents(

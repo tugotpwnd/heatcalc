@@ -11,14 +11,15 @@ from PyQt5.QtWidgets import (
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-
+from ..core.louvre_calc import (
+    tier_effective_inlet_area_cm2,
+    tier_max_effective_inlet_area_cm2,
+)
 from .tier_item import TierItem
 from .designer_view import GRID
 from ..core import curvefit
 from ..core.iec60890_calc import calc_tier_iec60890
 
-MM_PER_GRID = 25.0  # same mapping you’ve been using
-CM2_DEFAULT = 300  # default inlet cross-section (cm^2) when ventilated
 # Compliance colours (IEC 60890 – explicit states)
 COL_COMPLIANT_TEMP        = QColor(0, 150, 0)    # Green: base IEC compliant
 COL_COMPLIANT_DISS        = QColor(230, 140, 0)  # Orange: compliant via enclosure dissipation
@@ -126,7 +127,8 @@ class TempRiseTab(QWidget):
         split = QSplitter(self)
         split.addWidget(left)
         split.addWidget(right)
-        split.setStretchFactor(1, 1)
+        split.setStretchFactor(0, 3)  # left
+        split.setStretchFactor(1, 3)  # right
         lay = QHBoxLayout(self)
         lay.addWidget(split)
 
@@ -152,22 +154,38 @@ class TempRiseTab(QWidget):
         self._results.clear()
 
         amb = float(self.project.meta.ambient_C)
-        default_vent_area_cm2=float(self.project.meta.default_vent_area_cm2)
         project_altitude_m=float(self.project.meta.altitude_m)
 
 
         for t in tiers:
+
+
+            louvre_def = self.project.meta.louvre_definition
+            ip_rating_n = int(self.project.meta.ip_rating_n)
+
+            inlet_area_cm2 = tier_effective_inlet_area_cm2(
+                tier=t,
+                louvre_def=louvre_def,
+                ip_rating_n=ip_rating_n,
+            )
+
+            vent_test_area_cm2 = tier_max_effective_inlet_area_cm2(
+                tier=t,
+                louvre_def=louvre_def,
+                ip_rating_n=ip_rating_n,
+            )
+
             res = calc_tier_iec60890(
                 tier=t,
                 tiers=tiers,
                 wall_mounted=t.wall_mounted,
-                inlet_area_cm2=t.vent_area_for_iec(),
+                inlet_area_cm2=inlet_area_cm2,
                 ambient_C=amb,
                 altitude_m=project_altitude_m,
                 enclosure_k_W_m2K=float(self.project.meta.enclosure_k_W_m2K),
                 allow_material_dissipation=bool(self.project.meta.allow_material_dissipation),
-                default_vent_area_cm2=float(self.project.meta.default_vent_area_cm2),
-                ip_rating_n=int(self.project.meta.ip_rating_n),
+                ip_rating_n=ip_rating_n,
+                vent_test_area_cm2=vent_test_area_cm2,
             )
 
             # compute final absolute temp

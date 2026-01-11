@@ -193,16 +193,40 @@ class MainWindow(QMainWindow):
         filem.addAction(act_report)
 
     def action_new(self):
-        """Clear current project (ask if discarding), reset tabs and path."""
+        """Unload current project and reset UI WITHOUT touching disk."""
         if not self._confirm_discard():
             return
-        self.project = Project()  # fresh meta container
+
+        # ---- HARD STOP autosave ----
+        self.settings.autosave_enabled = False
+        self.cb_autosave.blockSignals(True)
+        self.cb_autosave.setChecked(False)
+        self.cb_autosave.blockSignals(False)
+        signals.autosave_changed.emit(False)
+
+        # ---- Detach from any file ----
         self.current_path = None
-        # clear the switchboard and meta UIs
-        self.switchboard_tab.import_state({"tiers": [], "uniform_depth_value": 200})
-        self._rebuild_tabs()
-        self.statusBar().showMessage("New project")
+
+        # ---- Reset in-memory project ONLY ----
+        self.project = Project()  # fresh meta container
         self.project.meta.iec60890_checklist = []
+
+        # ---- Clear UI state ----
+        self.switchboard_tab.import_state({
+            "tiers": [],
+            "uniform_depth_value": 200,
+        })
+
+        self._rebuild_tabs()
+
+        self.autosaver.set_current_path(None)
+
+        # ---- UI feedback ----
+        self._update_window_title("Untitled project")
+        self.statusBar().showMessage("New project (not saved)")
+
+    def _update_window_title(self, name: str):
+        self.setWindowTitle(f"{APP_NAME} — {name}")
 
     # --- OPEN ---
     def _do_open(self):
@@ -247,14 +271,34 @@ class MainWindow(QMainWindow):
     def _do_save(self):
         if not self._validate_meta_or_remind():
             return
+
         payload = self._get_project_json()
-        path, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "JSON (*.json)")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project", "", "JSON (*.json)"
+        )
         if not path:
             return
-        Path(path).write_text(json.dumps(payload, indent=2))
-        self.current_path = Path(path)  # NEW
-        self.autosaver.set_current_path(self.current_path)  # NEW
-        self.statusBar().showMessage(f"Saved: {Path(path).name}")
+
+        path = Path(path)
+
+        # WRITE FIRST
+        path.write_text(json.dumps(payload, indent=2))
+
+        # THEN attach persistence
+        self.current_path = path
+        self.autosaver.set_current_path(path)
+
+        # Autosave may now legally run
+        self.statusBar().showMessage(f"Saved: {path.name}")
+
+    def _wire_autosave_triggers(self):
+        self.switchboard_tab.tierGeometryCommitted.connect(
+            self._project_changed, Qt.UniqueConnection
+        )
+        self.switchboard_tab.tierContentsChanged.connect(
+            self._project_changed, Qt.UniqueConnection
+        )
 
     # ======================= Internals ======================================
     def _rebuild_tabs(self):
@@ -323,6 +367,8 @@ class MainWindow(QMainWindow):
             parent=self
         )
         self.tabs.insertTab(4, self.louvre_tab, "Louvre definition")
+
+        self._wire_autosave_triggers()
 
     def _toggle_autosave(self, state: int):
         enabled = state == Qt.Checked

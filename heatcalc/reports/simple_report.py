@@ -16,8 +16,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import tableofcontents
 
-
-
 import matplotlib
 from reportlab.platypus.tableofcontents import TableOfContents
 
@@ -36,6 +34,31 @@ from reportlab.platypus import (
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from heatcalc.utils.resources import get_resource_path
+
+# ---------------- Font registration (Arial) ----------------
+pdfmetrics.registerFont(
+    TTFont("Arial", get_resource_path("heatcalc/assets/fonts/arial.ttf"))
+)
+pdfmetrics.registerFont(
+    TTFont("Arial-Bold", get_resource_path("heatcalc/assets/fonts/arialbd.ttf"))
+)
+pdfmetrics.registerFont(
+    TTFont("Arial-Italic", get_resource_path("heatcalc/assets/fonts/ariali.ttf"))
+)
+pdfmetrics.registerFont(
+    TTFont("Arial-BoldItalic", get_resource_path("heatcalc/assets/fonts/arialbi.ttf"))
+)
+
+FONT = "Arial"
+FONT_B = "Arial-Bold"
+FONT_I = "Arial-Italic"
+FONT_BI = "Arial-BoldItalic"
+blue = colors.HexColor("#0D4FA2")
+green = colors.HexColor("#009640")
+
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, KeepTogether
 matplotlib.rcParams.update({
     "font.family": "serif",
@@ -43,8 +66,7 @@ matplotlib.rcParams.update({
     "mathtext.fontset": "cm",   # Computer Modern, LaTeX-style maths
     "axes.unicode_minus": False,
 })
-FONT = "Times-Roman"
-FONT_B = "Times-Bold"
+
 IEC_HEAD = "IEC 60890 Preconditions (Clause 4)"
 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -59,7 +81,7 @@ _styles = getSampleStyleSheet()
 H2 = ParagraphStyle(
     name="H2",
     parent=_styles["Heading2"],
-    fontName="Helvetica-Bold",
+    fontName=FONT_B,          # Arial Bold
     fontSize=14,
     leading=18,
     spaceBefore=6,
@@ -70,7 +92,7 @@ H2 = ParagraphStyle(
 Body = ParagraphStyle(
     name="Body",
     parent=_styles["BodyText"],
-    fontName="Helvetica",
+    fontName=FONT,            # Arial
     fontSize=10,
     leading=14,
     spaceBefore=4,
@@ -81,7 +103,7 @@ Body = ParagraphStyle(
 BodySmall = ParagraphStyle(
     name="BodySmall",
     parent=_styles["BodyText"],
-    fontName="Helvetica",
+    fontName=FONT,            # Arial
     fontSize=8.5,
     leading=11,
     spaceBefore=2,
@@ -92,6 +114,7 @@ BodySmall = ParagraphStyle(
 
 # ---------------- Numbered Heading Styles ----------------
 
+
 H1_NUM = ParagraphStyle(
     name="H1_NUM",
     parent=_styles["Heading1"],
@@ -100,6 +123,7 @@ H1_NUM = ParagraphStyle(
     leading=22,
     spaceBefore=12,
     spaceAfter=10,
+    textColor=blue,          # ✅ big header blue
 )
 
 H2_NUM = ParagraphStyle(
@@ -110,6 +134,7 @@ H2_NUM = ParagraphStyle(
     leading=18,
     spaceBefore=10,
     spaceAfter=6,
+    textColor=green,         # ✅ little header green
 )
 
 H3_NUM = ParagraphStyle(
@@ -120,8 +145,8 @@ H3_NUM = ParagraphStyle(
     leading=16,
     spaceBefore=8,
     spaceAfter=4,
+    textColor=colors.black,  # ✅ little little header black
 )
-
 class SectionCounter:
     def __init__(self):
         self.h1 = 0
@@ -168,6 +193,7 @@ class ProjectMeta:
     designer: str
     revision: str
     date: str
+    ip_rating_n: str
 
 @dataclass
 class ComponentRow:
@@ -271,7 +297,7 @@ def _make_disclaimer_page(path: Path):
 
     doc = SimpleDocTemplate(str(path), pagesize=A4,
                             leftMargin=40, rightMargin=40,
-                            topMargin=60, bottomMargin=40)
+                            topMargin=20, bottomMargin=40)
     flow = [Paragraph(disclaimer, style)]
     doc.build(flow)
     return path
@@ -565,75 +591,104 @@ def render_temp_slice_png(
     return out_path
 
 # --------------- Header / Footer drawing ---------------
-def _draw_header_footer(canvas, doc, meta: ProjectMeta, header_logo: Optional[Path], footer_img: Optional[Path]):
+# --------------- Header / Footer drawing ---------------
+def _draw_header_footer(
+    canvas,
+    doc,
+    meta: ProjectMeta,
+    header_logo: Optional[Path],
+    footer_img: Optional[Path],
+):
     w, h = A4
     canvas.saveState()
 
-    # Thin blue bar ~1 cm from the top
-    blue_y = h - 4*mm
-    canvas.setFillColor(colors.HexColor("#0D4FA2"))
-    canvas.rect(0, blue_y, w, 8*mm, stroke=0, fill=1)
+    blue = colors.HexColor("#0D4FA2")
+    green = colors.HexColor("#009640")
+    grey = colors.HexColor("#8A8A8A")
 
-    # White band below (logo & text area)
-    white_h = 18*mm
-    canvas.setFillColor(colors.white)
-    canvas.rect(0, blue_y - white_h, w, white_h, stroke=0, fill=1)
+    # ---------------- HEADER ----------------
+    y = h - 18 * mm
 
-    # Place logo inside the white band
-    logo_x = 12*mm
-    logo_y = blue_y - 15*mm
+    # LEFT: "Project:" + project name (no spacing)
+    canvas.setFont(FONT_B, 10)
+    canvas.setFillColor(blue)
+    label_left = "Project:"
+    canvas.drawString(12 * mm, y, label_left)
+
+    # Measure label width so value starts immediately after it
+    label_left_w = canvas.stringWidth(label_left, FONT_B, 10)
+
+    canvas.setFont(FONT, 10)
+    canvas.setFillColor(green)
+    canvas.drawString(12 * mm + label_left_w, y, meta.project_title or "")
+
+    # RIGHT: "Doc ID:" + doc id (no spacing), with value GREEN
+    doc_id_value = "MI-DT-EN-028"
+    label_right = "Doc ID:"
+
+    # Compute widths so the whole "Doc ID:<value>" is right-aligned to margin
+    label_right_w = canvas.stringWidth(label_right, FONT_B, 10)
+    value_right_w = canvas.stringWidth(doc_id_value, FONT, 10)
+    x_right = w - 12 * mm - (label_right_w + value_right_w)
+
+    canvas.setFont(FONT_B, 10)
+    canvas.setFillColor(blue)
+    canvas.drawString(x_right, y, label_right)
+
+    canvas.setFont(FONT, 10)
+    canvas.setFillColor(green)  # ✅ value green
+    canvas.drawString(x_right + label_right_w, y, doc_id_value)
+
+    # ❌ Remove header bar/rule (do not draw any line)
+
+    # ---------------- FOOTER ----------------
     if header_logo and Path(header_logo).exists():
         try:
-            canvas.drawImage(str(header_logo), logo_x, logo_y, width=38*mm, height=12*mm,
-                             preserveAspectRatio=True, mask='auto')
+            canvas.drawImage(
+                str(header_logo),
+                12 * mm,
+                8 * mm,
+                width=52.5 * mm,  # 35 × 1.5
+                height=15 * mm,  # 10 × 1.5
+                preserveAspectRatio=True,
+                mask="auto",
+            )
         except Exception:
             pass
 
-    # (3) Tagline under the logo (light, small)
-    canvas.setFillColor(colors.HexColor("#666666"))
-    canvas.setFont(FONT, 8)
-    canvas.drawString(logo_x, logo_y - 4*mm, "IEC 60890 Temperature Rise Report")
+    # Footer centre title — blue + bold
+    canvas.setFont(FONT_B, 9)
+    canvas.setFillColor(blue)
+    canvas.drawCentredString(
+        w / 2,
+        12 * mm,
+        "Temperature Rise Calculation",
+    )
 
-    # Project title + date at the right (black text on white band)
-    canvas.setFillColor(colors.black)
-    canvas.setFont(FONT_B, 10)
-    canvas.drawRightString(w - 12*mm, blue_y - 6*mm, (meta.project_title or "")[:90])
+    page_label = "Page "
+    page_value = f"C-{doc.page}"
+
+    # Measure widths for right alignment
+    label_w = canvas.stringWidth(page_label, FONT_B, 9)
+    value_w = canvas.stringWidth(page_value, FONT, 9)
+
+    x = w - 12 * mm - (label_w + value_w)
+    y = 8 * mm
+
+    # "Page" — bold blue
+    canvas.setFont(FONT_B, 9)
+    canvas.setFillColor(blue)
+    canvas.drawString(x, y, page_label)
+
+    # "C-n" — light green
     canvas.setFont(FONT, 9)
-    if getattr(meta, "date", ""):
-        canvas.drawRightString(w - 12*mm, blue_y - 12*mm, meta.date)
-
-    # Green line beneath the white band
-    canvas.setFillColor(colors.HexColor("#009640"))
-    canvas.rect(0, blue_y - white_h - 6*mm, w, 3*mm, stroke=0, fill=1)
-
-    # (5) Dotted separator line under header band
-    canvas.setStrokeColor(colors.HexColor("#B5B5B5"))
-    canvas.setLineWidth(0.3)
-    canvas.setDash(1, 2)  # dot pattern
-    y_sep = blue_y - white_h - 3*mm - 1.2*mm
-    canvas.line(12*mm, y_sep, w - 12*mm, y_sep)
-    canvas.setDash()  # back to solid
-
-    # Footer image (bottom-left) if provided
-    if footer_img and Path(footer_img).exists():
-        try:
-            canvas.drawImage(str(footer_img), 10*mm, 8*mm, width=40*mm, height=10*mm,
-                             preserveAspectRatio=True, mask='auto')
-        except Exception:
-            pass
-
-    # (1) Thin grey line at footer (above page number / footer area)
-    canvas.setStrokeColor(colors.HexColor("#B5B5B5"))
-    canvas.setLineWidth(0.5)
-    footer_rule_y = 20*mm
-    canvas.line(12*mm, footer_rule_y, w - 12*mm, footer_rule_y)
-
-    # Footer page number (bottom-right)
-    canvas.setFillColor(colors.grey)
-    canvas.setFont(FONT, 9)
-    canvas.drawRightString(w - 12*mm, 10*mm, f"Page {doc.page}")
+    canvas.setFillColor(green)
+    canvas.drawString(x + label_w, y, page_value)
 
     canvas.restoreState()
+
+
+
 
 def _iec_status_color(status: str):
     s = (status or "").strip().upper()
@@ -731,95 +786,213 @@ def iec60890_tab_sheet(th: TierThermal) -> Table:
     ]))
     return tbl
 
-def enclosure_dissipation_table(th: TierThermal) -> Table:
+def tier_cooling_summary(th) -> tuple[str, str, bool]:
     """
-    IEC 60890 enclosure heat dissipation / ventilation summary.
-
-    Rows are conditionally included:
-    - Material / ventilation rows only appear if dissipation is actually used
-      (P_material_W or P_cooling_W > 0).
+    Returns (arrangement, cooling_text, mitigation_required)
     """
 
-    # Determine whether any dissipation mechanism is actually used
-    uses_dissipation = (
-        (th.P_material_W not in (None, 0.0)) or
-        (th.P_cooling_W not in (None, 0.0))
-    )
+    # 1. No active cooling required (material dissipation sufficient)
+    if not th.P_cooling_W and not th.airflow_m3h:
+        if th.vent:
+            return ("Natural ventilation", "-", False)
+        if th.P_material_W:
+            return ("Enclosure heat dissipation", "-", False)
+        return ("No cooling required", "-", False)
 
-    # Natural ventilation text
-    nat_txt = "Yes" if th.naturally_vented else "No"
-    if th.naturally_vented and th.natural_vent_area_cm2 > 0:
-        label = f" ({th.natural_vent_label})" if th.natural_vent_label else ""
-        nat_size = f"{th.natural_vent_area_cm2:.0f} cm²{label}"
-    elif th.naturally_vented:
-        nat_size = "Unspecified"
-    else:
-        nat_size = "N/A"
+    # 2. Forced ventilation required (mitigation)
+    if th.airflow_m3h and th.airflow_m3h > 0:
+        return (
+            "Forced ventilation",
+            f"{th.airflow_m3h:.0f}",
+            True,
+        )
 
-    rows = []
+    # 3. Fallback — genuinely non-compliant
+    return ("Non-compliant", "Mitigation required", True)
 
-    # ------------------------------------------------------------------
-    # Always-present context rows
-    # ------------------------------------------------------------------
-    rows.append(["Effective area Ae (m²)", f"{th.Ae:.2f}"])
-    rows.append(["Is naturally vented (openings specified)", nat_txt])
 
-    if th.naturally_vented:
-        rows.append(["Natural vent size (inlet area)", nat_size])
+def build_tier_summary_page(tier_thermals):
+    rows = [
+        ["Tier", "Compliance", "Cooling Arrangement", "Cooling (m³/h)"]
+    ]
 
-    # ------------------------------------------------------------------
-    # Dissipation rows — ONLY if actually used
-    # ------------------------------------------------------------------
-    if uses_dissipation:
+    style_cmds = []
 
-        rows.insert(0, [
-            "Allow heat dissipation via enclosure material",
-            "Yes" if th.allow_material_dissipation else "No"
+    for i, th in enumerate(tier_thermals, start=1):
+        arrangement, cooling_req, mitigation = tier_cooling_summary(th)
+
+        compliance = "Non-compliant" if mitigation else "Compliant"
+
+        rows.append([
+            th.tag,
+            compliance,
+            arrangement,
+            cooling_req,
         ])
 
+        # Compliance colouring (report-level compliance)
+        if mitigation:
+            style_cmds.append(
+                ("TEXTCOLOR", (1, i), (1, i), colors.HexColor("#C62828"))  # red
+            )
+        else:
+            style_cmds.append(
+                ("TEXTCOLOR", (1, i), (1, i), colors.HexColor("#009640"))  # green
+            )
+
+        style_cmds.append(("FONTNAME", (1, i), (1, i), FONT_B))
+
+    tbl = Table(
+        rows,
+        colWidths=[
+            28 * mm,   # Tier
+            32 * mm,   # Compliance
+            60 * mm,   # Cooling Arrangement (reduced)
+            30 * mm,   # Cooling (m³/h)
+        ],
+        repeatRows=1,
+    )
+
+    tbl.setStyle(TableStyle([
+        # Header row
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#009640")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_B),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+
+        # Tier column
+        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#0D4FA2")),
+        ("TEXTCOLOR", (0, 1), (0, -1), colors.white),
+        ("FONTNAME", (0, 1), (0, -1), FONT_B),
+        ("ALIGN", (0, 1), (0, -1), "CENTER"),
+
+        # Internal grid — black, thin
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+
+        # Thick outer border
+        ("BOX", (0, 0), (-1, -1), 1.5, colors.black),
+
+        # General spacing
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+
+        *style_cmds,
+    ]))
+
+    flow = []
+    flow.append(Paragraph("Temperature Rise – Tier Summary", H1_NUM))
+    flow.append(Spacer(1, 10))
+    flow.append(tbl)
+
+    return flow
+
+def enclosure_dissipation_table(th: TierThermal) -> Table:
+    rows = []
+
+    # -------------------------------------------------
+    # Context rows
+    # -------------------------------------------------
+    rows.append(["Effective cooling area Ae (m²)", f"{th.Ae:.2f}"])
+
+    vent_txt = "Yes" if th.vent else "No"
+    rows.append(["Is vented (openings specified)", vent_txt])
+
+    if th.vent and th.inlet_area_cm2 > 0:
+        rows.append([
+            "Vent inlet opening area",
+            f"{th.inlet_area_cm2:.0f} cm²"
+        ])
+
+    # -------------------------------------------------
+    # Enclosure dissipation
+    # -------------------------------------------------
+    if th.allow_material_dissipation:
+        rows.insert(0, [
+            "Allow enclosure heat dissipation",
+            "Yes"
+        ])
         rows.insert(1, [
             "Enclosure material",
             th.enclosure_material or "-"
         ])
-
         rows.insert(2, [
             "Material k (W/m²·K)",
-            "-" if th.enclosure_k is None else f"{th.enclosure_k:.2f}"
+            f"{th.enclosure_k:.2f}" if th.enclosure_k else "-"
         ])
 
-        if th.P_material_W not in (None, 0.0):
-            rows.append([
-                "Heat dissipated via enclosure (W)",
-                f"{th.P_material_W:.1f}"
-            ])
+    if th.P_material_W:
+        rows.append([
+            "Heat dissipated via enclosure (W)",
+            f"{th.P_material_W:.1f}"
+        ])
 
-        if th.P_cooling_W not in (None, 0.0):
-            rows.append([
-                "Heat for ventilation / cooling (W)",
-                f"{th.P_cooling_W:.1f}"
-            ])
+    if th.P_cooling_W:
+        rows.append([
+            "Heat for ventilation / cooling (W)",
+            f"{th.P_cooling_W:.1f}"
+        ])
+        rows.append([
+            "Required airflow (m³/h)",
+            f"{th.airflow_m3h:.0f}" if th.airflow_m3h else "-"
+        ])
 
-            rows.append([
-                "Required airflow (m³/h)",
-                f"{th.airflow_m3h:.0f}" if th.airflow_m3h is not None else "-"
-            ])
-
-    # ------------------------------------------------------------------
-    # Table formatting
-    # ------------------------------------------------------------------
     tbl = Table(rows, colWidths=[95 * mm, 45 * mm])
     tbl.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.whitesmoke),
-        ("FONT", (0, 0), (-1, -1), FONT),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("BOX", (0, 0), (-1, -1), 1.25, colors.black),
+
+        # First column styling (blue)
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0D4FA2")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
+        ("FONTNAME", (0, 0), (0, -1), FONT),
+
+        ("FONT", (1, 0), (1, -1), FONT),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
 
     return tbl
 
+def render_tier_details(flow, tier):
+    flow.append(Paragraph("Tier Details", H3_NUM))
+    flow.append(Spacer(1, 4))
+
+    if tier.components:
+        flow.append(Paragraph("Components", H3_NUM))
+        flow.append(_components_table_for_tier(tier))
+        flow.append(Spacer(1, 6))
+
+    if tier.cables:
+        flow.append(Paragraph("Cables", H3_NUM))
+        flow.append(_cables_table_for_tier(tier))
+        flow.append(Spacer(1, 6))
+
+    sub_tbl = Table(
+        [["Tier heat subtotal (W)", f"{tier.heat_w:.1f}"]],
+        colWidths=[60 * mm, 30 * mm],
+    )
+    sub_tbl.setStyle(TableStyle([
+        ("FONT", (0, 0), (-1, -1), FONT, 9),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.whitesmoke),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+
+    flow.append(sub_tbl)
+    flow.append(Spacer(1, 10))
+
+
+
+    # ------------------------------------------------------------------
+    # IEC Calculation
+    # ------------------------------------------------------------------
 
 def iec_scalar_table(th: TierThermal) -> Table:
     rows = [
@@ -845,55 +1018,102 @@ def iec_scalar_table(th: TierThermal) -> Table:
         f"{th.ambient_C:.1f}"
     ])
 
-
     tbl = Table(rows, colWidths=[70*mm, 40*mm])
     tbl.setStyle(TableStyle([
-        ("GRID", (0,0), (-1,-1), 0.25, colors.whitesmoke),
-        ("FONT", (0,0), (-1,-1), FONT),
-        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
+        # Label column (blue)
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0D4FA2")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
+        ("FONTNAME", (0, 0), (0, -1), FONT),
+
+        # Values
+        ("FONTNAME", (1, 0), (1, -1), FONT),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+
+        # Borders
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("BOX", (0, 0), (-1, -1), 1.2, colors.black),
+
+        # Spacing
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     return tbl
 
-
 def iec_calc_banner(title: str) -> Table:
     rows = [[
-        Paragraph(f"<b>{title}</b>", H2),
+        Paragraph(
+            f"<b>{title}</b>",
+            ParagraphStyle(
+                "IEC_BANNER_TITLE",
+                parent=H2,
+                fontName=FONT_B,
+                fontSize=18,          # ~2× larger
+                leading=22,
+                textColor=colors.white,
+            ),
+        ),
         Paragraph(
             "Effective cooling surfaces, IEC correction factors, "
             "and ventilation balance",
-            BodySmall
-        )
+            ParagraphStyle(
+                "IEC_BANNER_SUB",
+                parent=BodySmall,
+                fontName=FONT,
+                fontSize=9,
+                leading=12,
+                textColor=colors.white,   # white text
+            ),
+        ),
     ]]
 
-    tbl = Table(rows, colWidths=[120*mm, 60*mm])
+    tbl = Table(rows, colWidths=[110 * mm, 65 * mm])
     tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,-1), colors.whitesmoke),
-        ("BOX", (0,0), (-1,-1), 0.75, colors.grey),
-        ("LEFTPADDING", (0,0), (-1,-1), 8),
-        ("RIGHTPADDING", (0,0), (-1,-1), 8),
-        ("TOPPADDING", (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#009640")),  # green
+        ("BOX", (0, 0), (-1, -1), 1.5, colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     return tbl
 
 def section_box(title: str, inner) -> KeepTogether:
-    header = Table([[Paragraph(f"<b>{title}</b>", Body)]], colWidths=[155*mm])
+    header = Table(
+        [[
+            Paragraph(
+                f"<b>{title}</b>",
+                ParagraphStyle(
+                    "SECTION_HDR",
+                    parent=Body,
+                    fontName=FONT_B,
+                    fontSize=11,
+                    leading=14,
+                    textColor=colors.white,
+                ),
+            )
+        ]],
+        colWidths=[155 * mm],
+    )
+
     header.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,-1), colors.whitesmoke),
-        ("BOX", (0,0), (-1,-1), 0.5, colors.grey),
-        ("LEFTPADDING", (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 4),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#009640")),
+        ("BOX", (0, 0), (-1, -1), 1.25, colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
 
-    body = Table([[inner]], colWidths=[155*mm])
+    body = Table([[inner]], colWidths=[155 * mm])
     body.setStyle(TableStyle([
-        ("BOX", (0,0), (-1,-1), 0.5, colors.grey),
-        ("LEFTPADDING", (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
     ]))
 
     return KeepTogether([header, body])
@@ -952,13 +1172,7 @@ def export_simple_report(
     tier_curve_images: List[Tuple[str, Path, str, str]] = []
     if tier_thermals:
         for th in tier_thermals:
-            title = f"Temperature Profile — {th.tag}"
-            subtitle = (
-                f"P = {th.P_W:.1f} W · k = {th.k:.3f} · c = {th.c:.3f} · x = {th.x:.3f}"
-                + (f" · f = {th.f:.3f}" if th.f is not None else "")
-                + (f" · g = {th.g:.3f}" if th.g is not None else "")
-                + f" · Ae = {th.Ae:.3f} m² · Ambient = {th.ambient_C:.1f} °C"
-            )
+            title = f"{th.tag}"
 
             out_png = assets / f"tier_curve_{th.tag.replace(' ', '_')}.png"
             render_temp_profile_png(
@@ -969,18 +1183,12 @@ def export_simple_report(
                 out_png,
                 T_075=getattr(th, "T_075", None),
             )
-            tier_curve_images.append((title, out_png, subtitle, th))
+            tier_curve_images.append((title, out_png, th))
 
     if totals is None:
         total_w = sum(t.heat_w for t in tiers)
         totals = {"heat_total_w": round(total_w, 3)}
 
-    # Styles
-    styles = getSampleStyleSheet()
-    H1 = styles["Title"];      H1.fontName = FONT_B
-    H2 = styles["Heading2"];   H2.fontName = FONT_B
-    H3 = styles["Heading3"];   H3.fontName = FONT_B
-    Body = styles["BodyText"]; Body.fontName = FONT
 
     # Document with header/footer using a PageTemplate
     class TOCDocTemplate(BaseDocTemplate):
@@ -1001,7 +1209,7 @@ def export_simple_report(
         pagesize=A4,
         leftMargin=12 * mm,
         rightMargin=12 * mm,
-        topMargin=40 * mm,
+        topMargin=20 * mm,
         bottomMargin=20 * mm,
         title=f"HeatCalc Report — {meta.project_title}",
         author=meta.designer,
@@ -1047,30 +1255,20 @@ def export_simple_report(
         ),
     ]
 
-    flow.append(Paragraph("Table of Contents", H1))
+    ################################## TABLE OF CONTENTS PAGE ########################################
+
+    flow.append(Paragraph("Calculation Table of Contents", H1_NUM))
     flow.append(Spacer(1, 12))
     flow.append(toc)
+
+    ################################## TABLE OF CONTENTS PAGE ########################################
+
     flow.append(PageBreak())
 
+    ################################## HEADER PAGE ########################################
     # Title block (shares page with layout image)
-    flow.append(Paragraph("Temperature Rise Report (IEC 60890)", H1))
+    flow.append(Paragraph("Temperature Rise Report (IEC 60890)", H1_NUM))
     flow.append(Spacer(1, 6))
-    kv = [["Job #", meta.job_number], ["Project", meta.project_title], ["Designer", meta.designer],
-          ["Revision", meta.revision], ["Date", meta.date], ["Enclosure", meta.enclosure]]
-    if ambient_C is not None:
-        kv.append(["Ambient (°C)", f"{ambient_C:.1f}"])
-    t = Table(kv, colWidths=[35*mm, 110*mm])
-    t.setStyle(TableStyle([
-        ("FONT", (0,0), (-1,-1), FONT, 10),
-        ("TEXTCOLOR", (0,0), (0,-1), colors.grey),
-        ("LINEBELOW", (0,0), (-1,-1), 0.25, colors.whitesmoke),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-        ("LEFTPADDING", (0,0), (-1,-1), 2),
-        ("RIGHTPADDING", (0,0), (-1,-1), 2),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
-    ]))
-    flow.append(t)
-    flow.append(Spacer(1, 10))
 
     # Switchboard Layout on the SAME page + subtext
     if diagram_png_path and Path(diagram_png_path).exists():
@@ -1092,60 +1290,46 @@ def export_simple_report(
         )
         flow.append(Paragraph(sub, Body))
 
-    # Summary page
+    ################################## HEADER PAGE ########################################
+
     flow.append(PageBreak())
 
-    # Temperature compliance + per-tier tables (compact)
-    thermal_by_tag = {th.tag: th for th in (tier_thermals or [])}
-    flow.append(Paragraph(
-        f"{sec.h1_num()} Tiers & Details",
-        H1_NUM
-    ))
-    for tier in tiers:
-        flow.append(Paragraph(
-            f"{sec.h2_num()} {tier.tag} — {tier.width_mm}×{tier.height_mm}×{tier.depth_mm} mm",
-            H2_NUM
-        ))
+    ################################## SUMMARY PAGE ########################################
 
-        # --- Per-tier contents (components + cables) --------------------------------
-        if tier.components:
-            flow.append(Paragraph("Components", H3))
-            flow.append(_components_table_for_tier(tier))
-            flow.append(Spacer(1, 8))
+    # ---- Tier thermal summary (NEW) ----
+    if tier_thermals:
+        flow.extend(build_tier_summary_page(tier_thermals))
 
-        if tier.cables:
-            flow.append(Paragraph("Cables", H3))
-            flow.append(_cables_table_for_tier(tier))
-            flow.append(Spacer(1, 8))
+    ################################## SUMMARY PAGE ########################################
 
-        sub_tbl = Table([["Tier subtotal (W)", f"{tier.heat_w:.1f}"]], colWidths=[60*mm, 30*mm])
-        sub_tbl.setStyle(TableStyle([
-            ("FONT", (0,0), (-1,-1), FONT_B, 9),
-            ("TEXTCOLOR", (0,0), (-1,-1), colors.black),
-            ("ALIGN", (1,0), (1,0), "RIGHT"),
-            ("LINEABOVE", (0,0), (-1,0), 0.5, colors.black),
-            ("TOPPADDING", (0,0), (-1,-1), 3),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-        ]))
-        flow.append(sub_tbl)
-        flow.append(Spacer(1, 6))
+    ################################## PER TIER CALCULATION ########################################
 
-    # 6) One Temperature Rise page per tier (image + temps line under plot)
+    # One Temperature Rise page per tier (image + temps line under plot)
     if tier_curve_images:
-        for title, img_path, subtitle, th in tier_curve_images:
-            if not Path(img_path).exists():
-                continue
+        for title, img_path, th in tier_curve_images:
+
             flow.append(PageBreak())
             flow.append(Paragraph(
-                f"{sec.h1_num()} Temperature Rise Summary — {title}",
+                f"{sec.h1_num()} Tier — {th.tag}",
+                H1_NUM
+            ))
+
+            # Tier geometry lookup
+            tier = next((t for t in tiers if t.tag == th.tag), None)
+            if tier:
+                render_tier_details(flow, tier)
+
+            if not Path(img_path).exists():
+                continue
+            flow.append(Paragraph(
+                f"{sec.h2_num()} Temperature Rise Summary — {title}",
                 H1_NUM
             ))
 
             flow.append(Paragraph(
-                f"{sec.h3_num()} Temperature Rise Curve & Slice",
+                f"{sec.h3_num()} Temperature Rise Curve",
                 H3_NUM
             ))
-
             try:
                 from PIL import Image as PILImage
                 img = PILImage.open(img_path)
@@ -1187,10 +1371,14 @@ def export_simple_report(
             except Exception:
                 sw_pt, sh_pt = 60*mm, 140*mm
             flow.append(Spacer(1, 6))
+            flow.append(Paragraph(
+                f"{sec.h3_num()} Temperature Slice",
+                H3_NUM
+            ))
+            flow.append(Spacer(1, 4))
+
             flow.append(RLImage(str(slice_png), width=sw_pt, height=sh_pt))
             flow.append(Spacer(1, 6))
-
-            flow.append(Paragraph(subtitle, BodySmall))
 
             # Summary table on the same page
             flow.append(Spacer(1, 8))
@@ -1231,7 +1419,13 @@ def export_simple_report(
                     style_cmds.append(("TEXTCOLOR", (1, i), (1, i), comp_top_color))
             tbl.setStyle(TableStyle(style_cmds))
 
-            flow.append(Spacer(1, 6))
+            flow.append(Spacer(1, 8))
+            flow.append(Paragraph(
+                f"{sec.h3_num()} Temperature Rise Results",
+                H3_NUM
+            ))
+            flow.append(Spacer(1, 4))
+
             flow.append(tbl)
 
             if not th.compliant_top and th.airflow_m3h is not None:
@@ -1285,29 +1479,6 @@ def export_simple_report(
             flow.append(standards_reference_box())
 
     doc.multiBuild(flow)
+    return out_pdf
 
-    # Now merge cover + report + disclaimer
-    final_path = out_pdf
-    tmp_report = out_pdf.with_name(out_pdf.stem + "_body.pdf")
-    out_pdf.rename(tmp_report)
-
-    assets = out_pdf.parent / ".assets"
-    disclaimer_pdf = _make_disclaimer_page(assets / "disclaimer.pdf")
-
-    merger = PdfMerger()
-    cover_path = Path(get_resource_path("heatcalc/assets/coverpage.pdf"))
-    if cover_path.exists():
-        merger.append(str(cover_path))
-    merger.append(str(tmp_report))
-    merger.append(str(disclaimer_pdf))
-    merger.write(str(final_path))
-    merger.close()
-
-    # --- CLEAN UP INTERMEDIATE BODY PDF -------------------------
-    try:
-        tmp_report.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-    return final_path
 

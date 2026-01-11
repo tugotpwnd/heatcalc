@@ -1,17 +1,32 @@
 from __future__ import annotations
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QGroupBox, QFormLayout,
-    QDoubleSpinBox, QLabel
+    QDoubleSpinBox, QLabel, QTextBrowser
 )
 from PyQt5.QtCore import Qt
 
 from ..utils.qt import signals
 
 
+# ---------------------------------------------------------------------
+# IP mesh derating table
+#
+# Values represent DESIGN effective open-area factors applied to the
+# manufacturer-specified free inlet area.
+#
+# IP3X:
+#   - Geometric free area only
+#
+# IP4X:
+#   - Geometric free area
+#   - Further reduced by 20% safety factor to account for increased
+#     airflow resistance associated with small hydraulic diameters
+# ---------------------------------------------------------------------
 IP_MESH_TABLE = {
-    2: (None, 1.00),
-    3: (2.5, 0.65),
-    4: (1.0, 0.45),
+    2: (None, 1.00),   # IP2X: no mesh derating
+    3: (2.0, 0.55),    # IP3X: geometric free area
+    4: (0.8, 0.46),    # IP4X: geometric free area × 0.8 safety factor
 }
 
 
@@ -87,6 +102,19 @@ class LouvreDefinitionTab(QWidget):
         f4.addRow("Open area factor:", self.lbl_factor)
 
         root.addWidget(gb_ip)
+
+        # ---------------- Justification panel ----------------
+        gb_just = QGroupBox("Derating justification (rendered)")
+        vj = QVBoxLayout(gb_just)
+
+        self.txt_just = QTextBrowser()
+        self.txt_just.setReadOnly(True)
+        self.txt_just.setMinimumHeight(180)
+        self.txt_just.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        vj.addWidget(self.txt_just)
+        root.addWidget(gb_just)
+
         root.addStretch(1)
 
         # signals
@@ -117,8 +145,82 @@ class LouvreDefinitionTab(QWidget):
         aperture, factor = IP_MESH_TABLE.get(ip, (None, 1.0))
 
         self.lbl_ip.setText(f"IP{ip}X")
-        self.lbl_aperture.setText("None" if aperture is None else f"{aperture:.1f} mm")
+        self.lbl_aperture.setText(
+            "None" if aperture is None else f"{aperture:.1f} mm"
+        )
         self.lbl_factor.setText(f"{factor:.2f}")
+
+        self._update_justification_text(ip)
+
+    def _update_justification_text(self, ip: int) -> None:
+        if ip <= 2:
+            self.txt_just.setHtml("""
+                <p><b>IP2X:</b> No mesh derating applied.</p>
+                <p>The manufacturer-specified free inlet area is used directly.</p>
+            """)
+            return
+
+        if ip == 3:
+            a, d = 2.0, 0.7
+            probe = "Ø2.5 mm rigid probe (IP3X)"
+            phi_geom = (a / (a + d)) ** 2
+            phi_design = phi_geom
+
+            safety_text = "<p>No additional safety factor applied.</p>"
+
+        elif ip == 4:
+            a, d = 0.8, 0.25
+            probe = "Ø1.0 mm rigid wire (IP4X)"
+            phi_geom = (a / (a + d)) ** 2
+            phi_design = phi_geom * 0.8
+
+            safety_text = """
+                <p>
+                A further <b>20% safety factor</b> is applied to the geometric
+                free-area factor to conservatively account for increased airflow
+                resistance associated with small hydraulic diameters, viscous
+                losses, and blockage sensitivity typical of IP4X meshes.
+                </p>
+            """
+
+        else:
+            self.txt_just.setHtml("<p>IP rating not supported.</p>")
+            return
+
+        reduction_pct = (1.0 - phi_design) * 100.0
+
+        html = f"""
+        <p><b>Probe requirement:</b> {probe}</p>
+
+        <p><b>Geometric model:</b></p>
+        <p style="margin-left:16px;">
+            φ = (a / (a + d))<sup>2</sup>
+        </p>
+
+        <ul>
+            <li>Clear aperture, a = {a:.2f} mm</li>
+            <li>Wire diameter, d = {d:.2f} mm</li>
+        </ul>
+
+        <p>
+            Geometric free-area factor:<br/>
+            φ<sub>geom</sub> = {phi_geom:.2f}
+        </p>
+
+        {safety_text}
+
+        <p>
+            <b>Design open-area factor:</b> φ<sub>design</sub> = {phi_design:.2f}<br/>
+            <b>Equivalent CSA reduction:</b> {reduction_pct:.1f}%
+        </p>
+
+        <p><i>
+            Note: This factor represents an effective design allowance for
+            ventilation calculations and is not a catalogue free-area value.
+        </i></p>
+        """
+
+        self.txt_just.setHtml(html)
 
     def _block(self, on: bool):
         for sp in (
@@ -141,33 +243,28 @@ class LouvreDefinitionTab(QWidget):
         debug_meta(self.project, "AFTER _commit()")
 
         signals.project_changed.emit()
-        print("[SIGNAL] project_changed emitted from LouvreDefinitionTab._commit")
-        print("[DEBUG] project id in Louvre tab:", id(self.project))
 
     def set_locked(self, locked: bool, message: str | None = None):
         for sp in (
-                self.sp_width,
-                self.sp_height,
-                self.sp_inlet,
-                self.sp_edge,
-                self.sp_spacing,
+            self.sp_width,
+            self.sp_height,
+            self.sp_inlet,
+            self.sp_edge,
+            self.sp_spacing,
         ):
             sp.setEnabled(not locked)
 
-        if locked and message:
-            self.setToolTip(message)
-        else:
-            self.setToolTip("")
+        self.setToolTip(message if locked and message else "")
 
     def refresh_with_guard(self, switchboard_tab):
         if switchboard_tab.any_tiers_ventilated():
             names = ", ".join(switchboard_tab.ventilated_tier_names())
-            self._set_locked(
+            self.set_locked(
                 True,
                 f"Louvre definition is locked while tiers have vents enabled.\n"
                 f"Ventilated tiers: {names}"
             )
             return
 
-        self._set_locked(False)
+        self.set_locked(False)
         self.refresh()

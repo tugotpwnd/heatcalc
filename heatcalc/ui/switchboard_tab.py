@@ -757,6 +757,14 @@ class SwitchboardTab(QWidget):
     # ------------------------------------------------------------------ #
     # Vents
     # ------------------------------------------------------------------ #
+    # switchboard_tab.py
+
+    def get_louvre_definition(self):
+        """
+        Public accessor for the currently configured louvre definition.
+        Safe for use by reporting / export layers.
+        """
+        return self._get_louvre_definition()
 
     def _get_louvre_definition(self) -> dict | None:
         meta = self.project.meta
@@ -845,7 +853,6 @@ class SwitchboardTab(QWidget):
         k_mat = float(getattr(self.project.meta, "enclosure_k_W_m2K", 0.0))
         allow_mat = bool(getattr(self.project.meta, "allow_material_dissipation", True))
         wall = bool(self.cb_wall.isChecked())
-        default_vent_area_cm2 = float(getattr(self.project.meta, "default_vent_area_cm2", 0.0))
         project_altitude_m = float(getattr(self.project.meta, "altitude_m", 0.0))
         ip_rating_n = int(getattr(self.project.meta, "ip_rating_n", 0))
 
@@ -880,7 +887,6 @@ class SwitchboardTab(QWidget):
                     altitude_m=project_altitude_m,
                     enclosure_k_W_m2K=k_mat,
                     allow_material_dissipation=allow_mat,
-                    default_vent_area_cm2=default_vent_area_cm2,
                     ip_rating_n=ip_rating_n,
                     vent_test_area_cm2=vent_test_area_cm2,  # ✅ NEW
                 )

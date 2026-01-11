@@ -170,6 +170,149 @@ class TierOverlayItem(QGraphicsItem):
             )
             ty += lh
 
+        # -------------------------------------------------
+        # Active cooling indicator (top filters + bottom fan)
+        # -------------------------------------------------
+        if lt.get("P_cooling", 0.0) > 0.0:
+            tier = self.tier
+            r = tier._rect
+            cx = r.center().x()
+
+            # ---- layout tuning ----
+            ARC_W = 36
+            ARC_H = 12
+            ARC_GAP = 6
+
+            FAN_R = 18
+
+            TOP_MARGIN = 26     # ↑ increased to clear spacing text
+            BOTTOM_MARGIN = 34  # ↑ increased to clear curve / overlays
+
+            pen = QPen(QColor("#ff9f1c"), 2.2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+
+            # ---- FILTER ARCS (TOP-ANCHORED) ----
+            arc_top = r.top() + TOP_MARGIN
+
+            for i in range(3):
+                painter.drawArc(
+                    QRectF(
+                        cx - ARC_W / 2,
+                        arc_top + i * ARC_GAP,
+                        ARC_W,
+                        ARC_H,
+                    ),
+                    0 * 16,
+                    180 * 16,
+                )
+
+            # ---- FAN (BOTTOM-ANCHORED) ----
+            cy_fan = r.bottom() - (FAN_R + BOTTOM_MARGIN)
+
+            # outer circle
+            painter.drawEllipse(QPointF(cx, cy_fan), FAN_R, FAN_R)
+
+            # blades
+            for angle in (0, 120, 240):
+                painter.save()
+                painter.translate(cx, cy_fan)
+                painter.rotate(angle)
+                painter.drawLine(0, 0, FAN_R - 2, 0)
+                painter.restore()
+
+
+        # -------------------------------------------------
+        # Touching / spacing indicators (IEC authoritative)
+        # -------------------------------------------------
+        tier = self.tier
+        lt = tier.live_thermal or {}
+        covered = lt.get("covered_sides", tier.covered_sides)
+
+        inset = 6.0
+        pen_touch = QPen(QColor("#FFD166"), 2)
+        pen_text = QPen(QColor(120, 120, 120))
+
+        r = tier._rect
+
+        painter.save()
+
+        # ---------- touching faces ----------
+        painter.setPen(pen_touch)
+
+        if covered.get("left"):
+            painter.drawLine(
+                QPointF(r.left() + inset, r.top() + inset),
+                QPointF(r.left() + inset, r.bottom() - inset),
+            )
+
+        if covered.get("right"):
+            painter.drawLine(
+                QPointF(r.right() - inset, r.top() + inset),
+                QPointF(r.right() - inset, r.bottom() - inset),
+            )
+
+        if covered.get("top"):
+            painter.drawLine(
+                QPointF(r.left() + inset, r.top() + inset),
+                QPointF(r.right() - inset, r.top() + inset),
+            )
+
+        if covered.get("bottom"):
+            painter.drawLine(
+                QPointF(r.left() + inset, r.bottom() - inset),
+                QPointF(r.right() - inset, r.bottom() - inset),
+            )
+
+        # ---------- non-touching annotation ----------
+        LABEL = "SPACING > 100 MM"
+
+        painter.setPen(pen_text)
+        painter.setFont(QFont("Segoe UI", 8))
+
+        TEXT_W = 140
+        TEXT_H = 16
+        MARGIN = 8
+
+        # LEFT wall — extend rightwards
+        if not covered.get("left"):
+            painter.drawText(
+                QRectF(
+                    r.left() + MARGIN,
+                    r.center().y() - TEXT_H / 2,
+                    TEXT_W,
+                    TEXT_H,
+                ),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                LABEL,
+            )
+
+        # RIGHT wall — extend leftwards
+        if not covered.get("right"):
+            painter.drawText(
+                QRectF(
+                    r.right() - TEXT_W - MARGIN,
+                    r.center().y() - TEXT_H / 2,
+                    TEXT_W,
+                    TEXT_H,
+                ),
+                Qt.AlignRight | Qt.AlignVCenter,
+                LABEL,
+            )
+
+        # TOP wall only — centred, horizontal
+        if not covered.get("top"):
+            painter.drawText(
+                QRectF(
+                    r.center().x() - TEXT_W / 2,
+                    r.top() + MARGIN,
+                    TEXT_W,
+                    TEXT_H,
+                ),
+                Qt.AlignHCenter | Qt.AlignVCenter,
+                LABEL,
+            )
+
 
 class _Handle(QGraphicsRectItem):
     def __init__(self, parent, role: str):
@@ -418,21 +561,6 @@ class TierItem(ResizableBox):
         return super().itemChange(change, value)
 
     # ------------------------------------------------------------------ Vent
-
-    def set_vent_preset(self, label: str):
-        if label not in STANDARD_VENTS_CM2:
-            raise ValueError(f"Unknown vent preset: {label}")
-
-        self.is_ventilated = True
-        self.vent_label = label
-        self.vent_area_cm2 = float(STANDARD_VENTS_CM2[label])
-        self.update()
-
-    def set_custom_vent_cm2(self, area_cm2: float):
-        self.is_ventilated = area_cm2 > 0
-        self.vent_label = "Custom"
-        self.vent_area_cm2 = max(0.0, float(area_cm2)) or None
-        self.update()
 
     def clear_vent(self):
         self.is_ventilated = False

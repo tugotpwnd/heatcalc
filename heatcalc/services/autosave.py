@@ -29,30 +29,44 @@ class AutoSaveController(QObject):
     def set_current_path(self, path: Optional[Path]) -> None:
         self._current_path = path
 
+        # HARD SAFETY: no path = no pending autosave
+        if path is None:
+            self._timer.stop()
+
     def _on_project_changed(self) -> None:
-        print("[AUTOSAVE] project_changed received")
-        if self._settings.autosave_enabled:
-            self._timer.start()
+
+        # HARD GUARD
+        if not self._settings.autosave_enabled:
+            return
+        if self._current_path is None:
+            print("[AUTOSAVE] ignored (no active project path)")
+            return
+
+        self._timer.start()
 
     def _on_autosave_changed(self, enabled: bool) -> None:
         self._log.info("Autosave toggled: %s", enabled)
-        if enabled:
-            # save immediately on enabling
-            self._on_timeout()
+
+        # HARD GUARD: enabling autosave without a path does nothing
+        if not enabled or self._current_path is None:
+            return
+
+        # Save immediately only if path exists
+        self._on_timeout()
 
     def _on_timeout(self) -> None:
         print("[AUTOSAVE] debounce timeout fired")
-        project = self._get_project_json.__self__.project
-        print("[DEBUG] project id in autosave:", id(project))
 
-        if not self._settings.autosave_enabled or self._current_path is None:
-            print("[AUTOSAVE] aborted (autosave off or no path)")
+        if not self._settings.autosave_enabled:
+            print("[AUTOSAVE] aborted (autosave disabled)")
+            return
+
+        if self._current_path is None:
+            print("[AUTOSAVE] aborted (no project path)")
             return
 
         data = self._get_project_json()
 
-        print("[AUTOSAVE] JSON payload (meta.louvre_definition):")
-        print(json.dumps(data["meta"]["louvre_definition"], indent=2))
-
         self._persist.save_project(data, self._current_path)
         print("[AUTOSAVE] JSON written to disk")
+
