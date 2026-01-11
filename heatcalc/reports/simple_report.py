@@ -56,8 +56,8 @@ FONT = "Arial"
 FONT_B = "Arial-Bold"
 FONT_I = "Arial-Italic"
 FONT_BI = "Arial-BoldItalic"
-blue = colors.HexColor("#0D4FA2")
-green = colors.HexColor("#009640")
+blue = colors.HexColor("#215096")
+green = colors.HexColor("#007F4D")
 
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, KeepTogether
 matplotlib.rcParams.update({
@@ -602,7 +602,7 @@ def _draw_header_footer(
     w, h = A4
     canvas.saveState()
 
-    blue = colors.HexColor("#0D4FA2")
+    blue = colors.HexColor("#215096")
     green = colors.HexColor("#009640")
     grey = colors.HexColor("#8A8A8A")
 
@@ -861,7 +861,7 @@ def build_tier_summary_page(tier_thermals):
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
 
         # Tier column
-        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#0D4FA2")),
+        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#215096")),
         ("TEXTCOLOR", (0, 1), (0, -1), colors.white),
         ("FONTNAME", (0, 1), (0, -1), FONT_B),
         ("ALIGN", (0, 1), (0, -1), "CENTER"),
@@ -945,7 +945,7 @@ def enclosure_dissipation_table(th: TierThermal) -> Table:
         ("BOX", (0, 0), (-1, -1), 1.25, colors.black),
 
         # First column styling (blue)
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0D4FA2")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#215096")),
         ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
         ("FONTNAME", (0, 0), (0, -1), FONT),
 
@@ -1021,7 +1021,7 @@ def iec_scalar_table(th: TierThermal) -> Table:
     tbl = Table(rows, colWidths=[70*mm, 40*mm])
     tbl.setStyle(TableStyle([
         # Label column (blue)
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0D4FA2")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#215096")),
         ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
         ("FONTNAME", (0, 0), (0, -1), FONT),
 
@@ -1117,22 +1117,6 @@ def section_box(title: str, inner) -> KeepTogether:
     ]))
 
     return KeepTogether([header, body])
-
-def standards_reference_box() -> KeepTogether:
-    txt = (
-        "<b>Standards reference:</b><br/>"
-        "IEC 60890 — A method of temperature-rise verification by calculation for low-voltage switchgear and controlgear assemblies."
-    )
-    t = Table([[Paragraph(txt, BodySmall)]], colWidths=[155*mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,-1), colors.whitesmoke),
-        ("BOX", (0,0), (-1,-1), 0.5, colors.grey),
-        ("LEFTPADDING", (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
-    ]))
-    return KeepTogether([t])
 
 # ---------------------------------------------------------------------
 # Remaining plotting + report assembly functions
@@ -1428,14 +1412,6 @@ def export_simple_report(
 
             flow.append(tbl)
 
-            if not th.compliant_top and th.airflow_m3h is not None:
-                flow.append(Spacer(1, 3))
-                flow.append(Paragraph(
-                    f"<b>Cooling required:</b> Provide ≥ {th.airflow_m3h:.0f} m^3/h of airflow to limit the top temperature to {th.max_C:.0f} °C.",
-                    Body,
-                ))
-            flow.append(Spacer(1, 8))
-
             # ---------------------------------------------------------
             # PAGE 2 — IEC 60890 CALCULATION SHEET (PER TIER)
             # ---------------------------------------------------------
@@ -1476,7 +1452,6 @@ def export_simple_report(
             )
 
             flow.append(Spacer(1, 14))
-            flow.append(standards_reference_box())
 
     doc.multiBuild(flow)
     return out_pdf
