@@ -15,11 +15,11 @@ class ProjectMeta:
 
     # ---- Louvre definition (PROJECT-WIDE, AUTHORITATIVE) ----
     louvre_definition: Dict[str, Any] = field(default_factory=lambda: {
-        "draw_width_mm": 45.0,
-        "draw_height_mm": 15.0,
+        "draw_width_mm": 80.0,
+        "draw_height_mm": 20.0,
         "inlet_area_cm2": 6.5,          # manufacturer free area PER louvre
-        "edge_margin_mm": 15.0,
-        "louvre_spacing_mm": 10.0,
+        "edge_margin_mm": 50.0,
+        "louvre_spacing_mm": 15.0,
         "mesh": {
             "ip_rating_n": 2,
             "aperture_mm": None,
