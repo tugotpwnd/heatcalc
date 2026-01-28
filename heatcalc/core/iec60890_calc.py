@@ -173,6 +173,8 @@ def calc_tier_iec60890(
     T_075 = (ambient_C + dt_075) if dt_075 is not None else None
 
     limit_C = float(tier.effective_max_temp_C())
+    print(f"The effective limit is : {limit_C}")
+
 
     # ============================================================
     # ORDER OF PRECEDENCE LOGIC (FIXED)

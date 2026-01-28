@@ -285,7 +285,7 @@ def export_project_report(
                     T_top=float(res.get("T_top", 0.0)),
                     T_075=res.get("T_075"),
 
-                    max_C=float(res.get("limit_C", getattr(t, "max_temp_C", 70.0))),
+                    max_C=float(res.get("limit_C")),
                     compliant_mid=bool(res.get("compliant_mid", False)),
                     compliant_top=bool(res.get("compliant_top", False)),
 

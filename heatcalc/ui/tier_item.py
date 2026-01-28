@@ -92,16 +92,35 @@ class TierOverlayItem(QGraphicsItem):
         lines = [
             f"Ae: {Ae_raw:.2f} m²" if Ae_snap is None else
             f"Ae: {Ae_raw:.2f} → {Ae_snap:.2f} m²",
+
             f"ΔT(1.0t): {lt.get('dt_top', 0.0):.1f} K",
+
+            # Absolute internal air temperature
+            f"Temp (Top): {lt.get('T_top', 0.0):.1f} °C",
+
+            # Governing limit used by solver
+            f"Temp Limit: {lt.get('limit_C', 0.0):.1f} °C",
         ]
 
+        Pmat = lt.get("P_material", 0.0)
         Pcool = lt.get("P_cooling", 0.0)
-        if Pcool > 0:
+
+        if Pcool > 0.0:
+            # Material + active cooling
             lines += [
-                f"Pmat: {lt.get('P_material', 0.0):.1f} W",
+                f"Pmat: {Pmat:.1f} W",
                 f"Pcool: {Pcool:.1f} W",
             ]
+
+        elif Pmat > 0.0:
+            # Material dissipation only
+            lines += [
+                f"Pmat: {Pmat:.1f} W",
+                "Cooling: NOT REQUIRED",
+            ]
+
         else:
+            # No mitigation at all
             lines.append("Cooling: NOT REQUIRED")
 
         # --- NEW: vent recommendation status ---
@@ -880,8 +899,8 @@ class TierItem(ResizableBox):
             "depth_mm": int(self.depth_mm),
 
             # Limits
-            "max_temp_C": int(self.max_temp_C),
-            "use_auto_component_temp": bool(self.use_auto_component_temp),
+            "max_temp_C": self.max_temp_C,
+            "use_auto_component_temp": self.use_auto_component_temp,
 
             # Position
             "x": float(self.pos().x()),

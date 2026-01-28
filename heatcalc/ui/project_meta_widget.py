@@ -91,7 +91,7 @@ class ProjectMetaWidget(QWidget):
         # Try a few likely logo assets; choose whichever exists first
         for candidate in [
             "heatcalc/data/title.png",
-            "heatcalc/data/logo.png",
+            "heatcalc/data/company_logo.png",
             "heatcalc/assets/Logo.ico",  # if you only have an .ico
         ]:
             p = Path(get_resource_path(candidate))

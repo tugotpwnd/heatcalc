@@ -9,23 +9,39 @@ from PyInstaller.building.datastruct import Tree
 # --- App entrypoint (module with your run()) ---
 entry_script = "heatcalc/main.py"   # or "heatcalc/app.py" if that is your entry
 pathex = []
+
+
 datas = []
 
-# ---- IEC 60890 curve CSVs (REQUIRED) ----
+
+# ---- Runtime data files (CSVs, images, gifs) ----
 datas += [
-    ("heatcalc/data/figure_5/*.csv", "heatcalc/data/figure_5"),
-    ("heatcalc/data/figure_6/*.csv", "heatcalc/data/figure_6"),
-    ("heatcalc/data/cable_table.csv", "heatcalc/data"),
+    ("heatcalc/data/*.csv", "heatcalc/data"),
+    ("heatcalc/data/*.png", "heatcalc/data"),
+    ("heatcalc/data/*.gif", "heatcalc/data"),
+]
+
+# ---- Assets (icons, PDFs, images) ----
+datas += [
+    ("heatcalc/assets/Logo.ico", "heatcalc/assets"),
+    ("heatcalc/assets/coverpage.pdf", "heatcalc/assets"),
+    ("heatcalc/assets/fonts/*.ttf", "heatcalc/assets/fonts"),
+    ("heatcalc/assets/cable_install_type*.png", "heatcalc/assets"),
 ]
 
 
+# ---- Assets ----
 datas += [
-    ('heatcalc/assets/Logo.ico', 'heatcalc/assets'),
-    ('heatcalc/assets/coverpage.pdf', 'heatcalc/assets'),
+    ("heatcalc/assets/Logo.ico", "heatcalc/assets"),
+    ("heatcalc/assets/coverpage.pdf", "heatcalc/assets"),
+    ("heatcalc/assets/fonts/*.ttf", "heatcalc/assets/fonts"),
 ]
 
 
-datas += [("heatcalc/data/components.csv", ".")]   # <-- put the CSV next to the exe
+# ---- Components CSV (only if still used) ----
+datas += [
+    ('heatcalc/data/components.csv', 'heatcalc/data'),
+]
 
 
 # (ReportLab often loads resources dynamically; if you use it at startup, keep this)
