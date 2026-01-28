@@ -77,6 +77,14 @@ class TierOverlayItem(QGraphicsItem):
         if not lt or not self.tier.show_live_overlay:
             return
 
+        # 🔒 HARD GATE: no heat → no overlay
+        if (
+                not lt
+                or not self.tier.show_live_overlay
+                or self.tier.total_heat() <= 0.0
+        ):
+            return
+
         PAD = 6
         font_main = QFont("Consolas", 9)
         painter.setFont(font_main)
@@ -102,25 +110,14 @@ class TierOverlayItem(QGraphicsItem):
             f"Temp Limit: {lt.get('limit_C', 0.0):.1f} °C",
         ]
 
-        Pmat = lt.get("P_material", 0.0)
+        P890 = lt.get("P_890", 0.0)
         Pcool = lt.get("P_cooling", 0.0)
 
+        lines.append(f"P890: {P890:.1f} W")
+
         if Pcool > 0.0:
-            # Material + active cooling
-            lines += [
-                f"Pmat: {Pmat:.1f} W",
-                f"Pcool: {Pcool:.1f} W",
-            ]
-
-        elif Pmat > 0.0:
-            # Material dissipation only
-            lines += [
-                f"Pmat: {Pmat:.1f} W",
-                "Cooling: NOT REQUIRED",
-            ]
-
+            lines.append(f"Excess: {Pcool:.1f} W")
         else:
-            # No mitigation at all
             lines.append("Cooling: NOT REQUIRED")
 
         # --- NEW: vent recommendation status ---
