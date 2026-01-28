@@ -1,0 +1,641 @@
+{
+  "meta": {
+    "job_number": "10250027",
+    "project_title": "Gladstone WWTP Inlet",
+    "enclosure": "MCC",
+    "designer_name": "Lucas",
+    "date": "17/12/15",
+    "revision": "A",
+    "ambient_C": 40.0,
+    "altitude_m": 0.0,
+    "ip_rating_n": 2,
+    "enclosure_material": "Sheet metal",
+    "enclosure_k_W_m2K": 5.5,
+    "allow_material_dissipation": true,
+    "louvre_definition": {
+      "draw_width_mm": 80.0,
+      "draw_height_mm": 20.0,
+      "inlet_area_cm2": 6.5,
+      "edge_margin_mm": 50.0,
+      "louvre_spacing_mm": 10.0,
+      "mesh": {
+        "ip_rating_n": 2,
+        "aperture_mm": null,
+        "open_area_factor": 1.0
+      }
+    },
+    "default_vent_area_cm2": 0.0,
+    "default_vent_label": null,
+    "iec60890_checklist": [
+      {
+        "item": "a)",
+        "condition": "The power loss data for all built-in components is available from the component manufacturer",
+        "result": "Compliant"
+      },
+      {
+        "item": "b)",
+        "condition": "There is an approximately even distribution of power losses inside the enclosure",
+        "result": "Compliant"
+      },
+      {
+        "item": "c)",
+        "condition": "The rated current of the circuits of the ASSEMBLY to be verified (see 10.10.1) shall not exceed 80 % of the rated conventional free air thermal current (Ith) if any, or the rated current (In) of the switching devices and electrical components included in the circuit. Circuit protection devices shall be selected to ensure adequate protection to outgoing circuits, e.g. thermal motor protection devices at the calculated temperature in the ASSEMBLY",
+        "result": "Compliant"
+      },
+      {
+        "item": "d)",
+        "condition": "The mechanical parts and the installed equipment are so arranged that air circulation is not significantly impeded.",
+        "result": "Compliant"
+      },
+      {
+        "item": "e)",
+        "condition": "Conductors carrying currents in excess of 200 A, and the adjacent structural parts are so arranged that eddy-current and hysteresis losses are minimized.",
+        "result": "Compliant"
+      },
+      {
+        "item": "f)",
+        "condition": "All conductors shall have a minimum cross-sectional area based on 125 % of the permitted current rating of the associated circuit. Selection of cables shall be in accordance with IEC 60364-5-52. Examples on how to adapt this standard for conditions inside an ASSEMBLY are given in Annex H. The cross-section of bars shall be as tested or as given in Annex N. Where the device manufacturer specifies a conductor with a larger cross-sectional area this shall be used",
+        "result": "Compliant"
+      },
+      {
+        "item": "g)",
+        "condition": "For enclosures with natural ventilation, the cross-section of the air outlet openings is at least 1.1 times the cross section of the air inlet openings.",
+        "result": "Compliant"
+      },
+      {
+        "item": "h)",
+        "condition": "There are no more than three horizontal partitions in the ASSEMBLY or a section of an ASSEMBLY",
+        "result": "Compliant"
+      },
+      {
+        "item": "i)",
+        "condition": "For enclosures with compartments and natural ventilation the cross section of the ventilating openings in each horizontal partition is at least 50 % of the horizontal cross section of the compartment",
+        "result": "Compliant"
+      }
+    ]
+  },
+  "designer": {
+    "version": 1,
+    "wall_mounted_global": false,
+    "uniform_depth": true,
+    "uniform_depth_value": 550,
+    "tiers": [
+      {
+        "name": "7A",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 2,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": false,
+        "x": 500.0,
+        "y": 150.0,
+        "w": 2175.0,
+        "h": 100.0
+      },
+      {
+        "name": "TIER 4C",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1850.0,
+        "y": 1100.0,
+        "w": 500.0,
+        "h": 1175.0
+      },
+      {
+        "name": "TIER 3F",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1325.0,
+        "y": 2050.0,
+        "w": 525.0,
+        "h": 225.0
+      },
+      {
+        "name": "TIER 3E",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1325.0,
+        "y": 1825.0,
+        "w": 525.0,
+        "h": 225.0
+      },
+      {
+        "name": "TIER 3D",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1325.0,
+        "y": 1500.0,
+        "w": 525.0,
+        "h": 325.0
+      },
+      {
+        "name": "TIER 1D",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 500.0,
+        "y": 1750.0,
+        "w": 500.0,
+        "h": 525.0
+      },
+      {
+        "name": "TIER 1D",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 500.0,
+        "y": 1325.0,
+        "w": 500.0,
+        "h": 425.0
+      },
+      {
+        "name": "TIER 1C",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 500.0,
+        "y": 1050.0,
+        "w": 500.0,
+        "h": 275.0
+      },
+      {
+        "name": "TIER 1B",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 500.0,
+        "y": 775.0,
+        "w": 500.0,
+        "h": 275.0
+      },
+      {
+        "name": "TIER 4B",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1850.0,
+        "y": 950.0,
+        "w": 500.0,
+        "h": 150.0
+      },
+      {
+        "name": "TIER 6B",
+        "vent": {
+          "enabled": true,
+          "area_cm2": null,
+          "label": "Unspecified",
+          "rows": 6,
+          "cols": 4
+        },
+        "component_entries": [
+          {
+            "key": "SRVPM2KRIL-E \u2014 APC Easy UPS On-Line, 2000VA/1800W",
+            "category": "UPS",
+            "part_number": "SRVPM2KRIL-E",
+            "description": "APC Easy UPS On-Line, 2000VA/1800W",
+            "heat_each_w": 222.4,
+            "qty": 1,
+            "max_temp_C": 40
+          },
+          {
+            "key": "SRV72BP-9A \u2014 Extended-Run Battery Pack for SRVS UPS",
+            "category": "UPS",
+            "part_number": "SRV72BP-9A",
+            "description": "Extended-Run Battery Pack for SRVS UPS",
+            "heat_each_w": 20.0,
+            "qty": 2,
+            "max_temp_C": 40
+          }
+        ],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 55,
+        "use_auto_component_temp": false,
+        "x": 2675.0,
+        "y": 1375.0,
+        "w": 500.0,
+        "h": 900.0
+      },
+      {
+        "name": "TIER 6A",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [
+          {
+            "key": "1794PS13 \u2014 Flex I/O Power Supply PS-02",
+            "category": "POWER SUPPLY",
+            "part_number": "1794PS13",
+            "description": "Flex I/O Power Supply PS-02",
+            "heat_each_w": 7.0,
+            "qty": 1,
+            "max_temp_C": 55
+          },
+          {
+            "key": "1794AENTR \u2014 Flex I/O Controller",
+            "category": "RTU",
+            "part_number": "1794AENTR",
+            "description": "Flex I/O Controller",
+            "heat_each_w": 7.1,
+            "qty": 1,
+            "max_temp_C": 55
+          },
+          {
+            "key": "1794IB16 \u2014 Flex I/O 16 point digital input",
+            "category": "RTU",
+            "part_number": "1794IB16",
+            "description": "Flex I/O 16 point digital input",
+            "heat_each_w": 6.1,
+            "qty": 1,
+            "max_temp_C": 55
+          },
+          {
+            "key": "1794TB3 \u2014 Flex I/O base module",
+            "category": "RTU",
+            "part_number": "1794TB3",
+            "description": "Flex I/O base module",
+            "heat_each_w": 7.1,
+            "qty": 1,
+            "max_temp_C": 70
+          },
+          {
+            "key": "DTM6104C \u2014 DIN-T Miniature Circuit Breaker MCB 6kA 1 Pole 4A C Curve",
+            "category": "MCB",
+            "part_number": "DTM6104C",
+            "description": "DIN-T Miniature Circuit Breaker MCB 6kA 1 Pole 4A C Curve",
+            "heat_each_w": 1.8,
+            "qty": 10,
+            "max_temp_C": 55
+          },
+          {
+            "key": "A9C20837 \u2014 Acti9 4 poles, 4 NO, 25 A",
+            "category": "Contactor",
+            "part_number": "A9C20837",
+            "description": "Acti9 4 poles, 4 NO, 25 A",
+            "heat_each_w": 1.6,
+            "qty": 11,
+            "max_temp_C": 60
+          },
+          {
+            "key": "Generic \u2014 Generic (24VDC < 0.5A)",
+            "category": "Terminal",
+            "part_number": "Generic",
+            "description": "Generic (24VDC < 0.5A)",
+            "heat_each_w": 0.00134,
+            "qty": 41,
+            "max_temp_C": 70
+          }
+        ],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 2,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 2675.0,
+        "y": 150.0,
+        "w": 500.0,
+        "h": 1225.0
+      },
+      {
+        "name": "TIER 5A",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 2350.0,
+        "y": 250.0,
+        "w": 325.0,
+        "h": 2025.0
+      },
+      {
+        "name": "TIER 4A",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1850.0,
+        "y": 250.0,
+        "w": 500.0,
+        "h": 700.0
+      },
+      {
+        "name": "TIER 3C",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1325.0,
+        "y": 1175.0,
+        "w": 525.0,
+        "h": 325.0
+      },
+      {
+        "name": "TIER 3B",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1325.0,
+        "y": 800.0,
+        "w": 525.0,
+        "h": 375.0
+      },
+      {
+        "name": "TIER 3A",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [
+          {
+            "key": "DD0296 \u2014 EVALUATION UNIT FOR SPEED MONITORING",
+            "category": "Contactor",
+            "part_number": "DD0296",
+            "description": "EVALUATION UNIT FOR SPEED MONITORING",
+            "heat_each_w": 6.0,
+            "qty": 1,
+            "max_temp_C": 60
+          },
+          {
+            "key": "KTA932S16A \u2014 S+S KT9 MOTOR PROTECTION CIRCUIT 10-16A",
+            "category": "MCB",
+            "part_number": "KTA932S16A",
+            "description": "S+S KT9 MOTOR PROTECTION CIRCUIT 10-16A",
+            "heat_each_w": 8.4,
+            "qty": 1,
+            "max_temp_C": 60
+          },
+          {
+            "key": "5534007424VDC \u2014 MINIATURE GENERAL PURPOSE RELAY 7A 4CO 24V DC COIL",
+            "category": "Other",
+            "part_number": "5534007424VDC",
+            "description": "MINIATURE GENERAL PURPOSE RELAY 7A 4CO 24V DC COIL",
+            "heat_each_w": 1.0,
+            "qty": 1,
+            "max_temp_C": 85
+          },
+          {
+            "key": "FRN3.7G1E-4A \u2014 FRENIC-MEGA AC DRIVE, 3.7kW, 9.0A, 400V",
+            "category": "VSD",
+            "part_number": "FRN3.7G1E-4A",
+            "description": "FRENIC-MEGA AC DRIVE, 3.7kW, 9.0A, 400V",
+            "heat_each_w": 120.0,
+            "qty": 1,
+            "max_temp_C": 60
+          }
+        ],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1325.0,
+        "y": 250.0,
+        "w": 525.0,
+        "h": 550.0
+      },
+      {
+        "name": "TIER 2A",
+        "vent": {
+          "enabled": false,
+          "area_cm2": null,
+          "label": null,
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 70,
+        "use_auto_component_temp": true,
+        "x": 1000.0,
+        "y": 250.0,
+        "w": 325.0,
+        "h": 2025.0
+      },
+      {
+        "name": "TIER 1A",
+        "vent": {
+          "enabled": false,
+          "area_cm2": 25.0,
+          "label": "50\u00d750",
+          "rows": 1,
+          "cols": 1
+        },
+        "component_entries": [
+          {
+            "key": "DD0296 \u2014 EVALUATION UNIT FOR SPEED MONITORING",
+            "category": "Contactor",
+            "part_number": "DD0296",
+            "description": "EVALUATION UNIT FOR SPEED MONITORING",
+            "heat_each_w": 6.0,
+            "qty": 1,
+            "max_temp_C": 60
+          },
+          {
+            "key": "FRN3.7G1E-4A \u2014 FRENIC-MEGA AC DRIVE, 3.7kW, 9.0A, 400V",
+            "category": "VSD",
+            "part_number": "FRN3.7G1E-4A",
+            "description": "FRENIC-MEGA AC DRIVE, 3.7kW, 9.0A, 400V",
+            "heat_each_w": 120.0,
+            "qty": 1,
+            "max_temp_C": 60
+          },
+          {
+            "key": "KTA932S16A \u2014 S+S KT9 MOTOR PROTECTION CIRCUIT 10-16A",
+            "category": "MCB",
+            "part_number": "KTA932S16A",
+            "description": "S+S KT9 MOTOR PROTECTION CIRCUIT 10-16A",
+            "heat_each_w": 8.4,
+            "qty": 1,
+            "max_temp_C": 60
+          },
+          {
+            "key": "5534007424VDC \u2014 MINIATURE GENERAL PURPOSE RELAY 7A 4CO 24V DC COIL",
+            "category": "Other",
+            "part_number": "5534007424VDC",
+            "description": "MINIATURE GENERAL PURPOSE RELAY 7A 4CO 24V DC COIL",
+            "heat_each_w": 1.0,
+            "qty": 1,
+            "max_temp_C": 85
+          }
+        ],
+        "cables": [],
+        "wall_mounted": false,
+        "curve_no": 3,
+        "depth_mm": 550,
+        "max_temp_C": 55,
+        "use_auto_component_temp": false,
+        "x": 500.0,
+        "y": 250.0,
+        "w": 500.0,
+        "h": 525.0
+      }
+    ]
+  }
+}
