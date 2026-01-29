@@ -96,6 +96,72 @@ def _calc_p_890_from_allowable_top_rise(
 
     return base ** (1.0 / x)
 
+def annex_k_sealed_p890(
+    *,
+    Ae: float,
+    h_m: float,
+    w_m: float,
+    d_m: float,
+    curve_no: int,
+    delta_allow_K: float,
+) -> Dict:
+    """
+    IEC TR 60890:2022 Annex K
+    Calculate P_890 assuming NO natural ventilation (sealed enclosure).
+
+    Returns:
+        {
+            "P_890": float,
+            "k": float,
+            "c": float,
+            "x": float,
+            "f": Optional[float],
+            "g": Optional[float],
+            "coeff_sources": List[str],
+        }
+    """
+
+    # Annex K MUST use unventilated exponent
+    x_ak = 0.804
+    d_fac = 1.0
+
+    coeff_sources = []
+    f_ak = None
+    g_ak = None
+
+    # --- Select unventilated IEC coefficients ---
+    if Ae <= 1.25:
+        # Small enclosure, no vents
+        k_ak = curvefit.k_small_no_vents(Ae)
+        g_ak = h_m / max(1e-9, w_m)
+        c_ak = curvefit.c_small_no_vents(g_ak)
+        coeff_sources += ["Fig. 7", "Fig. 8"]
+    else:
+        # Normal enclosure, no vents
+        k_ak = curvefit.k_no_vents(Ae)
+        Ab = max(1e-9, w_m * d_m)
+        f_ak = (h_m ** 1.35) / Ab
+        c_ak = curvefit.c_no_vents(curve_no, f_ak)
+        coeff_sources += ["Fig. 3", "Fig. 4"]
+
+    # --- Invert IEC air-rise model to get P_890 ---
+    if delta_allow_K > 0.0 and k_ak > 0.0 and c_ak > 0.0:
+        denom = c_ak * k_ak * d_fac
+        base = delta_allow_K / max(1e-12, denom)
+        P_890 = (base ** (1.0 / x_ak)) if base > 0.0 else 0.0
+    else:
+        P_890 = 0.0
+
+    return {
+        "P_890": float(P_890),
+        "k": float(k_ak),
+        "c": float(c_ak),
+        "x": float(x_ak),
+        "f": f_ak,
+        "g": g_ak,
+        "coeff_sources": sorted(set(coeff_sources)),
+    }
+
 
 def calc_tier_iec60890(
     *,
@@ -116,8 +182,6 @@ def calc_tier_iec60890(
     geom = tier_geometry(tier, tiers)
 
     Ae = geom["Ae"]
-    f = geom["f"]
-    g = geom["g"]
 
     # ---------------- IP protection rule ----------------
     vents_permitted_by_ip = int(ip_rating_n) < 5
@@ -148,7 +212,6 @@ def calc_tier_iec60890(
     d_fac = 1.0
 
     coeff_sources = []
-    profile_source = None
 
     vent_curvefit_info = {"k": None, "c": None, "snapped": False}
 
@@ -258,11 +321,13 @@ def calc_tier_iec60890(
         }
 
     # ============================================================
-    # STAGE 2: Compute P_890 (inverse IEC model), then residual power
+    # STAGE 2: Installed-condition power limit (diagnostic only)
     # ============================================================
-    # P_890 is the maximum internal power that would just reach the allowable
-    # top-air rise per the IEC 60890 model used above.
-    P_890_raw = _calc_p_890_from_allowable_top_rise(
+    # This is NOT Annex K P_890.
+    # It is the power that would just reach the temperature limit
+    # using the installed-condition IEC model (vents included if present).
+
+    P_limit_installed_raw = _calc_p_890_from_allowable_top_rise(
         dt_top_allow=delta_allow,
         k_iec=k_iec,
         c=c,
@@ -270,25 +335,30 @@ def calc_tier_iec60890(
         d_fac=d_fac,
     )
 
-    # Clamp to [0, P] to avoid negative residuals / numerical weirdness
-    P_890 = max(0.0, min(P, float(P_890_raw)))
-    P_fan = max(0.0, P - P_890)
-    P_cooling = P_fan  # keep your existing field name semantics
+    P_limit_installed = max(0.0, min(P, float(P_limit_installed_raw)))
+
+    # DO NOT compute fan power here
+    # DO NOT use this value for sizing
 
     # ============================================================
-    # STAGE 3: Vent recommendation (use residual power)
+    # STAGE 3: Vent recommendation (installed-condition only)
     # ============================================================
     vent_recommended = False
 
     if (
-        vents_permitted_by_ip
-        and (not vent_effective)
-        and (Ae > 1.25)
-        and (P_cooling > 0.0)
+            vents_permitted_by_ip
+            and (not vent_effective)  # vents not already installed
+            and (Ae > 1.25)
+            and (not compliant_top)  # enclosure currently too hot
     ):
-        rec_area_cm2 = float(vent_test_area_cm2) if (vent_test_area_cm2 is not None) else None
+        rec_area_cm2 = (
+            float(vent_test_area_cm2)
+            if vent_test_area_cm2 is not None
+            else None
+        )
 
         if rec_area_cm2 and rec_area_cm2 > 0.0 and f is not None:
+            # --- Forward IEC calc WITH vents at full P ---
             k_v_res = curvefit.k_vents(
                 ae=max(1.0, min(14.0, Ae)),
                 opening_area_cm2=rec_area_cm2,
@@ -301,9 +371,10 @@ def calc_tier_iec60890(
             k_v = k_v_res.value
             c_v = c_v_res.value
 
-            # Evaluate whether vents alone could bring the enclosure under limit
-            # by checking forward IEC model at full P with vents.
-            dt_mid_v = k_v * (P ** 0.715)
+            # IEC vented exponent
+            x_v = 0.715
+
+            dt_mid_v = k_v * (P ** x_v)
             dt_top_v = c_v * dt_mid_v
             T_top_v = ambient_C + dt_top_v
 
@@ -311,15 +382,57 @@ def calc_tier_iec60890(
                 vent_recommended = True
 
     # ============================================================
-    # STAGE 4: Active cooling airflow (Annex K)
+    # STAGE 4: Active cooling airflow (IEC TR 60890:2022 Annex K)
     # ============================================================
-    k_alt = air_k_factor_from_altitude_m(altitude_m)
 
-    # Volumetric heat capacity per Annex K: ~1160 J/m³·K with altitude derate.
+    delta_allow = max(0.0, limit_C - ambient_C)
+
+    ak = annex_k_sealed_p890(
+        Ae=Ae,
+        h_m=h_m,
+        w_m=w_m,
+        d_m=d_m,
+        curve_no=curve_no,
+        delta_allow_K=delta_allow,
+    )
+
+    P_890 = min(P, ak["P_890"])
+    P_fan = max(0.0, P - P_890)
+    P_cooling = P_fan
+
+    print("\n========== IEC 60890 vs Annex K DEBUG ==========")
+    print(f"Tier: {getattr(tier, 'name', '—')}")
+    print(f"Ae = {Ae:.3f} m²")
+    print(f"Ambient = {ambient_C:.1f} °C")
+    print(f"Limit = {limit_C:.1f} °C")
+    print(f"ΔT_allow = {delta_allow:.1f} K")
+    print(f"Input Power P = {P:.1f} W")
+
+    print("\n--- Installed-condition IEC model ---")
+    print(f"  Ventilated: {vent_effective}")
+    print(f"  k_iec = {k_iec:.5f}")
+    print(f"  c_iec = {c:.5f}")
+    print(f"  x_iec = {x:.3f}")
+    print(f"  ΔT_top = {dt_top:.2f} K")
+    print(f"  T_top = {T_top:.2f} °C")
+    print(f"  P_limit_installed = {P_limit_installed:.2f} W")
+
+    print("\n--- Annex K sealed-enclosure model ---")
+    print("  (Natural ventilation IGNORED)")
+    print(f"  k_ak = {ak['k']:.5f}")
+    print(f"  c_ak = {ak['c']:.5f}")
+    print(f"  x_ak = {ak['x']:.3f}")
+    print(f"  P_890 (Annex K) = {ak['P_890']:.2f} W")
+
+    print("\n--- Fan sizing (Annex K governs) ---")
+    print(f"  P_fan = {P_fan:.2f} W")
+    print("===============================================\n")
+
+    k_alt = air_k_factor_from_altitude_m(altitude_m)
     VOL_HEAT_CAP_J_M3K = 1160.0 * k_alt
 
     airflow_m3h = (
-        (P_cooling / (VOL_HEAT_CAP_J_M3K * delta_allow)) * 3600.0
+            (P_cooling / (VOL_HEAT_CAP_J_M3K * delta_allow)) * 3600.0
     ) if (delta_allow > 0.0 and P_cooling > 0.0) else 0.0
 
     return {
@@ -342,6 +455,15 @@ def calc_tier_iec60890(
         "P_cooling": P_cooling,
         "airflow_m3h": airflow_m3h,
         "vent_recommended": vent_recommended,
+
+        # Annex K transparency
+        "annex_k": {
+            "vents_ignored": True,
+            "k": ak["k"],
+            "c": ak["c"],
+            "x": ak["x"],
+            "coeff_sources": ak["coeff_sources"],
+        },
 
         "dt_mid": dt_mid,
         "dt_top": dt_top,

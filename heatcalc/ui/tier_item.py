@@ -102,11 +102,7 @@ class TierOverlayItem(QGraphicsItem):
             f"Ae: {Ae_raw:.2f} → {Ae_snap:.2f} m²",
 
             f"ΔT(1.0t): {lt.get('dt_top', 0.0):.1f} K",
-
-            # Absolute internal air temperature
             f"Temp (Top): {lt.get('T_top', 0.0):.1f} °C",
-
-            # Governing limit used by solver
             f"Temp Limit: {lt.get('limit_C', 0.0):.1f} °C",
         ]
 
@@ -116,32 +112,53 @@ class TierOverlayItem(QGraphicsItem):
         lines.append(f"P890: {P890:.1f} W")
 
         if Pcool > 0.0:
-            lines.append(f"Excess: {Pcool:.1f} W")
+            lines.append(f"Excess (Fan): {Pcool:.1f} W")
         else:
             lines.append("Cooling: NOT REQUIRED")
 
-        # --- NEW: vent recommendation status ---
+        # --- Vent recommendation ---
         if lt.get("vent_recommended"):
             lines.append("Ventilation: RECOMMENDED")
-        # --- Vent inlet area (effective, IEC-used) ---
+
+        # --- Installed ventilation info ---
         if lt.get("ventilated"):
             Ain = lt.get("inlet_area_cm2", 0.0)
             if Ain > 0:
                 lines.append(f"Vent Ae(in): {Ain:.0f} cm²")
 
+        # --- Airflow ---
         airflow = lt.get("airflow_m3h")
         if airflow:
             lines.append(f"Air: {airflow:.0f} m³/h")
 
-        ctx = [
-            f"Curve: {lt.get('curve_no', '—')}",
-            f"k={lt.get('k', 0.0):.3f}",
-            f"c={lt.get('c', 0.0):.3f}",
-            f"x={lt.get('x', 0.0):.3f}",
-        ]
+        # =====================================================
+        # Annex K transparency (ONLY when it actually applies)
+        # =====================================================
+        ak = lt.get("annex_k") or {}
 
-        if curvefit.get("snapped"):
-            ctx.append("⚠ IEC curve snapped")
+        special_annex_k_case = (
+                lt.get("ventilated", False)
+                and Pcool > 0.0
+                and ak.get("vents_ignored", False)
+        )
+
+        if special_annex_k_case:
+            ctx = [
+                "Annex K: SEALED ENCLOSURE",
+                f"k(K): {ak.get('k', 0.0):.3f}",
+                f"c(K): {ak.get('c', 0.0):.3f}",
+                f"x(K): {ak.get('x', 0.0):.3f}",
+            ]
+        else:
+            # ---- context / coefficients ----
+            ctx = [
+                f"k={lt.get('k', 0.0):.3f}",
+                f"c={lt.get('c', 0.0):.3f}",
+                f"x={lt.get('x', 0.0):.3f}",
+            ]
+
+        if special_annex_k_case:
+            ctx.append("⚠ Vents ignored (Annex K)")
 
         if lt.get("g") is not None:
             ctx.append(f"g={lt['g']:.3f}")
