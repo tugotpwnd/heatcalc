@@ -203,7 +203,11 @@ class TempRiseTab(QWidget):
             # Determine IEC compliance mode (explicit + selected)
             # ------------------------------------------------------------
 
-            if res["compliant_top"]:
+            if not res.get("cooling_possible", True):
+                colour = COL_NON_COMPLIANT
+                compliance_tag = "Thermally infeasible (external conditions)"
+
+            elif res["compliant_top"]:
                 if t.is_ventilated:
                     colour = COL_COMPLIANT_VENT_SEL
                     compliance_tag = "IEC compliant (with ventilation selected)"
@@ -262,6 +266,36 @@ class TempRiseTab(QWidget):
         self.ax.set_xlabel("Temperature (°C)")
         self.ax.set_ylabel("Multiple of enclosure height")
         self.ax.set_ylim(0, 1.02)
+
+        # ------------------------------------------------------------
+        # Thermal infeasibility: do NOT plot IEC temperature profile
+        # ------------------------------------------------------------
+        if not r.get("cooling_possible", True):
+            self.ax.text(
+                0.5, 0.5,
+                "THERMALLY INFEASIBLE\n\n"
+                "External conditions alone exceed\n"
+                "the allowable enclosure temperature.\n\n"
+                "IEC 60890 temperature-rise model\n"
+                "is not applicable.",
+                transform=self.ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=11,
+                color="#b40000",
+                alpha=0.9,
+                weight="bold",
+            )
+
+            # Keep context but suppress misleading scale
+            self.ax.set_xticks([])
+            self.ax.set_yticks([])
+            self.ax.set_xlim(0, 1)
+            self.ax.set_ylim(0, 1)
+
+            self._title.setText(f"{r['name']}  ·  THERMALLY INFEASIBLE")
+            self.canvas.draw_idle()
+            return
 
         import numpy as np
 
@@ -394,6 +428,35 @@ class TempRiseTab(QWidget):
                 "IEC 60890 compliant.\n"
                 "Base temperature rise is within the effective tier limit.\n"
                 "→ No mitigation required."
+            )
+            return
+
+        if not r.get("cooling_possible", True):
+            blockers = r.get("thermal_blockers", [])
+
+            reasons = []
+            if "AMBIENT" in blockers:
+                reasons.append("ambient temperature exceeds the allowable limit")
+            if "SOLAR" in blockers:
+                reasons.append("solar heat load alone exceeds the allowable limit")
+
+            reason_txt = "; ".join(reasons) if reasons else "external conditions exceed limits"
+
+            self.lbl_guidance.setText(
+                "Thermal compliance is NOT achievable under IEC 60890.\n\n"
+                f"The enclosure exceeds its allowable temperature due to {reason_txt}.\n\n"
+                "Cooling, ventilation, or airflow cannot restore compliance.\n\n"
+                "Recommended actions:\n"
+                "• Reduce ambient exposure (relocation, shading)\n"
+                "• Select lighter enclosure colour\n"
+                "• Increase allowable equipment temperature rating\n"
+                "• Provide architectural protection (canopy, sun shield)"
+            )
+
+            self.lbl_guidance.setToolTip(
+                "IEC 60890 cooling methods address internal heat dissipation only.\n"
+                "When external conditions exceed allowable limits, compliance\n"
+                "cannot be achieved through ventilation or forced cooling."
             )
             return
 

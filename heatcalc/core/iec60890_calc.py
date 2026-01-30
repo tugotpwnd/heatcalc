@@ -286,6 +286,74 @@ def calc_tier_iec60890(
     )
 
     # ============================================================
+    # STAGE 0: Thermal feasibility check (external conditions)
+    # ============================================================
+
+    external_dt = max(0.0, solar_dt)
+
+    delta_allow_total = limit_C - ambient_C - external_dt
+
+    thermal_impossible = delta_allow_total <= 0.0
+
+    blockers = []
+    if ambient_C >= limit_C:
+        blockers.append("AMBIENT")
+    if solar_dt > 0 and (ambient_C + solar_dt) >= limit_C:
+        blockers.append("SOLAR")
+
+
+    if thermal_impossible:
+        return {
+            "ambient_C": ambient_C,
+            "solar_dt": solar_dt,
+
+            "w_m": w_m, "h_m": h_m, "d_m": d_m, "Ae": Ae,
+            "P": P,
+
+            # coefficients for transparency
+            "k": k_iec,
+            "c": c,
+            "x": x,
+            "f": f,
+            "g": g,
+
+            "curve_no": curve_no,
+            "wall_mounted": bool(wall_mounted),
+            "ventilated": False,  # explicitly meaningless here
+
+            # ---- cooling disabled ----
+            "P_890": 0.0,
+            "P_fan": 0.0,
+            "P_cooling": 0.0,
+            "airflow_m3h": 0.0,
+            "vent_recommended": False,
+
+            # ---- temperatures (external conditions dominate) ----
+            "dt_mid": 0.0,
+            "dt_top": 0.0,
+            "dt_075": None,
+
+            "T_mid": ambient_C + external_dt,
+            "T_top": ambient_C + external_dt,
+            "T_075": None,
+
+            "limit_C": limit_C,
+            "compliant_mid": False,
+            "compliant_top": False,
+
+            "cooling_possible": False,
+            "thermal_blockers": blockers,
+
+            "delta_allow_K": delta_allow_total,
+
+            "surfaces": surfaces,
+            "coeff_sources": sorted(set(coeff_sources)),
+            "profile_source": "Externally dominated",
+            "curvefit": vent_curvefit_info,
+            "inlet_area_cm2": inlet_area_cm2,
+        }
+
+    # ============================================================
     # STAGE 1: IEC compliant -> stop
     # ============================================================
     compliant_top = T_top <= limit_C
@@ -407,34 +475,34 @@ def calc_tier_iec60890(
     P_fan = max(0.0, P - P_890)
     P_cooling = P_fan
 
-    print("\n========== IEC 60890 vs Annex K DEBUG ==========")
-    print(f"Tier: {getattr(tier, 'name', '—')}")
-    print(f"Ae = {Ae:.3f} m²")
-    print(f"Ambient = {ambient_C:.1f} °C")
-    print(f"Solar dt = {solar_dt:.1f} °C")
-    print(f"Limit = {limit_C:.1f} °C")
-    print(f"ΔT_allow = {delta_allow:.1f} K")
-    print(f"Input Power P = {P:.1f} W")
-
-    print("\n--- Installed-condition IEC model ---")
-    print(f"  Ventilated: {vent_effective}")
-    print(f"  k_iec = {k_iec:.5f}")
-    print(f"  c_iec = {c:.5f}")
-    print(f"  x_iec = {x:.3f}")
-    print(f"  ΔT_top = {dt_top:.2f} K")
-    print(f"  T_top = {T_top:.2f} °C")
-    print(f"  P_limit_installed = {P_limit_installed:.2f} W")
-
-    print("\n--- Annex K sealed-enclosure model ---")
-    print("  (Natural ventilation IGNORED)")
-    print(f"  k_ak = {ak['k']:.5f}")
-    print(f"  c_ak = {ak['c']:.5f}")
-    print(f"  x_ak = {ak['x']:.3f}")
-    print(f"  P_890 (Annex K) = {ak['P_890']:.2f} W")
-
-    print("\n--- Fan sizing (Annex K governs) ---")
-    print(f"  P_fan = {P_fan:.2f} W")
-    print("===============================================\n")
+    # print("\n========== IEC 60890 vs Annex K DEBUG ==========")
+    # print(f"Tier: {getattr(tier, 'name', '—')}")
+    # print(f"Ae = {Ae:.3f} m²")
+    # print(f"Ambient = {ambient_C:.1f} °C")
+    # print(f"Solar dt = {solar_dt:.1f} °C")
+    # print(f"Limit = {limit_C:.1f} °C")
+    # print(f"ΔT_allow = {delta_allow:.1f} K")
+    # print(f"Input Power P = {P:.1f} W")
+    #
+    # print("\n--- Installed-condition IEC model ---")
+    # print(f"  Ventilated: {vent_effective}")
+    # print(f"  k_iec = {k_iec:.5f}")
+    # print(f"  c_iec = {c:.5f}")
+    # print(f"  x_iec = {x:.3f}")
+    # print(f"  ΔT_top = {dt_top:.2f} K")
+    # print(f"  T_top = {T_top:.2f} °C")
+    # print(f"  P_limit_installed = {P_limit_installed:.2f} W")
+    #
+    # print("\n--- Annex K sealed-enclosure model ---")
+    # print("  (Natural ventilation IGNORED)")
+    # print(f"  k_ak = {ak['k']:.5f}")
+    # print(f"  c_ak = {ak['c']:.5f}")
+    # print(f"  x_ak = {ak['x']:.3f}")
+    # print(f"  P_890 (Annex K) = {ak['P_890']:.2f} W")
+    #
+    # print("\n--- Fan sizing (Annex K governs) ---")
+    # print(f"  P_fan = {P_fan:.2f} W")
+    # print("===============================================\n")
 
     k_alt = air_k_factor_from_altitude_m(altitude_m)
     VOL_HEAT_CAP_J_M3K = 1160.0 * k_alt

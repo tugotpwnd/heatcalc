@@ -105,15 +105,28 @@ class TierOverlayItem(QGraphicsItem):
             f"Temp Limit: {lt.get('limit_C', 0.0):.1f} °C",
         ]
 
+        cooling_possible = lt.get("cooling_possible", True)
+        thermal_blockers = lt.get("thermal_blockers", [])
+
         P890 = lt.get("P_890", 0.0)
         Pcool = lt.get("P_cooling", 0.0)
 
-        lines.append(f"P890: {P890:.1f} W")
+        if not cooling_possible:
+            lines.append("Cooling: IMPOSSIBLE")
 
-        if Pcool > 0.0:
-            lines.append(f"Excess (Fan): {Pcool:.1f} W")
+            if "AMBIENT" in thermal_blockers:
+                lines.append("Blocker: Ambient ≥ limit")
+
+            if "SOLAR" in thermal_blockers:
+                lines.append("Blocker: Solar ≥ limit")
+
         else:
-            lines.append("Cooling: NOT REQUIRED")
+            lines.append(f"P890: {P890:.1f} W")
+
+            if Pcool > 0.0:
+                lines.append(f"Excess (Fan): {Pcool:.1f} W")
+            else:
+                lines.append("Cooling: NOT REQUIRED")
 
         # --- Vent recommendation ---
         if lt.get("vent_recommended"):
@@ -765,6 +778,11 @@ class TierItem(ResizableBox):
             painter.restore()
 
         # --- cooling state (authoritative) ---
+        thermal_infeasible = (
+                bool(self.live_thermal)
+                and not self.live_thermal.get("cooling_possible", True)
+        )
+
         cooling_required = (
                 bool(self.live_thermal)
                 and self.live_thermal.get("P_cooling", 0.0) > 0.0
@@ -777,9 +795,14 @@ class TierItem(ResizableBox):
         painter.setFont(title_font)
         painter.setPen(QPen(Qt.white))  # or your colour logic
 
-        painter.setPen(
-            QPen(QColor("#ff9f1c") if cooling_required else QColor("#2ec4b6"))
-        )
+        if thermal_infeasible:
+            title_col = QColor("#e63946")  # 🔴 red – infeasible
+        elif cooling_required:
+            title_col = QColor("#ff9f1c")  # 🟠 orange – active cooling required
+        else:
+            title_col = QColor("#2ec4b6")  # 🟢 teal – compliant
+
+        painter.setPen(QPen(title_col))
 
         painter.drawText(
             QRectF(

@@ -521,7 +521,7 @@ class MainWindow(QMainWindow):
         footer_path = get_resource_path("heatcalc/data/company_logo.png")
 
         try:
-            export_project_report(
+            result = export_project_report(
                 self.project,
                 self.switchboard_tab,
                 self.curvefit_tab,
@@ -532,6 +532,8 @@ class MainWindow(QMainWindow):
                 iec60890_checklist=answers,
                 selected_tier_tags=selected_tags,
             )
+            if not result:
+                return
             self.statusBar().showMessage(f"Report written: {out_path.name}")
             QMessageBox.information(self, "Report Exported", f"Saved:\n{out_path}")
         except Exception as e:

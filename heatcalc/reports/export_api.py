@@ -19,6 +19,7 @@ from .simple_report import (
     CableRow as ReportCable,
     TierThermal,
 )
+from PyQt5.QtWidgets import QMessageBox
 
 try:
     # Used only to convert drawn grid units -> mm for reporting.
@@ -225,6 +226,7 @@ def export_project_report(
         except Exception:
             pass
 
+        blocked: List[Tuple[str, List[str], float]] = []  # (tier_name, blockers, delta_allow_K)
         for t in report_tier_items:
 
             # ---------------- Vent areas via louvre model ----------------
@@ -256,6 +258,16 @@ def export_project_report(
                 vent_test_area_cm2=vent_test_area_cm2,
                 solar_delta_K=solar_dt,
             )
+
+            # ------------------------------------------------------------
+            # HARD BLOCK: thermally infeasible tiers
+            # ------------------------------------------------------------
+            if not res.get("cooling_possible", True):
+                tier_name = str(getattr(t, "name", getattr(t, "tag", "Tier")))
+                blockers = list(res.get("thermal_blockers", []) or [])
+                delta_allow_K = float(res.get("delta_allow_K", 0.0) or 0.0)
+                blocked.append((tier_name, blockers, delta_allow_K))
+                continue  # don't append TierThermal for a blocked tier
 
             # ---------------- Normalise into TierThermal ----------------
             tier_thermals.append(
@@ -300,6 +312,32 @@ def export_project_report(
                     figures_used=res.get("figures_used", []),
                 )
             )
+
+    if blocked:
+        REASON_MAP = {
+            "AMBIENT": "Ambient temperature ≥ allowable limit",
+            "SOLAR": "Solar temperature rise ≥ allowable limit",
+        }
+
+        msg = "The report cannot be generated.\n\n"
+        msg += "The following tiers are thermally infeasible:\n\n"
+
+        for name, reasons, deltaK in blocked:
+            if reasons:
+                reason_txt = ", ".join(REASON_MAP.get(r, r) for r in reasons)
+            else:
+                reason_txt = "External conditions exceed limits"
+            msg += f"• {name}  ({reason_txt}, ΔT_allow={deltaK:.1f} K)\n"
+
+        msg += (
+            "\n\nExternal conditions alone exceed allowable limits.\n"
+            "IEC 60890 mitigation (ventilation or cooling) is not possible.\n\n"
+            "Revise ambient assumptions, solar exposure,\n"
+            "or enclosure design before generating a report."
+        )
+
+        QMessageBox.critical(None, "Report Blocked", msg)
+        return None
 
     out_pdf = Path(out_pdf)
     return export_simple_report(
