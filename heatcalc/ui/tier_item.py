@@ -310,7 +310,7 @@ class TierOverlayItem(QGraphicsItem):
             )
 
         # ---------- non-touching annotation ----------
-        LABEL = "SPACING > 100 MM"
+        LABEL = "SPACING > 200 MM"
 
         painter.setPen(pen_text)
         painter.setFont(QFont("Segoe UI", 8))
@@ -511,11 +511,10 @@ class CableEntry:
     name: str
     csa_mm2: float
     installation: str
-    air_temp_C: int
     current_A: float
     length_m: float
     In_A: float
-    Pn_Wpm: float
+    Pv_Wpm: float
     P_Wpm: float
     total_W: float
     install_type: int = 1     # NEW
@@ -906,7 +905,7 @@ class TierItem(ResizableBox):
         # cables (persisted detailed entries)
         for ce in self.cables:
             desc = (f"{ce.name} — {ce.csa_mm2:.0f}mm², {ce.length_m:.1f} m, "
-                    f"{ce.current_A:.1f} A @ {ce.air_temp_C}°C "
+                    f"{ce.current_A:.1f} A @ 70°C "
                     f"(Pn={ce.Pn_Wpm:.2f} W/m, In={ce.In_A:.1f} A)")
             rows.append(("Cable", desc, float(ce.total_W), ("cable", ce)))
 

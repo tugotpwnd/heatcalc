@@ -24,18 +24,17 @@ from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor
 
 # Local import
 from ..utils.resources import get_resource_path
-from .cable_table import load_cable_table, interpolate_loss, cable_path
+from .cable_table import load_cable_table, cable_loss, cable_path
 
 @dataclass
 class CableSelection:
     name: str
     csa_mm2: float
     installation: str           # keep human label for report
-    air_temp_C: int
     current_A: float
     length_m: float
     In_A: float
-    Pn_Wpm: float
+    Pv_Wpm: float          # ← rename
     P_Wpm: float
     total_W: float
     install_type: int           # NEW: 1/2/3 index
@@ -62,7 +61,7 @@ class CableAdderWidget(QtWidgets.QWidget):
 
         # CSA combo (from available rows in any series)
         # Derive unique CSA values from the loaded table
-        csa_values = sorted({row.csa for series in self._table_index.values() for row in series})
+        csa_values = sorted(self._table_index.keys())
         self.cb_csa = QtWidgets.QComboBox()
         for csa in csa_values:
             self.cb_csa.addItem(f"{csa:.1f} mm²", csa)
@@ -98,10 +97,6 @@ class CableAdderWidget(QtWidgets.QWidget):
         self.btn_inst1.setChecked(True)  # default selection
         form.addRow(inst_box)
 
-        # Air temperature (from CSV – still choose 35/55 or any in CSV; we keep a simple 35/55 chooser)
-        self.cb_temp = QtWidgets.QComboBox()
-        self.cb_temp.addItems(sorted({str(t) for (t, _i) in self._table_index.keys()}))
-        form.addRow("Air temp (°C):", self.cb_temp)
 
         # Load current
         self.sp_current = QtWidgets.QDoubleSpinBox()
@@ -129,7 +124,7 @@ class CableAdderWidget(QtWidgets.QWidget):
         layout.addStretch(1)
 
     def _wire(self):
-        for w in (self.ed_name, self.cb_csa, self.cb_temp, self.sp_current, self.sp_len):
+        for w in (self.ed_name, self.cb_csa, self.sp_current, self.sp_len):
             if isinstance(w, QtWidgets.QLineEdit): w.textChanged.connect(self._update_preview)
             else:
                 (w.currentIndexChanged.connect(self._update_preview)
@@ -150,29 +145,36 @@ class CableAdderWidget(QtWidgets.QWidget):
         name = (self.ed_name.text() or "").strip()
         if not name: return None
         csa = float(self.cb_csa.currentData())
-        air = int(self.cb_temp.currentText())
         I   = float(self.sp_current.value())
         L   = float(self.sp_len.value())
         if I <= 0 or L <= 0: return None
 
         inst_idx, inst_label = self._selected_install()
-        det = interpolate_loss(csa, I, air_temp_C=air, install_type=inst_idx, csv_path=self._csv_path)
-        P_wpm = det["P_Wpm"]
-        total = P_wpm * L
+        table = load_cable_table(self._csv_path)
+
+        try:
+            det = cable_loss(
+                table=table,
+                csa_mm2=csa,
+                install_type=inst_idx,
+                current_A=I,
+                length_m=L,
+            )
+        except ValueError:
+            return None  # disables Add + preview
 
         return CableSelection(
             name=name,
             csa_mm2=csa,
             installation=inst_label,
-            air_temp_C=air,
             current_A=I,
             length_m=L,
-            In_A=det["In_A"],
-            Pn_Wpm=det["Pn_Wpm"],
-            P_Wpm=P_wpm,
-            total_W=total,
+            In_A=det["Imax_A"],
+            Pv_Wpm=det["Pv_Wpm"],
+            P_Wpm=det["P_Wpm"],
+            total_W=det["total_W"],
             install_type=inst_idx,
-            factor_install=1.0,  # always 1 now
+            factor_install=1.0,
         )
 
     def _update_preview(self):
@@ -183,7 +185,7 @@ class CableAdderWidget(QtWidgets.QWidget):
             return
         self.lbl_preview.setText(
             f"<b>{sel.name}</b> • {sel.csa_mm2:.1f} mm² • {sel.installation}<br>"
-            f"Air {sel.air_temp_C}°C — Iₙ={sel.In_A:.1f} A, Pₙ={sel.Pn_Wpm:.2f} W/m<br>"
+            f"Imax={sel.In_A:.1f} A, Pv (table)={sel.Pv_Wpm:.2f}W/m<br>"
             f"I={sel.current_A:.1f} A, L={sel.length_m:.1f} m → <b>P={sel.P_Wpm:.2f} W/m</b>, "
             f"<b>Total={sel.total_W:.1f} W</b>"
         )
@@ -199,6 +201,5 @@ class CableAdderWidget(QtWidgets.QWidget):
         self.ed_name.clear()
         self.sp_current.setValue(0.0)
         self.sp_len.setValue(0.0)
-        self.cb_temp.setCurrentIndex(0)
         self.btn_inst1.setChecked(True)
         self._update_preview()

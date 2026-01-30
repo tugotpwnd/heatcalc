@@ -1129,8 +1129,8 @@ class SwitchboardTab(QWidget):
                 self.list_contents.addItem(hdr)
                 for cab in it.cables:
                     line = (f"{cab.name} — {cab.csa_mm2:.0f}mm², {cab.length_m:.1f} m, "
-                            f"{cab.current_A:.1f} A @ {cab.air_temp_C}°C  "
-                            f"(Pn={cab.Pn_Wpm:.2f} W/m, In={cab.In_A:.1f} A)  → {cab.total_W:.1f} W")
+                            f"{cab.current_A:.1f} A @ 70°C  "
+                            f"(Pv={cab.Pv_Wpm:.2f} W/m, Imax={cab.In_A:.1f} A)  → {cab.total_W:.1f} W")
                     li = QListWidgetItem(line)
                     li.setData(Qt.UserRole, ("cable", cab))
                     self.list_contents.addItem(li)

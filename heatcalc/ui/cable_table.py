@@ -1,120 +1,89 @@
-# --- imports at top of file ---
+# heatcalc/ui/cable_table.py
 from __future__ import annotations
-from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Any
-import csv, bisect, re
+from pathlib import Path
+from typing import Dict, Optional
+import csv
+
 from ..utils.resources import get_resource_path
 
 cable_path = get_resource_path("heatcalc/data/cable_table.csv")
 
+# ---------------- Data model ----------------
 @dataclass(frozen=True)
-class CableRowInstall:
-    csa: float
-    In: float
-    Pn: float
+class CableRow:
+    csa_mm2: float
+    r20_mohm_per_m: float          # informational only
+    Imax: Dict[int, Optional[float]]
+    Pv: Dict[int, Optional[float]] # W/m at Imax (from table)
 
-# (temp_C, install_type) -> sorted list of CableRowInstall
-TableIndex = Dict[Tuple[int, int], List[CableRowInstall]]
 
-# Matches: In_A_(35)-1  /  Pn_Wpm_(55)-3   (temperature in parentheses, type after dash)
-_COL_RE = re.compile(r'^(In|Pn)[^()]*\((\d+)\)\s*-\s*(\d+)\s*$')
+Table = Dict[float, CableRow]  # keyed by CSA
 
-def load_cable_table(csv_path: str | Path = cable_path) -> TableIndex:
-    rows_per_key: TableIndex = {}
+
+# ---------------- Loader ----------------
+def load_cable_table(csv_path: str | Path = cable_path) -> Table:
+    table: Table = {}
+
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
-        headers = reader.fieldnames or []
-
-        # map (temp, inst) -> {'IN': colname, 'PN': colname}
-        col_map: Dict[Tuple[int,int], Dict[str,str]] = {}
-        for col in headers:
-            if col == "CSA_mm2":
-                continue
-            m = _COL_RE.match((col or "").strip())
-            if not m:
-                continue
-            kind, t, inst = m.groups()
-            key = (int(t), int(inst))
-            d = col_map.setdefault(key, {})
-            d[kind.upper()] = col
-
-        if not col_map:
-            print("[cable_table] !! No (temp,install) column pairs detected. Check CSV headers and regex.")
-
-
-        f.seek(0); reader = csv.DictReader(f)
         for rec in reader:
-            try:
-                csa = float((rec.get("CSA_mm2") or "").strip())
-            except Exception:
+            raw_csa = (rec.get("CSA_mm2") or "").strip()
+            if not raw_csa:
                 continue
-            for key, kinds in col_map.items():
-                in_col = kinds.get("IN"); pn_col = kinds.get("PN")
-                if not in_col or not pn_col:
-                    continue
-                try:
-                    In = float((rec.get(in_col) or "0").strip())
-                    Pn = float((rec.get(pn_col) or "0").strip())
-                except Exception:
-                    In, Pn = 0.0, 0.0
-                rows_per_key.setdefault(key, []).append(CableRowInstall(csa, In, Pn))
 
-    # sort by CSA and print series coverage
-    for key, series in rows_per_key.items():
-        series.sort(key=lambda r: r.csa)
-    return rows_per_key
+            csa = float(raw_csa)
+            r20 = float(rec["R_20"])
 
-def _interp(series: List[CableRowInstall], x_csa: float, attr: str) -> float:
-    """Linear interpolate attribute 'In' or 'Pn' as a function of CSA."""
-    xs = [r.csa for r in series]
-    i = bisect.bisect_left(xs, x_csa)
-    if not series:
-        return 0.0
-    if i == 0:
-        return getattr(series[0], attr)
-    if i >= len(series):
-        return getattr(series[-1], attr)
-    x0, x1 = xs[i-1], xs[i]
-    y0, y1 = getattr(series[i-1], attr), getattr(series[i], attr)
-    if x1 == x0:
-        return y0
-    t = (x_csa - x0) / (x1 - x0)
-    return y0 + t * (y1 - y0)
+            def _val(key: str) -> Optional[float]:
+                v = (rec.get(key) or "").strip()
+                return None if v in ("", "-", "–") else float(v)
 
-def interpolate_loss(
+            table[csa] = CableRow(
+                csa_mm2=csa,
+                r20_mohm_per_m=r20,
+                Imax={
+                    1: _val("Imax-1"),
+                    2: _val("Imax-2"),
+                    3: _val("Imax-3"),
+                },
+                Pv={
+                    1: _val("Pv-1"),
+                    2: _val("Pv-2"),
+                    3: _val("Pv-3"),
+                },
+            )
+
+    return table
+
+
+def cable_loss(
+    *,
+    table: Table,
     csa_mm2: float,
-    I_A: float,
-    air_temp_C: int = 35,
-    install_type: int = 1,
-    csv_path: str | Path = cable_path
-) -> Dict[str, Any]:
-    """Return dict with In_A, Pn_Wpm, P_Wpm for selected (temp, install)."""
-    table = load_cable_table(csv_path)
-    if not table:
-        print("[cable_table] !! Empty table after load.")
-        return {"csa_mm2": csa_mm2, "I_A": I_A, "air_temp_C": air_temp_C,
-                "install_type": install_type, "In_A": 0.0, "Pn_Wpm": 0.0, "P_Wpm": 0.0}
+    install_type: int,
+    current_A: float,
+    length_m: float,
+) -> dict:
 
-    key = (int(air_temp_C), int(install_type))
-    if key not in table:
-        print(f"[cable_table] Key {key} not found. Available: {sorted(table.keys())}")
-        # fallback: same temp, type 1; else first available
-        key = (int(air_temp_C), 1) if (int(air_temp_C), 1) in table else sorted(table.keys())[0]
-        print(f"[cable_table] Falling back to {key}")
+    row = table.get(csa_mm2)
+    if row is None:
+        raise ValueError(f"CSA {csa_mm2} mm² not found in cable table")
 
-    series = table[key]
-    In = _interp(series, float(csa_mm2), "In")
-    Pn = _interp(series, float(csa_mm2), "Pn")
-    P  = Pn * ((I_A / In) ** 2) if In > 0 else 0.0
+    Imax = row.Imax.get(install_type)
+    Pv   = row.Pv.get(install_type)
 
-    print(f"[cable_table] Lookup CSA={csa_mm2} I={I_A} using key={key} → In={In:.3f}, Pn={Pn:.3f}, P={P:.3f} W/m")
+    if Imax is None or Pv is None:
+        raise ValueError(
+            f"Installation type {install_type} is not permitted for {csa_mm2} mm² cable"
+        )
+
+    P_Wpm = Pv * (current_A / Imax) ** 2
+    total_W = P_Wpm * length_m
+
     return {
-        "csa_mm2": float(csa_mm2),
-        "I_A": float(I_A),
-        "air_temp_C": int(key[0]),
-        "install_type": int(key[1]),
-        "In_A": float(In),
-        "Pn_Wpm": float(Pn),
-        "P_Wpm": float(P),
+        "Imax_A": Imax,
+        "Pv_Wpm": Pv,  # ← table Pv at Imax
+        "P_Wpm": P_Wpm,
+        "total_W": total_W,
     }
