@@ -4,6 +4,17 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
 from ..utils.qt import signals
 
+
+SOLAR_COLOUR_TABLE = {
+    "White": 10.0,
+    "Cream": 12.0,
+    "Yellow": 12.9,
+    "Light grey / blue / green": 16.5,
+    "Medium grey / blue / green": 21.0,
+    "Dark grey / blue / green": 24.4,
+    "Black": 25.0,
+}
+
 @dataclass
 class ProjectMeta:
     job_number: str = ""
@@ -34,6 +45,12 @@ class ProjectMeta:
     enclosure_material: str = "Sheet metal"
     enclosure_k_W_m2K: float = 5.5
     allow_material_dissipation: bool = False
+
+    # ---- Solar (NEW) ----
+    solar_enabled: bool = False
+    solar_colour: str = "White"
+    solar_delta_K: float = 10.0
+
     default_vent_label: str | None = "100×100"
     default_vent_area_cm2: float = 100.0
     iec60890_checklist: List[Dict[str, str]] = field(default_factory=list)
@@ -125,36 +142,44 @@ class Project:
     def from_json(cls, data: Dict[str, Any]) -> "Project":
         meta_data = data.get("meta", {})
 
+        solar = meta_data.get("solar", {})
+
         meta = ProjectMeta(**{
             k: v for k, v in meta_data.items()
-            if k != "louvre_definition"
+            if k not in {"louvre_definition", "solar"}
         })
 
+        # ---- Merge louvre definition ----
         if "louvre_definition" in meta_data:
             merged = dict(meta.louvre_definition)
-            merged.update(meta_data.get("louvre_definition", {}))
+            merged.update(meta_data["louvre_definition"])
             meta.louvre_definition = merged
 
-
-        if "louvre_definition" in meta_data:
-            merged = dict(meta.louvre_definition)
-            merged.update(meta_data.get("louvre_definition", {}))
-            meta.louvre_definition = merged
+        # ---- Solar (NEW) ----
+        meta.solar_enabled = bool(solar.get("enabled", False))
+        meta.solar_colour = solar.get("colour", "White")
+        meta.solar_delta_K = float(
+            solar.get("delta_K", SOLAR_COLOUR_TABLE.get(meta.solar_colour, 0.0))
+        )
 
         layout_data = data.get("layout", {})
         tiers = []
         for t in layout_data.get("tiers", []):
-            # Backward-compatible defaults
             cells = [Cell(**c) for c in t.get("cells", [])]
             tiers.append(Tier(
-                rows=t.get("rows", 1), cols=t.get("cols", 1), cells=cells,
+                rows=t.get("rows", 1),
+                cols=t.get("cols", 1),
+                cells=cells,
                 name=t.get("name", ""),
-                x_mm=t.get("x_mm", 0.0), y_mm=t.get("y_mm", 0.0),
-                width_mm=t.get("width_mm", 600.0), height_mm=t.get("height_mm", 1200.0),
+                x_mm=t.get("x_mm", 0.0),
+                y_mm=t.get("y_mm", 0.0),
+                width_mm=t.get("width_mm", 600.0),
+                height_mm=t.get("height_mm", 1200.0),
                 order_index=t.get("order_index", 0),
                 arrangement=t.get("arrangement", "standard"),
                 components=[Component(**c) for c in t.get("components", [])],
             ))
+
         layout = BoardLayout(
             tiers=tiers,
             enclosure_type=layout_data.get("enclosure_type", "no_vent"),
@@ -162,9 +187,12 @@ class Project:
             swbd_height_mm=layout_data.get("swbd_height_mm", 2200.0),
         )
 
-        inputs = CalcInputs(**data.get("inputs", {}))
-        outputs = CalcOutputs(**data.get("outputs", {}))
-        return cls(meta=meta, layout=layout, inputs=inputs, outputs=outputs)
+        return cls(
+            meta=meta,
+            layout=layout,
+            inputs=CalcInputs(**data.get("inputs", {})),
+            outputs=CalcOutputs(**data.get("outputs", {})),
+        )
 
     def mark_changed(self) -> None:
         signals.project_changed.emit()

@@ -388,28 +388,31 @@ class MainWindow(QMainWindow):
 
         meta_out = {
             "job_number": m.job_number,
-            "project_title": getattr(m, "project_title", ""),
+            "project_title": m.project_title,
             "enclosure": m.enclosure,
-            "designer_name": getattr(m, "designer_name", ""),
+            "designer_name": m.designer_name,
             "date": m.date,
             "revision": m.revision,
 
             # Thermal assumptions
-            "ambient_C": float(getattr(m, "ambient_C", 40.0)),
-            "altitude_m": float(getattr(m, "altitude_m", 0.0)),
-            "ip_rating_n": int(getattr(m, "ip_rating_n", 2)),
+            "ambient_C": float(m.ambient_C),
+            "altitude_m": float(m.altitude_m),
+            "ip_rating_n": int(m.ip_rating_n),
 
-            "enclosure_material": m.enclosure_material,
-            "enclosure_k_W_m2K": m.enclosure_k_W_m2K,
-            "allow_material_dissipation": m.allow_material_dissipation,
+            # ---- Solar (NEW) ----
+            "solar": {
+                "enabled": bool(m.solar_enabled),
+                "colour": m.solar_colour,
+                "delta_K": float(m.solar_delta_K),
+            },
 
-            # ---- Louvre definition (NEW) ----
-            "louvre_definition": getattr(m, "louvre_definition", {}),
+            # Louvre
+            "louvre_definition": m.louvre_definition,
 
             # Legacy / misc
-            "default_vent_area_cm2": getattr(m, "default_vent_area_cm2", 0.0),
-            "default_vent_label": getattr(m, "default_vent_label", None),
-            "iec60890_checklist": getattr(m, "iec60890_checklist", []),
+            "default_vent_area_cm2": m.default_vent_area_cm2,
+            "default_vent_label": m.default_vent_label,
+            "iec60890_checklist": m.iec60890_checklist,
         }
 
         return {

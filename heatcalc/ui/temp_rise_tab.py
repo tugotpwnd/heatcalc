@@ -22,7 +22,6 @@ from ..core.iec60890_calc import calc_tier_iec60890
 
 # Compliance colours (IEC 60890 – explicit states)
 COL_COMPLIANT_TEMP        = QColor(0, 150, 0)    # Green: base IEC compliant
-COL_COMPLIANT_DISS        = QColor(230, 140, 0)  # Orange: compliant via enclosure dissipation
 COL_COMPLIANT_VENT_SEL    = QColor(0, 120, 200)  # Blue: compliant via SELECTED ventilation
 COL_VENT_OPTIONAL         = QColor(150, 150, 150)# Grey: not compliant, ventilation could help
 COL_NON_COMPLIANT         = QColor(200, 0, 0)    # Red: active cooling required
@@ -92,7 +91,6 @@ class TempRiseTab(QWidget):
             return w
 
         lf.addWidget(_legend_row(COL_COMPLIANT_TEMP, "Base IEC temperature compliant"))
-        lf.addWidget(_legend_row(COL_COMPLIANT_DISS, "Compliant via enclosure dissipation"))
         lf.addWidget(_legend_row(COL_COMPLIANT_VENT_SEL, "Compliant via selected ventilation"))
         lf.addWidget(_legend_row(COL_VENT_OPTIONAL, "Ventilation optional to achieve compliance"))
         lf.addWidget(_legend_row(COL_NON_COMPLIANT, "Active cooling required"))
@@ -175,6 +173,9 @@ class TempRiseTab(QWidget):
                 ip_rating_n=ip_rating_n,
             )
 
+            solar_dt = float(getattr(self.project.meta, "solar_delta_K", 0.0)) \
+                if getattr(self.project.meta, "solar_enabled", False) else 0.0
+
             res = calc_tier_iec60890(
                 tier=t,
                 tiers=tiers,
@@ -182,10 +183,9 @@ class TempRiseTab(QWidget):
                 inlet_area_cm2=inlet_area_cm2,
                 ambient_C=amb,
                 altitude_m=project_altitude_m,
-                enclosure_k_W_m2K=float(self.project.meta.enclosure_k_W_m2K),
-                allow_material_dissipation=bool(self.project.meta.allow_material_dissipation),
                 ip_rating_n=ip_rating_n,
                 vent_test_area_cm2=vent_test_area_cm2,
+                solar_delta_K=solar_dt,
             )
 
             # compute final absolute temp
@@ -210,10 +210,6 @@ class TempRiseTab(QWidget):
                 else:
                     colour = COL_COMPLIANT_TEMP
                     compliance_tag = "IEC compliant (base)"
-
-            elif res["P_cooling"] <= 0.0:
-                colour = COL_COMPLIANT_DISS
-                compliance_tag = "Compliant via enclosure dissipation"
 
             elif (not t.is_ventilated) and res.get("vent_recommended"):
                 colour = COL_VENT_OPTIONAL
@@ -401,19 +397,10 @@ class TempRiseTab(QWidget):
             )
             return
 
-        if r["P_cooling"] <= 0.0:
-            self.lbl_guidance.setText(
-                "IEC 60890 base temperature rise exceeds the effective limit,\n"
-                "however heat dissipation via the enclosure is sufficient.\n"
-                "→ Active cooling is NOT required.\n\n"
-                "Assessment performed in accordance with IEC 60890 order of precedence."
-            )
-            return
-
         msg = (
             "IEC 60890 base temperature rise exceeds the effective limit.\n"
             "Residual heat remains after enclosure dissipation.\n\n"
-            f"• Heat via enclosure: {r['P_material']:.0f} W\n"
+            f"• Heat via enclosure: {r['P_890']:.0f} W\n"
             f"• Heat for cooling: {r['P_cooling']:.0f} W\n"
             f"→ Required airflow: ≥ {r['airflow_m3h']:.0f} m³/h"
         )

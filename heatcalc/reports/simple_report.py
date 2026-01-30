@@ -261,16 +261,13 @@ class TierThermal:
     P_cooling_W: Optional[float] = None
     vent_recommended: bool = False
     inlet_area_cm2: float = 0.0
+    P_890: Optional[float] = None
+    solar_dt: Optional[float] = None
 
     # --- Natural ventilation (user-defined openings on the tier) ---
     naturally_vented: bool = False
     natural_vent_area_cm2: float = 0.0
     natural_vent_label: Optional[str] = None
-
-    # --- Enclosure material settings (project meta) ---
-    enclosure_material: Optional[str] = None
-    enclosure_k: Optional[float] = None
-    allow_material_dissipation: Optional[bool] = None
 
     # --- Diagnostics / appendix ---
     dims_m: tuple[float, float, float] | None = None
@@ -346,6 +343,136 @@ def _components_table_for_tier(tier: TierRow) -> Table:
         ("BOTTOMPADDING", (0,0), (-1,-1), 3),
     ]))
     return t
+from reportlab.platypus import Paragraph, Table, TableStyle, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+GREEN = colors.HexColor("#007F4D")
+
+# Annex C reference values (fallback only)
+ANNEX_C_SOLAR_DELTA_K = {
+    "white": 10.0,
+    "cream": 12.0,
+    "yellow": 12.9,
+    "light": 16.5,     # light grey / blue / green
+    "medium": 21.0,    # medium grey / blue / green
+    "dark": 24.4,      # dark grey / blue / green
+    "black": 25.0,
+}
+
+def build_iec60890_checklist_section(
+    iec60890_checklist,
+    *,
+    tier_thermals=None,
+):
+    styles = getSampleStyleSheet()
+    elements = []
+
+    body_style = ParagraphStyle(
+        name="IECBody",
+        parent=styles["BodyText"],
+        fontName="Arial",
+        fontSize=9,
+        leading=11,
+    )
+
+    header_style = ParagraphStyle(
+        name="IECHeader",
+        parent=styles["BodyText"],
+        fontName="Arial-Bold",
+        fontSize=9,
+        textColor=colors.white,
+        alignment=1,
+    )
+
+    table_data = [[
+        Paragraph("Item", header_style),
+        Paragraph("Assessment Condition", header_style),
+        Paragraph("Compliance", header_style),
+    ]]
+
+    solar_non_compliant = False
+
+    for i, row in enumerate(iec60890_checklist, start=1):
+        item = row.get("item", "")
+        condition = row.get("condition", "")
+        result = row.get("result", "")
+
+        is_solar_row = item == "5.1-12"
+        is_non_compliant = result == "Non-Compliant"
+
+        display_result = result
+        if is_solar_row and is_non_compliant:
+            display_result = "Non-Compliant*"
+            solar_non_compliant = True
+
+        result_color = GREEN if result in ("Compliant", "N/A") else colors.red
+
+        table_data.append([
+            Paragraph(item, body_style),
+            Paragraph(condition, body_style),
+            Paragraph(
+                display_result,
+                ParagraphStyle(
+                    name=f"ResultStyle_{i}",
+                    parent=body_style,
+                    textColor=result_color,
+                    alignment=1,
+                ),
+            ),
+        ])
+
+    table = Table(
+        table_data,
+        colWidths=[55, 380, 90],
+        repeatRows=1,
+    )
+
+    table.setStyle(TableStyle([
+        ("GRID", (0,0), (-1,-1), 0.5, colors.black),
+        ("BACKGROUND", (0,0), (-1,0), GREEN),
+        ("ALIGN", (0,0), (0,-1), "CENTER"),
+        ("ALIGN", (-1,1), (-1,-1), "CENTER"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.transparent]),
+    ]))
+
+    elements.append(table)
+
+    # ---------------- Annex C justification (derived from results) ----------------
+    if solar_non_compliant and tier_thermals:
+        solar_dts = [
+            float(getattr(th, "solar_dt", 0.0))
+            for th in tier_thermals
+            if getattr(th, "solar_dt", 0.0) > 0.0
+        ]
+
+        if solar_dts:
+            applied_dt = max(solar_dts)
+
+            justification = (
+                "<b>* Solar radiation consideration (IEC TR 60890:2022 – Annex C)</b><br/>"
+                "The enclosure is exposed to solar radiation and therefore does not "
+                "meet the base assumption of IEC 60890 Clause 5.1. "
+                "In accordance with IEC TR 60890:2022 Annex C, an additional internal "
+                f"air temperature rise of <b>{applied_dt:.1f} K</b> has been applied "
+                "to the calculated internal air temperature. "
+                "This increase is based on enclosure surface characteristics and "
+                "has been added to the temperature rise due to internal power losses "
+                "within the IEC 60890 thermal model."
+            )
+
+            elements.extend([
+                Spacer(1, 8),
+                Paragraph(justification, body_style),
+            ])
+
+    return elements
+
 
 
 # --- NEW: helper to render a per-tier cables table ---
@@ -603,8 +730,7 @@ def _draw_header_footer(
     canvas.saveState()
 
     blue = colors.HexColor("#215096")
-    green = colors.HexColor("#009640")
-    grey = colors.HexColor("#8A8A8A")
+    green = colors.HexColor("#007F4D")
 
     # ---------------- HEADER ----------------
     y = h - 18 * mm
@@ -791,13 +917,13 @@ def tier_cooling_summary(th) -> tuple[str, str, bool]:
     Returns (arrangement, cooling_text, mitigation_required)
     """
 
-    # 1. No active cooling required (material dissipation sufficient)
-    if not th.P_cooling_W and not th.airflow_m3h:
-        if th.vent:
-            return ("Natural ventilation", "-", False)
-        if th.P_material_W:
-            return ("Enclosure heat dissipation", "-", False)
-        return ("No cooling required", "-", False)
+    # 1. IEC 60890 compliant — no mitigation
+    if th.compliant_top:
+        return (
+            "Natural convection",
+            "–",
+            False,
+        )
 
     # 2. Forced ventilation required (mitigation)
     if th.airflow_m3h and th.airflow_m3h > 0:
@@ -807,8 +933,13 @@ def tier_cooling_summary(th) -> tuple[str, str, bool]:
             True,
         )
 
-    # 3. Fallback — genuinely non-compliant
-    return ("Non-compliant", "Mitigation required", True)
+    # 3. Genuinely non-compliant
+    return (
+        "Non-compliant",
+        "Mitigation required",
+        True,
+    )
+
 
 
 def build_tier_summary_page(tier_thermals):
@@ -855,7 +986,7 @@ def build_tier_summary_page(tier_thermals):
 
     tbl.setStyle(TableStyle([
         # Header row
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#009640")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#007F4D")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), FONT_B),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
@@ -890,67 +1021,57 @@ def build_tier_summary_page(tier_thermals):
     return flow
 
 def enclosure_dissipation_table(th: TierThermal) -> Table:
-    rows = []
+    def fmt(v, unit="", ndash="–"):
+        if v is None:
+            return ndash
+        if isinstance(v, (int, float)):
+            return f"{v:.1f}{unit}"
+        return str(v)
 
-    # -------------------------------------------------
-    # Context rows
-    # -------------------------------------------------
-    rows.append(["Effective cooling area Ae (m²)", f"{th.Ae:.2f}"])
+    is_vented = bool(th.vent)
 
-    vent_txt = "Yes" if th.vent else "No"
-    rows.append(["Is vented (openings specified)", vent_txt])
+    rows = [
+        ["Is vented (openings specified)", "Yes" if is_vented else "No"],
 
-    if th.vent and th.inlet_area_cm2 > 0:
-        rows.append([
-            "Vent inlet opening area",
-            f"{th.inlet_area_cm2:.0f} cm²"
-        ])
+        [
+            "Vent inlet opening area (cm²)",
+            f"{th.inlet_area_cm2:.0f}"
+            if is_vented and th.inlet_area_cm2 > 0
+            else "N/A",
+        ],
 
-    # -------------------------------------------------
-    # Enclosure dissipation
-    # -------------------------------------------------
-    if th.allow_material_dissipation:
-        rows.insert(0, [
-            "Allow enclosure heat dissipation",
-            "Yes"
-        ])
-        rows.insert(1, [
-            "Enclosure material",
-            th.enclosure_material or "-"
-        ])
-        rows.insert(2, [
-            "Material k (W/m²·K)",
-            f"{th.enclosure_k:.2f}" if th.enclosure_k else "-"
-        ])
+        [
+            "Maximum natural enclosure dissipation P890 (W)",
+            fmt(th.P_890, " W"),
+        ],
 
-    if th.P_material_W:
-        rows.append([
-            "Heat dissipated via enclosure (W)",
-            f"{th.P_material_W:.1f}"
-        ])
-
-    if th.P_cooling_W:
-        rows.append([
+        [
             "Heat for ventilation / cooling (W)",
-            f"{th.P_cooling_W:.1f}"
-        ])
-        rows.append([
+            fmt(th.P_cooling_W, " W"),
+        ],
+
+        [
             "Required airflow (m³/h)",
-            f"{th.airflow_m3h:.0f}" if th.airflow_m3h else "-"
-        ])
+            fmt(th.airflow_m3h, ""),
+        ],
+    ]
 
-    tbl = Table(rows, colWidths=[95 * mm, 45 * mm])
+    tbl = Table(rows, colWidths=[95 * mm, 30 * mm])
     tbl.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        ("BOX", (0, 0), (-1, -1), 1.25, colors.black),
-
-        # First column styling (blue)
+        # Label column
         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#215096")),
         ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
         ("FONTNAME", (0, 0), (0, -1), FONT),
 
-        ("FONT", (1, 0), (1, -1), FONT),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        # Values
+        ("FONTNAME", (1, 0), (1, -1), FONT),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+
+        # Borders
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("BOX", (0, 0), (-1, -1), 1.2, colors.black),
+
+        # Padding
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
@@ -958,6 +1079,7 @@ def enclosure_dissipation_table(th: TierThermal) -> Table:
     ]))
 
     return tbl
+
 
 def render_tier_details(flow, tier):
     flow.append(Paragraph("Tier Details", H3_NUM))
@@ -1070,7 +1192,7 @@ def iec_calc_banner(title: str) -> Table:
 
     tbl = Table(rows, colWidths=[110 * mm, 65 * mm])
     tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#009640")),  # green
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#007F4D")),  # green
         ("BOX", (0, 0), (-1, -1), 1.5, colors.black),
         ("LEFTPADDING", (0, 0), (-1, -1), 10),
         ("RIGHTPADDING", (0, 0), (-1, -1), 10),
@@ -1099,7 +1221,7 @@ def section_box(title: str, inner) -> KeepTogether:
     )
 
     header.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#009640")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#007F4D")),
         ("BOX", (0, 0), (-1, -1), 1.25, colors.black),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
@@ -1275,6 +1397,23 @@ def export_simple_report(
         flow.append(Paragraph(sub, Body))
 
     ################################## HEADER PAGE ########################################
+
+    flow.append(PageBreak())
+
+    ################################## ASSUMPTIONS PAGE ########################################
+    flow.append(Paragraph(
+        "IEC 60890 – Calculation Preconditions and Compliance",
+        H1_NUM
+    ))
+    flow.append(Spacer(1, 8))
+    flow.extend(
+        build_iec60890_checklist_section(
+            iec60890_checklist,
+            tier_thermals=tier_thermals,
+        )
+    )
+
+    ################################## ASSUMPTIONS PAGE ########################################
 
     flow.append(PageBreak())
 

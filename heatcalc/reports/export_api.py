@@ -213,11 +213,10 @@ def export_project_report(
 
         # ---------------- Project-wide meta ----------------
         ambient = float(ambient_C)
-        k_mat = float(getattr(project.meta, "enclosure_k_W_m2K", 0.0))
-        allow_mat = bool(getattr(project.meta, "allow_material_dissipation", True))
         project_altitude_m = float(getattr(project.meta, "altitude_m", 0.0))
         ip_rating_n = int(getattr(project.meta, "ip_rating_n", 0))
-        enc_mat = getattr(project.meta, "enclosure_material", None)
+        solar_dt = float(getattr(project.meta, "solar_delta_K", 0.0)) \
+            if getattr(project.meta, "solar_enabled", False) else 0.0
 
         # Louvre definition (same source as live calc)
         louvre_def = None
@@ -253,10 +252,9 @@ def export_project_report(
                 inlet_area_cm2=float(inlet_area_cm2),
                 ambient_C=ambient,
                 altitude_m=project_altitude_m,
-                enclosure_k_W_m2K=k_mat,
-                allow_material_dissipation=allow_mat,
                 ip_rating_n=ip_rating_n,
-                vent_test_area_cm2=vent_test_area_cm2,  # ✅ NEW
+                vent_test_area_cm2=vent_test_area_cm2,
+                solar_delta_K=solar_dt,
             )
 
             # ---------------- Normalise into TierThermal ----------------
@@ -294,10 +292,8 @@ def export_project_report(
                     P_cooling_W=res.get("P_cooling"),
                     vent_recommended=bool(res.get("vent_recommended", False)),
                     inlet_area_cm2=float(res.get("inlet_area_cm2", inlet_area_cm2)),
-
-                    enclosure_material=str(enc_mat) if enc_mat else None,
-                    enclosure_k=float(res.get("enclosure_k_W_m2K", k_mat)),
-                    allow_material_dissipation=bool(res.get("allow_material_dissipation", allow_mat)),
+                    P_890=float(res.get("P_890", 0.0)),
+                    solar_dt=float(res.get("solar_dt",0.0)),
 
                     dims_m=_dims_m_from_tier(t),
                     surfaces=res.get("surfaces"),

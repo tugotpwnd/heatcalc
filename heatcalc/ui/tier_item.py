@@ -101,7 +101,6 @@ class TierOverlayItem(QGraphicsItem):
             f"Ae: {Ae_raw:.2f} m²" if Ae_snap is None else
             f"Ae: {Ae_raw:.2f} → {Ae_snap:.2f} m²",
 
-            f"ΔT(1.0t): {lt.get('dt_top', 0.0):.1f} K",
             f"Temp (Top): {lt.get('T_top', 0.0):.1f} °C",
             f"Temp Limit: {lt.get('limit_C', 0.0):.1f} °C",
         ]

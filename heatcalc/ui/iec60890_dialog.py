@@ -9,32 +9,46 @@ from PyQt5.QtWidgets import (
     QComboBox, QDialogButtonBox, QMessageBox, QWidget, QApplication
 )
 
+
 IEC60890_TITLE = (
     "The conditions in the following table (in line with clause 10.10.4.3.1) "
     "shall be fulfilled in order to apply the calculation methodology in IEC 60890."
 )
 
 # (item, assessment condition) — verbatim from your prompt
-IEC60890_ROWS: List[Tuple[str, str]] = [
-    ("a)", "The power loss data for all built-in components is available from the component manufacturer"),
-    ("b)", "There is an approximately even distribution of power losses inside the enclosure"),
-    ("c)", "The rated current of the circuits of the ASSEMBLY to be verified (see 10.10.1) shall not exceed 80 % of the "
-           "rated conventional free air thermal current (Ith) if any, or the rated current (In) of the switching devices "
-           "and electrical components included in the circuit. Circuit protection devices shall be selected to ensure adequate "
-           "protection to outgoing circuits, e.g. thermal motor protection devices at the calculated temperature in the ASSEMBLY"),
-    ("d)", "The mechanical parts and the installed equipment are so arranged that air circulation is not significantly impeded."),
-    ("e)", "Conductors carrying currents in excess of 200 A, and the adjacent structural parts are so arranged that eddy-current "
-           "and hysteresis losses are minimized."),
-    ("f)", "All conductors shall have a minimum cross-sectional area based on 125 % of the permitted current rating of the "
-           "associated circuit. Selection of cables shall be in accordance with IEC 60364-5-52. Examples on how to adapt this "
-           "standard for conditions inside an ASSEMBLY are given in Annex H. The cross-section of bars shall be as tested or as "
-           "given in Annex N. Where the device manufacturer specifies a conductor with a larger cross-sectional area this shall be used"),
-    ("g)", "For enclosures with natural ventilation, the cross-section of the air outlet openings is at least 1.1 times the cross "
-           "section of the air inlet openings."),
-    ("h)", "There are no more than three horizontal partitions in the ASSEMBLY or a section of an ASSEMBLY"),
-    ("i)", "For enclosures with compartments and natural ventilation the cross section of the ventilating openings in each "
-           "horizontal partition is at least 50 % of the horizontal cross section of the compartment"),
+IEC60890_ROWS = [
+    # ---- Clause 5.1 – Enclosure construction ----
+    ("5.1-1", "The enclosure is metallic (steel, aluminium or stainless steel) and coated on both internal and external surfaces."),
+    ("5.1-2", "The enclosure is of single-layer construction or multiple layers without air gaps."),
+    ("5.1-3", "The enclosure or section contains no more than five horizontal partitions."),
+
+    # ---- Ventilation assumptions ----
+    ("5.1-4", "The enclosure is either unventilated or provided only with free natural ventilation openings."),
+    ("5.1-5", "No additional filters are fitted to ventilation openings beyond whats required my the IP rating (Annex E)."),
+    ("5.1-6", "For natural ventilation, the outlet opening area is at least 110 % of the inlet opening area."),
+    ("5.1-7", "The minimum total inlet opening area is not less than 10 cm²."),
+    ("5.1-8", "For IP5X or higher, ventilation openings are ignored in the calculation."),
+    ("5.1-9", "For IP ratings lower than IP5X, the effective free opening area is used."),
+    ("5.1-10", "Where compartments exist, each horizontal partition provides free ventilation openings of at least 50 % of its cross-sectional area."),
+
+    # ---- Power loss inputs ----
+    ("5.1-11", "Power losses include switchgear, interconnecting conductors, busbars, and electronic devices."),
+    # ---- Environmental assumptions ----
+    ("5.1-12", "The enclosure is not exposed to solar radiation."),
+
+    ("5.1-13", "Power loss data for all built-in components is available from the manufacturer."),
+    ("5.1-14", "Power losses are approximately evenly distributed within the enclosure."),
+
+    # ---- Clause 10.10.4.3 – Calculation limits ----
+    ("10.10-1", "The rated current of the assembly does not exceed 1600 A."),
+    ("10.10-2", "All circuits operate at no more than 80 % of their free-air thermal current rating (Ith/In)."),
+    ("10.10-3", "Circuit protection devices are suitable for the calculated internal temperature."),
+    ("10.10-4", "Mechanical layout does not significantly impede air circulation."),
+    ("10.10-5", "Conductors above 200 A are arranged to minimise eddy-current and hysteresis losses."),
+    ("10.10-6", "Conductor cross-sections are sized to at least 125 % of permitted current rating (IEC 60364-5-52)."),
+    ("10.10-7", "For calculation verification, no more than three horizontal partitions are present."),
 ]
+
 
 CHOICES = ["Compliant", "N/A", "Non-Compliant"]
 
@@ -133,20 +147,9 @@ class IEC60890ChecklistDialog(QDialog):
         return ans
 
     def _validate_and_accept(self):
-        answers = self._collect()
-        nonc = [a for a in answers if a.result == "Non-Compliant"]
-        if nonc:
-            # Build a user-facing explanation
-            details = "\n\n".join([f"{a.item}  {a.condition}" for a in nonc])
-            msg = (
-                "Cannot use IEC-60890 for Temperature Rise Calculations because "
-                "the following condition(s) are Non-Compliant:\n\n" + details
-            )
-            QMessageBox.critical(self, "IEC 60890 Preconditions Not Met", msg)
-            return  # keep dialog open
-        # Store to instance for caller retrieval
-        self.answers = [asdict(a) for a in answers]
+        self.answers = [asdict(a) for a in self._collect()]
         self.accept()
+
 
 # --- replace these two functions in heatcalc/ui/iec60890_dialog.py ---
 
@@ -170,30 +173,67 @@ def _extract_saved_list(container) -> List[IEC60890Answer]:
     return normalize_saved_list(raw)
 
 def ensure_checklist_before_report(parent: QWidget, project_meta) -> Optional[List[Dict]]:
-    """
-    Call this from your 'Export/Print' action.
-    - If previous answers exist and contain no 'Non-Compliant', asks user if they still apply.
-    - If yes, returns previous answers.
-    - Else, opens the dialog.
-    Returns None only if the user cancels.
-    """
     prev = _extract_saved_list(project_meta)
 
-    if prev and all(a.result != "Non-Compliant" for a in prev):
+    if prev:
         ret = QMessageBox.question(
             parent,
             "IEC 60890 Preconditions",
-            "Use the previously saved IEC 60890 pre-condition responses?\n\n"
-            "You can press 'No' to review or change them.",
+            "Use previously saved IEC 60890 precondition responses?\n\n"
+            "Select 'No' to review or update them before generating the report.",
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
             QMessageBox.Yes
         )
-        if ret == QMessageBox.Yes:
-            return [asdict(a) for a in prev]
-        elif ret == QMessageBox.Cancel:
+
+        if ret == QMessageBox.Cancel:
             return None
 
-    dlg = IEC60890ChecklistDialog(parent, previous=prev)
-    if dlg.exec_() == QDialog.Accepted:
-        return dlg.answers  # list[dict]
-    return None
+        if ret == QMessageBox.No:
+            dlg = IEC60890ChecklistDialog(parent, previous=prev)
+            if dlg.exec_() != QDialog.Accepted:
+                return None
+            answers = dlg.answers
+        else:
+            answers = [asdict(a) for a in prev]
+    else:
+        dlg = IEC60890ChecklistDialog(parent)
+        if dlg.exec_() != QDialog.Accepted:
+            return None
+        answers = dlg.answers
+
+    non_compliant = [
+        a for a in answers
+        if a.get("result") == "Non-Compliant"
+    ]
+
+    if non_compliant:
+        details = "\n".join(
+            f"• {a['item']} – {a['condition']}"
+            for a in non_compliant
+        )
+
+        msg = (
+            "One or more IEC 60890 calculation assumptions have been marked as "
+            "NON-COMPLIANT.\n\n"
+            "IEC 60890 permits calculation outside strict assumptions only where "
+            "engineering judgement is applied and deviations are justified in the "
+            "design documentation.\n\n"
+            "The following deviations have been identified:\n\n"
+            f"{details}\n\n"
+            "By continuing, you confirm that these deviations will be addressed "
+            "and justified separately in the engineering report or design decision register.\n\n"
+            "Do you wish to continue with report generation?"
+        )
+
+        ret = QMessageBox.warning(
+            parent,
+            "IEC 60890 – Engineering Judgement Required",
+            msg,
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel
+        )
+
+        if ret != QMessageBox.Yes:
+            return None
+
+    return answers

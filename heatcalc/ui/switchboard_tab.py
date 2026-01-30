@@ -25,17 +25,9 @@ from .cable_adder import CableAdderWidget
 from ..core.iec60890_calc import calc_tier_iec60890
 from ..core.iec60890_geometry import apply_curve_state_to_tiers, apply_covered_sides_to_tiers
 from ..core.louvre_calc import tier_max_effective_inlet_area_cm2
+from ..core.models import SOLAR_COLOUR_TABLE
 from ..utils.qt import signals
 
-# Enclosure material → effective heat transfer coefficient (W/m²·K)
-ENCLOSURE_MATERIALS = {
-    "Sheet metal": 5.5,
-    "Aluminium": 5.5,
-    "Stainless steel": 5.5,
-    "Cast aluminium": 5.5,
-    "Polycarbonate": 3.5,
-    "Plastic": 3.5,
-}
 
 def _vents_allowed_by_ip(project) -> bool:
     """
@@ -188,31 +180,6 @@ class SwitchboardTab(QWidget):
         self.cb_wall.stateChanged.connect(self._recompute_all_curves)
         left_lay.addWidget(self.cb_wall)
 
-        # ---- Enclosure material (project-wide) -------------------------------
-        gb_material = QGroupBox("Enclosure material")
-        fm = QFormLayout(gb_material)
-
-        self.cmb_material = QComboBox()
-        self.cmb_material.addItems(ENCLOSURE_MATERIALS.keys())
-        self.cmb_material.currentTextChanged.connect(self._on_material_changed)
-
-        self.lbl_k = QLabel("–")
-        self.lbl_k.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        self.cb_allow_material = QCheckBox("Allow heat dissipation via enclosure material")
-        self.cb_allow_material.stateChanged.connect(self._on_allow_material_changed)
-
-        self.cb_show_live = QCheckBox("Show live thermal overlay")
-        self.cb_show_live.setChecked(True)
-        self.cb_show_live.toggled.connect(self._toggle_live_overlay)
-
-        fm.addRow("Material:", self.cmb_material)
-        fm.addRow("k (W/m²·K):", self.lbl_k)
-        fm.addRow(self.cb_allow_material)
-        fm.addRow(self.cb_show_live)
-
-        left_lay.addWidget(gb_material)
-
         # ---- Global depth (project-wide) -------------------------------
 
         self.cb_same_depth = QCheckBox("Use same depth for all tiers")  # NEW
@@ -232,6 +199,24 @@ class SwitchboardTab(QWidget):
 
         self.cb_same_depth.toggled.connect(self._toggle_uniform_depth)  # NEW
         self.sp_same_depth.valueChanged.connect(self._apply_uniform_depth_value)  # NEW
+
+        # ---- Outdoor / solar conditions (PROJECT-WIDE) ----
+        gb_solar = QGroupBox("Outdoor installation")
+        sf = QFormLayout(gb_solar)
+
+        self.cb_solar = QCheckBox("Outdoor installation (solar exposure)")
+        self.cmb_solar_colour = QComboBox()
+        self.cmb_solar_colour.addItems(SOLAR_COLOUR_TABLE.keys())
+        self.lbl_solar_delta = QLabel("+")
+
+        sf.addRow(self.cb_solar)
+        sf.addRow("Enclosure colour:", self.cmb_solar_colour)
+        sf.addRow("Solar increment:", self.lbl_solar_delta)
+
+        self.cb_solar.toggled.connect(self._on_solar_changed)
+        self.cmb_solar_colour.currentTextChanged.connect(self._on_solar_changed)
+
+        left_lay.addWidget(gb_solar)
 
         # ---- Clip board (Tier copy & paste) -------------------------------
         self._tier_clipboard: dict | None = None
@@ -536,27 +521,30 @@ class SwitchboardTab(QWidget):
                 t.update()  # force repaint with new geometry
 
     def refresh_from_project(self):
-        # Material
-        mat = getattr(self.project.meta, "enclosure_material", "Sheet metal")
-        k = getattr(
-            self.project.meta,
-            "enclosure_k_W_m2K",
-            ENCLOSURE_MATERIALS.get(mat, 5.5),
-        )
+        """
+        Sync project-wide meta → UI controls.
+        Called on project load and whenever meta changes.
+        """
+        m = self.project.meta
 
-        self.cmb_material.blockSignals(True)
-        idx = self.cmb_material.findText(mat)
-        self.cmb_material.setCurrentIndex(idx if idx >= 0 else 0)
-        self.cmb_material.blockSignals(False)
+        # ---- Solar / outdoor installation ----
+        self.cb_solar.blockSignals(True)
+        self.cmb_solar_colour.blockSignals(True)
 
-        self.lbl_k.setText(f"{k:.2f}")
+        self.cb_solar.setChecked(bool(getattr(m, "solar_enabled", False)))
 
-        # Allow material dissipation
-        allow = bool(getattr(self.project.meta, "allow_material_dissipation", False))
-        self.cb_allow_material.blockSignals(True)
-        self.cb_allow_material.setChecked(allow)
-        self.cb_allow_material.blockSignals(False)
+        colour = getattr(m, "solar_colour", "White")
+        idx = self.cmb_solar_colour.findText(colour)
+        self.cmb_solar_colour.setCurrentIndex(idx if idx >= 0 else 0)
 
+        delta = float(getattr(m, "solar_delta_K", 0.0))
+        self.lbl_solar_delta.setText(f"+{delta:.1f} K")
+        self.cmb_solar_colour.setEnabled(bool(getattr(m, "solar_enabled", False)))
+
+        self.cb_solar.blockSignals(False)
+        self.cmb_solar_colour.blockSignals(False)
+
+        # ---- Recompute curves / overlays ----
         self._recompute_all_curves()
 
     # ------------------------------------------------------------------ #
@@ -648,6 +636,22 @@ class SwitchboardTab(QWidget):
                 t.clear_vent()
 
     # ------------------------------------------------------------------ #
+    # Solar related helper
+    # ------------------------------------------------------------------ #
+
+    def _on_solar_changed(self):
+        m = self.project.meta
+        m.solar_enabled = self.cb_solar.isChecked()
+        m.solar_colour = self.cmb_solar_colour.currentText()
+        m.solar_delta_K = SOLAR_COLOUR_TABLE.get(m.solar_colour, 0.0)
+
+        self.lbl_solar_delta.setText(f"+{m.solar_delta_K:.1f} K")
+        self.cmb_solar_colour.setEnabled(m.solar_enabled)
+
+        m.mark_changed()
+        self._recompute_all_curves()
+
+    # ------------------------------------------------------------------ #
     # Actions
     # ------------------------------------------------------------------ #
 
@@ -725,34 +729,8 @@ class SwitchboardTab(QWidget):
         self._recompute_live_thermal()
         self._update_left_from_selection()
 
-    # ------------------------------------------------------------------ #
-    # Material dissipation & Material
-    # ------------------------------------------------------------------ #
-
     def _mark_project_dirty(self):
         signals.project_changed.emit()
-
-    def _on_material_changed(self, text: str):
-        k = ENCLOSURE_MATERIALS.get(text, 0.0)
-
-        self.project.meta.enclosure_material = text
-        self.project.meta.enclosure_k_W_m2K = k
-
-        self.lbl_k.setText(f"{k:.2f}")
-
-        self._mark_project_dirty()  # ✅ autosave trigger
-        self._recompute_live_thermal()
-
-    def _on_allow_material_changed(self, checked: bool):
-        """
-        Project-wide assumption:
-        Allow heat dissipation via enclosure material.
-        """
-        self.project.meta.allow_material_dissipation = bool(checked)
-
-        self._mark_project_dirty()  # ✅ autosave trigger
-        self._recompute_live_thermal()
-
 
     # ------------------------------------------------------------------ #
     # Vents
@@ -850,11 +828,11 @@ class SwitchboardTab(QWidget):
 
         # Project-wide meta (safe defaults)
         ambient = float(getattr(self.project.meta, "ambient_C", 40.0))
-        k_mat = float(getattr(self.project.meta, "enclosure_k_W_m2K", 0.0))
-        allow_mat = bool(getattr(self.project.meta, "allow_material_dissipation", True))
         wall = bool(self.cb_wall.isChecked())
         project_altitude_m = float(getattr(self.project.meta, "altitude_m", 0.0))
         ip_rating_n = int(getattr(self.project.meta, "ip_rating_n", 0))
+        solar_dt = float(getattr(self.project.meta, "solar_delta_K", 0.0)) \
+            if getattr(self.project.meta, "solar_enabled", False) else 0.0
 
         louvre_def = self._get_louvre_definition()
 
@@ -885,10 +863,9 @@ class SwitchboardTab(QWidget):
                     inlet_area_cm2=inlet_area_cm2,
                     ambient_C=ambient,
                     altitude_m=project_altitude_m,
-                    enclosure_k_W_m2K=k_mat,
-                    allow_material_dissipation=allow_mat,
                     ip_rating_n=ip_rating_n,
-                    vent_test_area_cm2=vent_test_area_cm2,  # ✅ NEW
+                    vent_test_area_cm2=vent_test_area_cm2,
+                    solar_delta_K=solar_dt,
                 )
 
             except Exception:

@@ -171,10 +171,9 @@ def calc_tier_iec60890(
     inlet_area_cm2: float,
     ambient_C: float,
     altitude_m: float,
-    enclosure_k_W_m2K: float,
-    allow_material_dissipation: bool,
     ip_rating_n: int,
     vent_test_area_cm2: float | None = None,
+    solar_delta_K: float = 0.0,
 ) -> Dict:
 
     # ---------------- Geometry ----------------
@@ -196,6 +195,9 @@ def calc_tier_iec60890(
     from .iec60890_geometry import resolved_surfaces
     for name, a, b, bf in resolved_surfaces(tier, tiers):
         _add_surface(name, a, b, bf)
+
+    # ---------------- Solar contribution ----------------
+    solar_dt = float(max(0.0, solar_delta_K))
 
     # ---------------- Power + mode ----------------
     P = max(0.0, float(tier.total_heat()))
@@ -269,12 +271,19 @@ def calc_tier_iec60890(
         dt_top = dt_top_raw
         profile_source = "Fig. 1"
 
-    T_mid = ambient_C + dt_mid
-    T_top = ambient_C + dt_top
-    T_075 = (ambient_C + dt_075) if dt_075 is not None else None
+    T_mid = ambient_C + dt_mid + solar_dt
+    T_top = ambient_C + dt_top + solar_dt
+    T_075 = (ambient_C + dt_075 + solar_dt) if dt_075 is not None else None
 
     limit_C = float(tier.effective_max_temp_C())
-    delta_allow = max(0.0, limit_C - ambient_C)
+    delta_allow = max(0.0, limit_C - ambient_C - solar_dt)
+    P_890_installed = _calc_p_890_from_allowable_top_rise(
+        dt_top_allow=delta_allow,
+        k_iec=k_iec,
+        c=c,
+        x=x,
+        d_fac=d_fac,
+    )
 
     # ============================================================
     # STAGE 1: IEC compliant -> stop
@@ -284,6 +293,7 @@ def calc_tier_iec60890(
     if compliant_top:
         return {
             "ambient_C": ambient_C,
+            "solar_dt": solar_dt,
             "w_m": w_m, "h_m": h_m, "d_m": d_m, "Ae": Ae,
             "P": P,
             "k": k_iec, "c": c, "x": x, "f": f, "g": g,
@@ -291,12 +301,9 @@ def calc_tier_iec60890(
             "wall_mounted": bool(wall_mounted),
             "ventilated": bool(vent_effective),
 
-            # legacy inputs preserved
-            "allow_material_dissipation": bool(getattr(tier, "allow_material_dissipation", True)),
-            "enclosure_k_W_m2K": float(getattr(tier, "enclosure_k_W_m2K", 0.0)),
 
             # standards-aligned outputs
-            "P_890": P,              # at actual P, you're still under limit
+            "P_890": float(P_890_installed),  # ✅ limit, not actual
             "P_fan": 0.0,
             "P_material": 0.0,       # no longer used in standards path
             "P_cooling": 0.0,
@@ -376,7 +383,7 @@ def calc_tier_iec60890(
 
             dt_mid_v = k_v * (P ** x_v)
             dt_top_v = c_v * dt_mid_v
-            T_top_v = ambient_C + dt_top_v
+            T_top_v = ambient_C + dt_top_v + solar_dt
 
             if T_top_v <= limit_C:
                 vent_recommended = True
@@ -385,7 +392,7 @@ def calc_tier_iec60890(
     # STAGE 4: Active cooling airflow (IEC TR 60890:2022 Annex K)
     # ============================================================
 
-    delta_allow = max(0.0, limit_C - ambient_C)
+    delta_allow = max(0.0, limit_C - ambient_C - solar_dt)
 
     ak = annex_k_sealed_p890(
         Ae=Ae,
@@ -404,6 +411,7 @@ def calc_tier_iec60890(
     print(f"Tier: {getattr(tier, 'name', '—')}")
     print(f"Ae = {Ae:.3f} m²")
     print(f"Ambient = {ambient_C:.1f} °C")
+    print(f"Solar dt = {solar_dt:.1f} °C")
     print(f"Limit = {limit_C:.1f} °C")
     print(f"ΔT_allow = {delta_allow:.1f} K")
     print(f"Input Power P = {P:.1f} W")
@@ -437,16 +445,13 @@ def calc_tier_iec60890(
 
     return {
         "ambient_C": ambient_C,
+        "solar_dt": solar_dt,
         "w_m": w_m, "h_m": h_m, "d_m": d_m, "Ae": Ae,
         "P": P,
         "k": k_iec, "c": c, "x": x, "f": f, "g": g,
         "curve_no": curve_no,
         "wall_mounted": bool(wall_mounted),
         "ventilated": bool(vent_effective),
-
-        # legacy inputs preserved
-        "allow_material_dissipation": bool(allow_material_dissipation),
-        "enclosure_k_W_m2K": float(enclosure_k_W_m2K),
 
         # standards-aligned outputs
         "P_890": P_890,
