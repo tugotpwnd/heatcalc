@@ -105,6 +105,35 @@ class Tier:
         cell_sum = sum(cell.total_heat_w for cell in self.cells)
         return tier_sum + cell_sum
 
+from dataclasses import dataclass, field
+from typing import Optional, List
+
+@dataclass
+class BusbarSpec:
+    name: str = "BUS"
+
+    # Electrical
+    I_total_A: float = 0.0          # TOTAL phase current
+    bars_in_parallel: int = 1       # number of bars sharing that current
+
+    # Geometry (per single bar)
+    width_mm: float = 100.0
+    thickness_mm: float = 10.0
+    L_char_mm: float = 100.0
+    length_m: float = 1.0
+
+    # Layout
+    face_to_face_dim: str = "thickness"  # "width" or "thickness"
+
+    # Surface / convection
+    eps_bus: float = 0.10
+    eps_env: float = 0.90
+    convection_mode: str = "vertical"
+    v_mps: float = 0.0
+    S_ac: float = 1.0
+
+    use_air_temp: str = "top"
+
 @dataclass
 class BoardLayout:
     tiers: List[Tier] = field(default_factory=list)

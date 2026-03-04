@@ -174,6 +174,7 @@ def calc_tier_iec60890(
     ip_rating_n: int,
     vent_test_area_cm2: float | None = None,
     solar_delta_K: float = 0.0,
+    P_override_W: float | None = None,
 ) -> Dict:
 
     # ---------------- Geometry ----------------
@@ -200,7 +201,9 @@ def calc_tier_iec60890(
     solar_dt = float(max(0.0, solar_delta_K))
 
     # ---------------- Power + mode ----------------
-    P = max(0.0, float(tier.total_heat()))
+    P_base = float(tier.total_heat_w)
+    P = float(P_override_W) if P_override_W is not None else P_base
+
     curve_no = int(getattr(tier, "curve_no", 1))
 
     vent_requested = bool(tier.is_ventilated)
@@ -474,35 +477,6 @@ def calc_tier_iec60890(
     P_890 = min(P, ak["P_890"])
     P_fan = max(0.0, P - P_890)
     P_cooling = P_fan
-
-    # print("\n========== IEC 60890 vs Annex K DEBUG ==========")
-    # print(f"Tier: {getattr(tier, 'name', '—')}")
-    # print(f"Ae = {Ae:.3f} m²")
-    # print(f"Ambient = {ambient_C:.1f} °C")
-    # print(f"Solar dt = {solar_dt:.1f} °C")
-    # print(f"Limit = {limit_C:.1f} °C")
-    # print(f"ΔT_allow = {delta_allow:.1f} K")
-    # print(f"Input Power P = {P:.1f} W")
-    #
-    # print("\n--- Installed-condition IEC model ---")
-    # print(f"  Ventilated: {vent_effective}")
-    # print(f"  k_iec = {k_iec:.5f}")
-    # print(f"  c_iec = {c:.5f}")
-    # print(f"  x_iec = {x:.3f}")
-    # print(f"  ΔT_top = {dt_top:.2f} K")
-    # print(f"  T_top = {T_top:.2f} °C")
-    # print(f"  P_limit_installed = {P_limit_installed:.2f} W")
-    #
-    # print("\n--- Annex K sealed-enclosure model ---")
-    # print("  (Natural ventilation IGNORED)")
-    # print(f"  k_ak = {ak['k']:.5f}")
-    # print(f"  c_ak = {ak['c']:.5f}")
-    # print(f"  x_ak = {ak['x']:.3f}")
-    # print(f"  P_890 (Annex K) = {ak['P_890']:.2f} W")
-    #
-    # print("\n--- Fan sizing (Annex K governs) ---")
-    # print(f"  P_fan = {P_fan:.2f} W")
-    # print("===============================================\n")
 
     k_alt = air_k_factor_from_altitude_m(altitude_m)
     VOL_HEAT_CAP_J_M3K = 1160.0 * k_alt
