@@ -1,310 +1,40 @@
-import numpy as np
-import matplotlib.pyplot as plt
+from __future__ import annotations
 
-from heatcalc.core.iec60890_calc import calc_tier_iec60890
-
-# ============================================================
-# PHYSICAL CONSTANTS
-# ============================================================
-
-SIGMA = 5.670e-8  # Stefan–Boltzmann (W/m²K⁴)
-ALPHA_CU = 0.00393  # Copper temperature coefficient (1/°C)
-RHO_20 = 1.724e-8  # Copper resistivity at 20°C (Ω·m)
-
-
-# ============================================================
-# BUSBAR MODEL
-# ============================================================
-
-def busbar_R20_per_m(width_m, thickness_m):
-    """DC resistance per metre at 20°C"""
-    A = width_m * thickness_m
-    return RHO_20 / A
-
-
-def surface_area_per_m(width_m, thickness_m):
-    """External surface area per metre (ignores ends)"""
-    return 2 * (width_m + thickness_m)
-
-
-def relative_emissivity(e1, e2):
-    return (e1 * e2) / ((e1 + e2) - (e1 * e2))
-
-
-def heat_balance_function(
-    T,
-    I,
-    Ta,
-    R20,
-    As_conv,
-    As_rad,
-    L,
-    eps1,
-    eps2,
-    mode="vertical",
-    v=0.0,
-    S_ac=1.0,
-):
-    """
-    Returns f(T) = Pgen - (Pconv + Prad)
-    """
-
-    # ----- Electrical heat generation -----
-    R_T = R20 * (1 + ALPHA_CU * (T - 20.0))
-    P_gen = I**2 * R_T * S_ac
-
-    # ----- Convection -----
-    theta = max(T - Ta, 0.0)
-
-    if v > 0.0:
-        W_conv = 120.0 * np.sqrt(v) * theta
-    else:
-        if mode == "vertical":
-            W_conv = 7.66 * (theta ** 1.25) / (L ** 0.25)
-        else:
-            W_conv = 5.92 * (theta ** 1.25) / (L ** 0.25)
-
-    P_conv = W_conv * As_conv
-
-    # ----- Radiation -----
-    e_rel = relative_emissivity(eps1, eps2)
-
-    T_K = T + 273.15
-    Ta_K = Ta + 273.15
-
-    W_rad = SIGMA * e_rel * (T_K**4 - Ta_K**4)
-    P_rad = W_rad * As_rad
-    return P_gen - (P_conv + P_rad)
-
-
-def effective_radiating_area_per_m(width_m, thickness_m, N, face_dim):
-    As = 2 * (width_m + thickness_m)
-
-    if N <= 1:
-        return As
-
-    if face_dim == "width":
-        d = width_m
-    else:
-        d = thickness_m
-
-    A_blocked_avg = 2 * d * (1 - 1 / N)
-    A_eff = As - A_blocked_avg
-
-    return max(A_eff, 0.0)
-
-# ============================================================
-# NEWTON–RAPHSON SOLVER
-# ============================================================
-
-def solve_busbar_temperature(
-    *,
-    I_total,
-    bars_in_parallel,
-    face_to_face_dim,
-    Ta,
-    width_m,
-    thickness_m,
-    L,
-    eps1=0.10,
-    eps2=0.90,
-    mode="vertical",
-    v=0.0,
-    S_ac=1.0,
-    T0=None,
-    tol_T=0.01,
-    tol_P=1e-6,
-    max_iter=50,
-    verbose=False,
-):
-    """
-    Solve for steady-state busbar temperature using Newton–Raphson.
-    """
-
-    R20 = busbar_R20_per_m(width_m, thickness_m)
-    As_conv = surface_area_per_m(width_m, thickness_m)
-
-    As_rad = effective_radiating_area_per_m(
-        width_m,
-        thickness_m,
-        bars_in_parallel,
-        face_to_face_dim,
-    )
-
-    if T0 is None:
-        T = Ta + 40.0
-    else:
-        T = T0
-
-    history = []
-
-    for k in range(max_iter):
-
-        I_bar = I_total / bars_in_parallel
-
-        f = heat_balance_function(
-            T,
-            I_bar,
-            Ta,
-            R20,
-            As_conv,
-            As_rad,
-            L,
-            eps1,
-            eps2,
-            mode,
-            v,
-            S_ac,
-        )
-
-        # Numerical derivative
-        dT = 0.01
-
-        f_plus = heat_balance_function(
-            T + dT,
-            I_bar,
-            Ta,
-            R20,
-            As_conv,
-            As_rad,
-            L,
-            eps1,
-            eps2,
-            mode,
-            v,
-            S_ac,
-        )
-
-        df = (f_plus - f) / dT
-
-        if abs(df) < 1e-12:
-            break
-
-        T_new = T - f / df
-
-        history.append(T_new)
-
-        if verbose:
-            print(f"Iter {k+1}: T = {T_new:.4f} °C, f(T) = {f:.6f}")
-
-        if abs(T_new - T) < tol_T and abs(f) < tol_P:
-            return T_new, history
-
-        T = T_new
-
-    # ----- Fallback: Bisection -----
-    T_low = Ta
-    T_high = Ta + 300
-
-    for _ in range(100):
-        T_mid = 0.5 * (T_low + T_high)
-
-        I_bar = I_total / bars_in_parallel
-
-        f_low = heat_balance_function(
-            T_low,
-            I_bar,
-            Ta,
-            R20,
-            As_conv,
-            As_rad,
-            L,
-            eps1,
-            eps2,
-            mode,
-            v,
-            S_ac,
-        )
-
-        f_mid = heat_balance_function(
-            T_mid,
-            I_bar,
-            Ta,
-            R20,
-            As_conv,
-            As_rad,
-            L,
-            eps1,
-            eps2,
-            mode,
-            v,
-            S_ac,
-        )
-
-        if f_low * f_mid < 0:
-            T_high = T_mid
-        else:
-            T_low = T_mid
-
-        if abs(T_high - T_low) < tol_T:
-            return T_mid, history
-
-    raise RuntimeError("Solver did not converge.")
-
-
-import copy
 from dataclasses import dataclass
 
-# ---- You already have these from the busbar script ----
-# solve_busbar_temperature(...)
-# busbar_R20_per_m(...)
-# etc.
-
-@dataclass
-class BusbarModelInputs:
-    I_A: float
-    width_m: float
-    thickness_m: float
-    L_m: float
-    eps_bus: float = 0.10
-    eps_env: float = 0.90
-    mode: str = "vertical"     # "vertical" or "horizontal"
-    v_mps: float = 0.0         # forced air velocity (0 = natural)
-    S_ac: float = 1.0          # AC correction factor
+from heatcalc.core.iec60890_calc import calc_tier_iec60890
+from heatcalc.core.busbar_geometry import from_busbarspec_mm
+from heatcalc.core.busbar_physics import BusbarThermalInputs
+from heatcalc.core.busbar_solver import solve_busbar_temperature
 
 
 def _select_busbar_ambient(result_60890: dict, which: str) -> float:
     """
-    Choose which enclosure air temperature drives the busbar convection/radiation.
+    Choose which enclosure air temperature drives busbar convection/radiation.
+
+    Supported:
+      "mid", "top", "075"
     """
-    which = which.lower().strip()
-    if which == "mid":
+    w = (which or "top").lower().strip()
+    if w == "mid":
         return float(result_60890["T_mid"])
-    if which == "top":
+    if w == "top":
         return float(result_60890["T_top"])
-    if which in ("075", "t075", "0.75", "t_075"):
+    if w in ("075", "t075", "0.75", "t_075"):
         t = result_60890.get("T_075", None)
-        if t is None:
-            # fall back if model path doesn't output it
-            return float(result_60890["T_top"])
-        return float(t)
-    raise ValueError("which must be one of: 'mid', 'top', '075'")
+        return float(t) if t is not None else float(result_60890["T_top"])
+    raise ValueError("use_air_temp must be one of: 'mid', 'top', '075'")
 
 
-def _compute_busbar_loss_W_per_m(
+def _compute_busbar_loss_W(
     *,
-    I_total_A: float,
-    bars_in_parallel: int,
-    T_bus_C: float,
-    width_m: float,
-    thickness_m: float,
-    S_ac: float = 1.0,
-    rho20: float = 1.724e-8,
-    alpha: float = 0.00393,
+    P_gen_W_per_m: float,
+    length_m: float,
 ) -> float:
     """
-    Electrical loss per metre = I^2 * R(T) * S_ac
+    Total electrical loss in W for the bar arrangement = (W/m) * length.
     """
-    A = width_m * thickness_m
-    R20 = rho20 / A
-
-    R_T = R20 * (1.0 + alpha * (T_bus_C - 20.0))
-
-    I_bar = I_total_A / bars_in_parallel
-
-    P_single = (I_bar ** 2) * R_T * S_ac
-
-    return bars_in_parallel * P_single
+    return float(P_gen_W_per_m) * float(length_m)
 
 
 def calc_tier_iec60890_coupled(
@@ -320,14 +50,27 @@ def calc_tier_iec60890_coupled(
     max_iter: int = 30,
     tol_T: float = 0.05,
     tol_P: float = 0.5,
+    debug: bool = False,
 ):
     """
     Fully coupled enclosure ↔ busbar solver.
-    Calls the EXISTING IEC60890 calc iteratively.
+
+    Algorithm
+    ---------
+    Iterate until convergence:
+      1) Run IEC 60890 enclosure model with total heat = base_heat + busbar_heat
+      2) Pick busbar ambient (top/mid/0.75H)
+      3) Solve busbar temperature(s) via steady-state heat balance
+      4) Compute busbar electrical losses based on solved T
+      5) Update total heat and repeat
+
+    Returns a dict based on calc_tier_iec60890 output, plus:
+      - result["busbars"] : list of per-busbar detailed results
+      - result["coupling"]: convergence + iteration history
     """
 
+    # No busbars -> just run enclosure calc
     if not getattr(tier, "busbars", None):
-        # No busbars -> just run normal calc
         return calc_tier_iec60890(
             tier=tier,
             tiers=tiers,
@@ -339,17 +82,24 @@ def calc_tier_iec60890_coupled(
             solar_delta_K=solar_delta_K,
         )
 
-    P_base = float(tier.total_heat_w)
+    P_base = float(getattr(tier, "total_heat_w", 0.0))
     P_bus = 0.0
-    Ta_prev = ambient_C
+    Ta_prev = float(ambient_C)
 
     history = []
 
-    for k in range(max_iter):
+    last_bus_results = []
 
+    # --------------------------------------------------
+    # Validate busbar specifications once
+    # --------------------------------------------------
+    for b in tier.busbars:
+        b.validate()
+
+    for k in range(max_iter):
         P_total = P_base + P_bus
 
-        # ---- Run IEC enclosure model ----
+        # 1) Enclosure
         res = calc_tier_iec60890(
             tier=tier,
             tiers=tiers,
@@ -362,62 +112,140 @@ def calc_tier_iec60890_coupled(
             P_override_W=P_total,
         )
 
-        Ta = float(res["T_top"])  # conservative choice
+        # Ensure these are visible in the returned result for reporting
+        res["ambient_C"] = float(ambient_C)
 
-        # ---- Solve busbars ----
+        # 2) Solve busbars with selected enclosure air temperature for each bus
         P_bus_new = 0.0
         bus_results = []
 
         for b in tier.busbars:
-            T_bus, _ = solve_busbar_temperature(
-                I_total=b.I_total_A,
-                bars_in_parallel=b.bars_in_parallel,
-                face_to_face_dim=b.face_to_face_dim,
-                Ta=Ta,
-                width_m=b.width_mm / 1000.0,
-                thickness_m=b.thickness_mm / 1000.0,
-                L=b.L_char_mm / 1000.0,
-                eps1=b.eps_bus,
-                eps2=b.eps_env,
-                mode=b.convection_mode,
-                v=b.v_mps,
-                S_ac=b.S_ac,
-            )
+            # --------------------------------------------------
+            # Convert spec → geometry + thermal inputs
+            # --------------------------------------------------
+            geom = from_busbarspec_mm(b)
 
-            P_loss_per_m = _compute_busbar_loss_W_per_m(
+            therm = BusbarThermalInputs(
                 I_total_A=b.I_total_A,
-                bars_in_parallel=b.bars_in_parallel,
-                T_bus_C=T_bus,
-                width_m=b.width_mm / 1000.0,
-                thickness_m=b.thickness_mm / 1000.0,
+                eps_bus=b.eps_bus,
+                eps_env=b.eps_env,
+                v_mps=b.v_mps,
                 S_ac=b.S_ac,
             )
 
-            P_loss = P_loss_per_m * b.length_m
-            P_bus_new += P_loss
+            # --------------------------------------------------
+            # Select enclosure air temperature
+            # --------------------------------------------------
+            Ta_bus = _select_busbar_ambient(res, b.use_air_temp)
 
-            bus_results.append({
-                "name": b.name,
-                "T_bus_C": T_bus,
-                "P_loss_W": P_loss,
-            })
+            # --------------------------------------------------
+            # Solve busbar temperature
+            # --------------------------------------------------
+            solve = solve_busbar_temperature(
+                geom=geom,
+                therm=therm,
+                T_air_C=Ta_bus,
+                tol_T=0.01,
+                tol_f_W_per_m=1e-4,
+                max_iter=50,
+            )
 
-        # ---- Store iteration history ONCE ----
-        history.append({
-            "iter": k + 1,
-            "T_air_C": Ta,
-            "busbars": bus_results,
-        })
+            # The canonical physics at solution
+            phys = solve.physics
 
-        # ---- Convergence check ----
-        if abs(Ta - Ta_prev) < tol_T and abs(P_bus_new - P_bus) < tol_P:
-            res["busbars"] = bus_results
-            res["coupling"] = {"converged": True, "iterations": k+1, "history": history}
+            # Electrical loss W = (P_gen per m) * length
+            P_loss_W = _compute_busbar_loss_W(P_gen_W_per_m=phys.P_gen_W_per_m, length_m=geom.length_m)
+            P_bus_new += P_loss_W
+
+            bus_results.append(
+                {
+                    # identity
+                    "name": geom.name,
+
+                    # inputs
+                    "I_total_A": float(b.I_total_A),
+                    "bars_in_parallel": int(geom.bars_in_parallel),
+                    "I_bar_A": float(phys.I_bar_A),
+                    "use_air_temp": getattr(b, "use_air_temp", "top"),
+
+                    # geometry (retain mm for UI readability)
+                    "width_mm": float(b.width_mm),
+                    "thickness_mm": float(b.thickness_mm),
+                    "L_char_mm": float(b.L_char_mm),
+                    "length_m": float(geom.length_m),
+
+                    # layout
+                    "convection_mode": geom.convection_mode,
+                    "face_to_face_dim": geom.face_to_face_dim,
+
+                    # solved temps
+                    "T_air_C": float(phys.T_air_C),
+                    "T_bus_C": float(phys.T_bus_C),
+
+                    # losses (total for bar arrangement)
+                    "P_loss_W": float(P_loss_W),
+
+                    # canonical physics (per m, total arrangement)
+                    "R20_ohm_per_m": float(phys.R20_ohm_per_m),
+                    "R_T_ohm_per_m": float(phys.R_T_ohm_per_m),
+                    "P_gen_W_per_m": float(phys.P_gen_W_per_m),
+                    "P_conv_W_per_m": float(phys.P_conv_W_per_m),
+                    "P_rad_W_per_m": float(phys.P_rad_W_per_m),
+                    "W_conv_W_m2": float(phys.W_conv_W_m2),
+                    "W_rad_W_m2": float(phys.W_rad_W_m2),
+                    "As_conv_m2_per_m": float(phys.As_conv_m2_per_m),
+                    "As_rad_raw_m2_per_m": float(phys.As_rad_raw_m2_per_m),
+                    "As_rad_eff_m2_per_m": float(phys.As_rad_eff_m2_per_m),
+                    "rad_blockage_frac": float(phys.rad_blockage_frac),
+
+                    # solver info
+                    "solver_converged": bool(solve.converged),
+                    "solver_method": solve.method,
+                    "solver_iterations": int(solve.iterations),
+
+                    # Optional deep trace
+                    "trace": [
+                        {
+                            "T_bus_C": s.T_bus_C,
+                            "T_air_C": s.T_air_C,
+                            "P_gen_W_per_m": s.P_gen_W_per_m,
+                            "P_conv_W_per_m": s.P_conv_W_per_m,
+                            "P_rad_W_per_m": s.P_rad_W_per_m,
+                            "f_W_per_m": s.f_W_per_m,
+                        }
+                        for s in solve.trace
+                    ]
+                    if debug
+                    else None,
+                }
+            )
+
+        last_bus_results = bus_results
+
+        # Pick a single enclosure air temp to track in coupling history (use top for conservatism)
+        Ta_top = float(res["T_top"])
+
+        history.append(
+            {
+                "iter": k + 1,
+                "P_total_W": float(P_total),
+                "P_base_W": float(P_base),
+                "P_bus_W": float(P_bus_new),
+                "T_air_top_C": Ta_top,
+                "max_busbar_T_C": max(b["T_bus_C"] for b in bus_results),
+            }
+        )
+
+        # 3) Convergence check: enclosure air & bus heat
+        if abs(Ta_top - Ta_prev) < tol_T and abs(P_bus_new - P_bus) < tol_P:
+            res["busbars"] = last_bus_results
+            res["coupling"] = {"converged": True, "iterations": k + 1, "history": history}
             return res
 
-        Ta_prev = Ta
+        Ta_prev = Ta_top
         P_bus = P_bus_new
 
-    res["busbars"] = bus_results
+    # Not converged
+    res["busbars"] = last_bus_results
     res["coupling"] = {"converged": False, "iterations": max_iter, "history": history}
     return res

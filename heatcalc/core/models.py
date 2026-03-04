@@ -108,31 +108,6 @@ class Tier:
 from dataclasses import dataclass, field
 from typing import Optional, List
 
-@dataclass
-class BusbarSpec:
-    name: str = "BUS"
-
-    # Electrical
-    I_total_A: float = 0.0          # TOTAL phase current
-    bars_in_parallel: int = 1       # number of bars sharing that current
-
-    # Geometry (per single bar)
-    width_mm: float = 100.0
-    thickness_mm: float = 10.0
-    L_char_mm: float = 100.0
-    length_m: float = 1.0
-
-    # Layout
-    face_to_face_dim: str = "thickness"  # "width" or "thickness"
-
-    # Surface / convection
-    eps_bus: float = 0.10
-    eps_env: float = 0.90
-    convection_mode: str = "vertical"
-    v_mps: float = 0.0
-    S_ac: float = 1.0
-
-    use_air_temp: str = "top"
 
 @dataclass
 class BoardLayout:
@@ -225,3 +200,221 @@ class Project:
 
     def mark_changed(self) -> None:
         signals.project_changed.emit()
+
+
+from dataclasses import dataclass
+
+@dataclass
+class BusbarSpec:
+    """
+    Busbar specification describing the electrical load, geometry,
+    surface properties and installation layout of a conductor set.
+
+    This object is intentionally declarative and contains only
+    physical parameters. All physics calculations are performed
+    in the physics layer.
+
+    Units are kept in engineering-friendly form (mm, m, A) but
+    helper properties expose SI units for solver calculations.
+    """
+
+    # ==========================================================
+    # IDENTIFICATION
+    # ==========================================================
+
+    name: str = "BUS"
+
+    # ==========================================================
+    # ELECTRICAL PARAMETERS
+    # ==========================================================
+
+    I_total_A: float = 0.0
+    """
+    Total phase current carried by the busbar set (A).
+    """
+
+    bars_in_parallel: int = 1
+    """
+    Number of parallel conductors sharing the phase current.
+    """
+
+    S_ac: float = 1.0
+    """
+    AC resistance correction factor.
+    Accounts for skin/proximity effects if required.
+    Default = 1.0 (DC assumption).
+    """
+
+    # ==========================================================
+    # GEOMETRY (PER SINGLE BAR)
+    # ==========================================================
+
+    width_mm: float = 100.0
+    """
+    Busbar width (mm).
+    """
+
+    thickness_mm: float = 10.0
+    """
+    Busbar thickness (mm).
+    """
+
+    length_m: float = 1.0
+    """
+    Actual conductor length (m) used to compute total I²R loss.
+    """
+
+    L_char_mm: float = 100.0
+    """
+    Characteristic length used for natural convection correlations.
+    Typically the vertical dimension of the conductor surface.
+    """
+
+    # ==========================================================
+    # LAYOUT / STACKING
+    # ==========================================================
+
+    face_to_face_dim: str = "thickness"
+    """
+    Orientation of parallel bars:
+
+    "thickness"
+        bars stacked face-to-face through thickness
+
+    "width"
+        bars stacked face-to-face through width
+
+    This affects radiation blocking between conductors.
+    """
+
+    # ==========================================================
+    # SURFACE / THERMAL PROPERTIES
+    # ==========================================================
+
+    eps_bus: float = 0.10
+    """
+    Busbar emissivity.
+    Typical values:
+        polished copper ≈ 0.05-0.10
+        oxidised copper ≈ 0.3-0.5
+    """
+
+    eps_env: float = 0.90
+    """
+    Effective emissivity of surrounding enclosure surfaces.
+    Painted steel typically ≈0.9
+    """
+
+    # ==========================================================
+    # CONVECTION CONDITIONS
+    # ==========================================================
+
+    convection_mode: str = "vertical"
+    """
+    Orientation for natural convection correlation.
+
+    Options:
+        "vertical"
+        "horizontal"
+    """
+
+    v_mps: float = 0.0
+    """
+    Air velocity (m/s).
+
+    0 → natural convection
+    >0 → forced convection
+    """
+
+    # ==========================================================
+    # ENCLOSURE COUPLING
+    # ==========================================================
+
+    use_air_temp: str = "top"
+    """
+    Which enclosure temperature drives convection:
+
+    "top"
+        most conservative (hottest air)
+
+    "mid"
+        mid-height temperature
+
+    "075"
+        IEC60890 0.75 height temperature
+    """
+
+    # ==========================================================
+    # HELPER PROPERTIES (SI units)
+    # ==========================================================
+
+    @property
+    def width_m(self) -> float:
+        return self.width_mm / 1000.0
+
+    @property
+    def thickness_m(self) -> float:
+        return self.thickness_mm / 1000.0
+
+    @property
+    def L_char_m(self) -> float:
+        return self.L_char_mm / 1000.0
+
+    # ==========================================================
+    # DERIVED ELECTRICAL PARAMETERS
+    # ==========================================================
+
+    @property
+    def current_per_bar_A(self) -> float:
+        """
+        Current carried by each individual conductor.
+        """
+        if self.bars_in_parallel <= 0:
+            raise ValueError("bars_in_parallel must be >= 1")
+        return self.I_total_A / self.bars_in_parallel
+
+    # ==========================================================
+    # DERIVED GEOMETRY
+    # ==========================================================
+
+    @property
+    def cross_section_area_m2(self) -> float:
+        """
+        Conductor cross-section area.
+        """
+        return self.width_m * self.thickness_m
+
+    @property
+    def perimeter_m(self) -> float:
+        """
+        External perimeter of a rectangular conductor.
+        Used for convection surface area per metre.
+        """
+        return 2 * (self.width_m + self.thickness_m)
+
+    # ==========================================================
+    # VALIDATION
+    # ==========================================================
+
+    def validate(self):
+        """
+        Basic input validation to prevent solver errors.
+        """
+
+        if self.width_mm <= 0:
+            raise ValueError("width_mm must be positive")
+
+        if self.thickness_mm <= 0:
+            raise ValueError("thickness_mm must be positive")
+
+        if self.bars_in_parallel < 1:
+            raise ValueError("bars_in_parallel must be >= 1")
+
+        if self.I_total_A < 0:
+            raise ValueError("I_total_A cannot be negative")
+
+        if self.face_to_face_dim not in ("width", "thickness"):
+            raise ValueError("face_to_face_dim must be 'width' or 'thickness'")
+
+        if self.convection_mode not in ("vertical", "horizontal"):
+            raise ValueError("convection_mode must be 'vertical' or 'horizontal'")
