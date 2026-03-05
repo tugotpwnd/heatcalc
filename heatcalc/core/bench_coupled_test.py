@@ -109,9 +109,12 @@ dump_solver_state(result, show_trace=False)
 
 # Simple convergence plot (coupling history)
 hist = result["coupling"]["history"]
-iters = [h["iter"] for h in hist]
-T_air = [h["T_air_top_C"] for h in hist]
-P_bus = [h["P_bus_W"] for h in hist]
+
+iters = [h["iteration"] for h in hist]
+T_air = [h["T_top"] for h in hist]
+P_guess = [h["P_guess"] for h in hist]
+P_calc = [h["P_calc"] for h in hist]
+residual = [h["residual"] for h in hist]
 
 plt.figure(figsize=(8, 5))
 plt.plot(iters, T_air, marker="o", label="T_air_top (C)")
