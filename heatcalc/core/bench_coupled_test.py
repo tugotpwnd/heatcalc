@@ -1,124 +1,131 @@
 import matplotlib.pyplot as plt
+import numpy as np
 
-from heatcalc.core.models import BusbarSpec
-from heatcalc.core.newton_calc import calc_tier_iec60890_coupled
-from heatcalc.services.solver_report import dump_solver_state
-
-
-# ----------------------------
-# Minimal fake Tier for bench
-# ----------------------------
-class FakeRect:
-    def __init__(self, width_mm, height_mm):
-        self._w = width_mm
-        self._h = height_mm
-
-    def width(self): return self._w
-    def height(self): return self._h
+from heatcalc.core.models import BusbarSpec, BusbarJointSpec
+from heatcalc.core.busbar_geometry import build_busbar_segments
+from heatcalc.core.busbar_solver import solve_busbar_temperature
 
 
-class FakeTier:
-    def __init__(self, width_mm, height_mm, depth_mm, base_heat_w):
-        self._rect = FakeRect(width_mm, height_mm)
-        self.depth_mm = depth_mm
+# -------------------------------------------------
+# Test Busbar
+# -------------------------------------------------
 
-        self.component_entries = []
-        self.cables = []
-        self.is_ventilated = False
-        self.vent_rows = 0
-        self.vent_cols = 0
+bus = BusbarSpec(
+    name="Test Bus",
+    I_total_A=2000.0,
+    bars_in_parallel=1,
+    width_mm=60.0,
+    thickness_mm=10.0,
+    length_m=2.0,
+    L_char_mm=60.0,
 
-        class _Comp:
-            def __init__(self, heat):
-                self.heat_each_w = heat
-                self.qty = 1
-                self.max_temp_C = 90
+    face_to_face_dim="thickness",
 
-        self.component_entries.append(_Comp(base_heat_w))
-        self.use_auto_component_temp = False
-        self.max_temp_C = 90
+    eps_bus=0.10,
+    eps_env=0.90,
 
-    @property
-    def total_heat_w(self):
-        return sum(c.heat_each_w * c.qty for c in self.component_entries)
+    convection_mode="horizontal",
+    v_mps=0.0,
 
-    def effective_max_temp_C(self):
-        return self.max_temp_C
+    segments_per_m=40,
 
-    def shapeRect(self):
-        class _Rect:
-            def __init__(self, w, h):
-                self._w = w
-                self._h = h
-            def left(self): return 0.0
-            def right(self): return self._w
-            def top(self): return 0.0
-            def bottom(self): return self._h
-        return _Rect(self._rect.width(), self._rect.height())
-
-
-# ----------------------------
-# Single test case
-# ----------------------------
-case = dict(name="Case", ambient=55.0, I=640.0, w=60.0, t=10.0, L=1.0)
-
-tier = FakeTier(width_mm=500, height_mm=500, depth_mm=250, base_heat_w=0.0)
-
-tier.busbars = [
-    BusbarSpec(
-        name="Phase A",
-        I_total_A=case["I"],
-        bars_in_parallel=1,
-        width_mm=case["w"],
-        thickness_mm=case["t"],
-        L_char_mm=case["w"],
-        length_m=case["L"],
-        face_to_face_dim="thickness",
-        eps_bus=0.10,
-        eps_env=0.90,
-        convection_mode="horizontal",
-        v_mps=0.0,
-        S_ac=1.0,
-        use_air_temp="top",
-    ),
-    BusbarSpec(name="Phase B", I_total_A=case["I"], bars_in_parallel=1,
-              width_mm=case["w"], thickness_mm=case["t"], L_char_mm=case["w"],
-              length_m=case["L"], face_to_face_dim="thickness",
-              eps_bus=0.10, eps_env=0.90, convection_mode="horizontal",
-              v_mps=0.0, S_ac=1.0, use_air_temp="top"),
-    BusbarSpec(name="Phase C", I_total_A=case["I"], bars_in_parallel=1,
-              width_mm=case["w"], thickness_mm=case["t"], L_char_mm=case["w"],
-              length_m=case["L"], face_to_face_dim="thickness",
-              eps_bus=0.10, eps_env=0.90, convection_mode="horizontal",
-              v_mps=0.0, S_ac=1.0, use_air_temp="top"),
-]
-
-result = calc_tier_iec60890_coupled(
-    tier=tier,
-    tiers=[tier],
-    wall_mounted=False,
-    inlet_area_cm2=0.0,
-    ambient_C=case["ambient"],
-    altitude_m=0.0,
-    ip_rating_n=5,
-    solar_delta_K=0.0,
-    debug=True,   # store trace in result["busbars"][i]["trace"]
+    joints=[
+        BusbarJointSpec(
+            x_m=0.5,
+            overlap_m=0.05,
+            bolt_count=4,
+            R_contact_20_uohm=4.0
+        )
+    ]
 )
 
-dump_solver_state(result, show_trace=False)
 
-# Simple convergence plot (coupling history)
-hist = result["coupling"]["history"]
-iters = [h["iter"] for h in hist]
-T_air = [h["T_air_top_C"] for h in hist]
-P_bus = [h["P_bus_W"] for h in hist]
+ambient_C = 40.0
 
-plt.figure(figsize=(8, 5))
-plt.plot(iters, T_air, marker="o", label="T_air_top (C)")
-plt.xlabel("Iteration")
-plt.ylabel("Temperature (C)")
+
+# -------------------------------------------------
+# Solve
+# -------------------------------------------------
+
+result = solve_busbar_temperature(
+    bus=bus,
+    air_temp_C=ambient_C
+)
+
+
+# -------------------------------------------------
+# Extract segment geometry
+# -------------------------------------------------
+
+segments = build_busbar_segments(bus)
+
+print("Segments:")
+for seg in segments:
+    print(
+        f"x={seg.start_m:.3f} m  "
+        f"L={seg.length_m:.3f} m  "
+        f"R_extra_per_m={seg.extra_R20_ohm_per_m:.6e}"
+    )
+
+
+segment_centres = []
+segment_lengths = []
+
+x = 0.0
+for seg in segments:
+    segment_centres.append(x + seg.length_m / 2)
+    segment_lengths.append(seg.length_m)
+    x += seg.length_m
+
+
+# -------------------------------------------------
+# Extract temperatures
+# -------------------------------------------------
+
+# temperature vector from solver
+T_vec = result.trace[-len(segments):] if result.trace else None
+
+# fallback (if trace disabled)
+if T_vec is None:
+    raise RuntimeError("Trace not enabled – cannot plot profile.")
+
+
+# -------------------------------------------------
+# Temperature rise
+# -------------------------------------------------
+
+temps = result.T_profile
+T_max = max(temps)
+rise = T_max - ambient_C
+
+print("=================================================")
+print("Busbar Temperature Result")
+print("=================================================")
+
+print(f"Ambient temperature      : {ambient_C:.1f} °C")
+print(f"Maximum busbar temp      : {T_max:.2f} °C")
+print(f"Temperature rise         : {rise:.2f} K")
+print(f"Joint resistance         : {bus.joints[0].R_contact_20_uohm} µΩ")
+
+print("=================================================")
+
+
+# -------------------------------------------------
+# Plot temperature distribution
+# -------------------------------------------------
+
+plt.figure(figsize=(9,5))
+
+plt.plot(segment_centres, temps, marker="o")
+
+plt.axvline(0.5, linestyle="--", color="red", label="Joint location")
+
+plt.xlabel("Busbar Position (m)")
+plt.ylabel("Temperature (°C)")
+plt.title("Busbar Temperature Distribution with Joint Hotspot")
+
 plt.grid(True)
 plt.legend()
-plt.title("Coupling Convergence (Air Temp)")
+
 plt.tight_layout()
 plt.show()

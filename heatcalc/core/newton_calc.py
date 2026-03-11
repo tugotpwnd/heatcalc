@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from heatcalc.core.busbar_network_solver_ss import solve_busbar_network
 from heatcalc.core.iec60890_calc import calc_tier_iec60890
 from heatcalc.core.busbar_geometry import from_busbarspec_mm
 from heatcalc.core.busbar_physics import BusbarThermalInputs
@@ -141,20 +142,22 @@ def calc_tier_iec60890_coupled(
             # --------------------------------------------------
             # Solve busbar temperature
             # --------------------------------------------------
-            solve = solve_busbar_temperature(
-                geom=geom,
-                therm=therm,
-                T_air_C=Ta_bus,
-                tol_T=0.01,
-                tol_f_W_per_m=1e-4,
-                max_iter=50,
-            )
+            if b.branches:
+                solve = solve_busbar_network(
+                    bus=b,
+                    air_temp_C=Ta_bus
+                )
+            else:
+                solve = solve_busbar_temperature(
+                    bus=b,
+                    air_temp_C=Ta_bus
+                )
 
             # The canonical physics at solution
             phys = solve.physics
 
             # Electrical loss W = (P_gen per m) * length
-            P_loss_W = _compute_busbar_loss_W(P_gen_W_per_m=phys.P_gen_W_per_m, length_m=geom.length_m)
+            P_loss_W = solve.P_total_loss_W
             P_bus_new += P_loss_W
 
             bus_results.append(
@@ -189,6 +192,7 @@ def calc_tier_iec60890_coupled(
                     "R20_ohm_per_m": float(phys.R20_ohm_per_m),
                     "R_T_ohm_per_m": float(phys.R_T_ohm_per_m),
                     "P_gen_W_per_m": float(phys.P_gen_W_per_m),
+                    "P_total_loss_W": float(P_loss_W),
                     "P_conv_W_per_m": float(phys.P_conv_W_per_m),
                     "P_rad_W_per_m": float(phys.P_rad_W_per_m),
                     "W_conv_W_m2": float(phys.W_conv_W_m2),

@@ -25,7 +25,6 @@ from .toast_message import ToastMessage
 from .tier_select_dialog import select_tiers_for_report
 from .louvre_definition_tab import LouvreDefinitionTab
 
-
 # >>> NEW: simple report exporter types/functions
 from ..reports.export_api import export_project_report
 from ..utils.resources import get_resource_path
@@ -87,7 +86,11 @@ class MainWindow(QMainWindow):
         # ---------------------------------------------------------------------------------------------------
 
         # Temperature rise (per-tier) – manual calculate
-        self.temp_tab = TempRiseTab(lambda: self.switchboard_tab.scene, self.project, parent=self)
+        self.temp_tab = TempRiseTab(
+            self.switchboard_tab.scene,
+            self.project,
+            parent=self
+        )
         self.tabs.addTab(self.temp_tab, "Temperature rise")
 
         # ---------------------------------------------------------------------------------------------------
@@ -355,9 +358,9 @@ class MainWindow(QMainWindow):
 
         # ---- Recreate Temperature Rise -------------------------------------
         self.temp_tab = TempRiseTab(
-            lambda: self.switchboard_tab.scene,
+            self.switchboard_tab.scene,
             self.project,
-            parent=self,
+            parent=self
         )
         self.tabs.insertTab(3, self.temp_tab, "Temperature rise")
 

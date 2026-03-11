@@ -1,7 +1,7 @@
 # heatcalc/core/models.py
 import json
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from ..utils.qt import signals
 
 
@@ -14,6 +14,7 @@ SOLAR_COLOUR_TABLE = {
     "Dark grey / blue / green": 24.4,
     "Black": 25.0,
 }
+
 
 @dataclass
 class ProjectMeta:
@@ -93,6 +94,7 @@ class Tier:
     arrangement: str = "standard"  # placeholder tag
     # Optional attached components directly at tier-level (future)
     components: List[Component] = field(default_factory=list)
+    bus_network: "BusNetwork" = field(default_factory=lambda: BusNetwork())
 
     @property
     def rect(self):
@@ -108,6 +110,47 @@ class Tier:
 from dataclasses import dataclass, field
 from typing import Optional, List
 
+@dataclass
+class BusNetwork:
+    """
+    Electrical bus network drawn within a tier.
+    """
+
+    segments: List["BusSegment"] = field(default_factory=list)
+    loads: List["BusLoad"] = field(default_factory=list)
+    joins: List["BusJoin"] = field(default_factory=list)
+
+    source_segment: Optional[int] = None
+
+@dataclass
+class BusSegment:
+
+    x0_mm: float
+    y0_mm: float
+
+    x1_mm: float
+    y1_mm: float
+
+    width_mm: float
+    thickness_mm: float
+
+    bars_in_parallel: int = 1
+
+@dataclass
+class BusLoad:
+
+    x_mm: float
+    y_mm: float
+
+    I_A: float
+
+@dataclass
+class BusJoin:
+
+    x_mm: float
+    y_mm: float
+
+    R_contact_20_uohm: float
 
 @dataclass
 class BoardLayout:
@@ -170,6 +213,15 @@ class Project:
         tiers = []
         for t in layout_data.get("tiers", []):
             cells = [Cell(**c) for c in t.get("cells", [])]
+            net_data = t.get("bus_network", {})
+
+            bus_network = BusNetwork(
+                segments=[BusSegment(**s) for s in net_data.get("segments", [])],
+                loads=[BusLoad(**l) for l in net_data.get("loads", [])],
+                joins=[BusJoin(**j) for j in net_data.get("joins", [])],
+                source_segment=net_data.get("source_segment"),
+            )
+
             tiers.append(Tier(
                 rows=t.get("rows", 1),
                 cols=t.get("cols", 1),
@@ -182,6 +234,7 @@ class Project:
                 order_index=t.get("order_index", 0),
                 arrangement=t.get("arrangement", "standard"),
                 components=[Component(**c) for c in t.get("components", [])],
+                bus_network=bus_network
             ))
 
         layout = BoardLayout(
@@ -202,7 +255,40 @@ class Project:
         signals.project_changed.emit()
 
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+
+@dataclass
+class BusbarJointSpec:
+    """
+    Represents a bolted connection / overlap joint in a busbar.
+    Position is measured from the start of the bus.
+    """
+    x_m: float
+
+    overlap_m: float = 0.05
+
+    bolt_count: int = 4
+
+    R_contact_20_uohm: float = 2.0
+
+    csa_factor: float = 1.0
+
+
+@dataclass
+class BusbarBranchSpec:
+    """
+    A tee-off branch connected to a parent bus at x_m.
+    The branch has its own geometry and length, and draws I_branch_A from the parent.
+    """
+    x_m: float
+    I_branch_A: float
+    branch: "BusbarSpec"   # nested BusbarSpec describing the branch conductor
+
+# In BusbarSpec add:
+branches: List[BusbarBranchSpec] = field(default_factory=list)
+
 
 @dataclass
 class BusbarSpec:
@@ -270,11 +356,34 @@ class BusbarSpec:
     Typically the vertical dimension of the conductor surface.
     """
 
+    branches: list[BusbarBranchSpec] = field(default_factory=list)
+    """
+    Branches, nested
+    """
+
+    # ==========================================================
+    # JOINT / SEGMENT MODEL
+    # ==========================================================
+
+    joints: List[BusbarJointSpec] = field(default_factory=list)
+    """
+    Optional list of bolted joints along the bus.
+    If empty the solver behaves exactly as before.
+    """
+
+    segments_per_m: float = 20.0
+    """
+    Resolution used when the segmented thermal solver is active.
+    Higher value → more accurate joint hotspot modelling.
+    Ignored if no joints are present.
+    """
+
     # ==========================================================
     # LAYOUT / STACKING
     # ==========================================================
 
-    face_to_face_dim: str = "thickness"
+    face_to_face_dim: Literal["width", "thickness"] = "thickness"
+
     """
     Orientation of parallel bars:
 
@@ -309,7 +418,7 @@ class BusbarSpec:
     # CONVECTION CONDITIONS
     # ==========================================================
 
-    convection_mode: str = "vertical"
+    convection_mode: Literal["vertical", "horizontal"] = "vertical"
     """
     Orientation for natural convection correlation.
 
@@ -359,6 +468,10 @@ class BusbarSpec:
     @property
     def L_char_m(self) -> float:
         return self.L_char_mm / 1000.0
+
+    @property
+    def has_joints(self) -> bool:
+        return len(self.joints) > 0
 
     # ==========================================================
     # DERIVED ELECTRICAL PARAMETERS

@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QGraphicsRectItem, QMenu, QGraphicsItem
 )
 
-from .designer_view import GRID, snap
+from .geometry import GRID, snap
 from ..core.component_library import DEFAULT_COMPONENTS  # <-- you said core
 # tier_item.py  (add near the other imports)
 from dataclasses import dataclass, asdict
@@ -462,6 +462,18 @@ class ResizableBox(QGraphicsObject):
         a = self._resize_anchor
         left, right = sorted((a.x(), p.x()))
         top, bottom = sorted((a.y(), p.y()))
+
+        # --- Tier bus constraint ------------------------------------
+        parent = self
+        if hasattr(parent, "bus_bounds_local"):
+            bus_rect = parent.bus_bounds_local()
+
+            if bus_rect is not None:
+                left = min(left, bus_rect.left())
+                right = max(right, bus_rect.right())
+                top = min(top, bus_rect.top())
+                bottom = max(bottom, bus_rect.bottom())
+
         # snap and min size
         left = snap(left);
         right = snap(right)
@@ -563,12 +575,17 @@ class TierItem(ResizableBox):
         self.curve_no = 1
         self.depth_mm = int(depth_mm)
 
+        # --- Layered Tiers Support  -----------------------------------------
+        self.layer_index = 1
+        self.setZValue(self.layer_index * 1000)
+        self._active = False
+        self._overlapped_by_front = False
+
         # --- Temperature limits --------------------------------------------
         self.max_temp_C = 70
         self.use_auto_component_temp = False
 
         # --- Interaction ---------------------------------------------------
-        self.setZValue(5)
         self._last_pos_for_commit = QPointF(self.pos())
 
         self.covered_sides = {
@@ -583,11 +600,31 @@ class TierItem(ResizableBox):
         self.show_live_overlay: bool = True
         self.overlay_item = TierOverlayItem(self)
 
+        # --- Bus layer  --------------------------------------
+        from PyQt5.QtWidgets import QGraphicsItemGroup
+
+        self.bus_layer = QGraphicsItemGroup(self)
+        self.bus_layer.setFiltersChildEvents(False)
+        self.bus_layer.setZValue(-1)
+
+        # reference to model bus network (will connect later)
+        self.bus_network = None
+
     def mouseReleaseEvent(self, ev):
         super().mouseReleaseEvent(ev)
+
         if self.pos() != self._last_pos_for_commit:
             self._last_pos_for_commit = QPointF(self.pos())
             self.positionCommitted.emit()
+
+            scene = self.scene()
+            if scene:
+                for view in scene.views():
+                    if hasattr(view, "refresh_tier_stack_visuals"):
+                        view.refresh_tier_stack_visuals()
+
+                    if hasattr(view, "set_tier_layer"):
+                        view.set_tier_layer(self, self.layer_index)
 
     def set_depth_mm(self, mm: int):
         self.depth_mm = max(1, int(mm))
@@ -603,6 +640,68 @@ class TierItem(ResizableBox):
 
     def itemChange(self, change, value):
         return super().itemChange(change, value)
+
+    # --- Layered Tiers Support  -----------------------------------------
+
+    def set_active(self, active: bool):
+        self._active = active
+        self.update()  # trigger repaint
+
+    @staticmethod
+    def normalize_tier_layers(scene):
+        tiers = [i for i in scene.items() if isinstance(i, TierItem)]
+
+        tiers.sort(key=lambda t: t.layer_index)
+
+        for i, t in enumerate(tiers):
+            t.layer_index = i
+            t.setZValue(i * 1000)
+
+    # ---------------------------------------------------------
+    # Bus management
+    # ---------------------------------------------------------
+
+    def add_bus_item(self, item: QGraphicsItem):
+        """
+        Attach a bus graphics item to this tier.
+        """
+        item.setParentItem(self.bus_layer)
+
+    def bus_items(self):
+        """
+        Iterate over bus items belonging to this tier.
+        """
+        return self.bus_layer.childItems()
+
+    def clear_bus_items(self):
+        """
+        Remove all bus graphics from this tier.
+        """
+        for it in list(self.bus_layer.childItems()):
+            it.setParentItem(None)
+            if it.scene():
+                it.scene().removeItem(it)
+
+    def bus_bounds_local(self) -> QRectF | None:
+        """
+        Returns the bounding box of all bus lines in LOCAL tier coordinates.
+        """
+        buses = self.bus_items()
+        if not buses:
+            return None
+
+        rect = None
+
+        for b in buses:
+            line = b.line()
+            p1 = line.p1()
+            p2 = line.p2()
+
+            r = QRectF(p1, p2).normalized()
+
+            rect = r if rect is None else rect.united(r)
+
+        return rect
 
     # ------------------------------------------------------------------ Vent
 
@@ -635,24 +734,29 @@ class TierItem(ResizableBox):
     def total_heat(self) -> float:
         return self.components_total_heat_W() + self.cables_total_heat_W()
 
-    def set_component_count(self, comp: str, n: int):
-        if n <= 0:
-            self.components.pop(comp, None)
-        else:
-            self.components[comp] = n
-        self.update()
 
     def contextMenuEvent(self, event):
+
         menu = QMenu()
+
+        front_action = menu.addAction("Set Front")
+        mid_action = menu.addAction("Set Mid")
+        rear_action = menu.addAction("Set Rear")
+
+        menu.addSeparator()
 
         act_copy = menu.addAction("Copy tier contents")
         act_paste = menu.addAction("Paste tier contents")
+
         menu.addSeparator()
+
         act_delete = menu.addAction("Delete tier")
 
         chosen = menu.exec_(event.screenPos())
         if not chosen:
             return
+
+        view = self.scene().views()[0]  # <-- FIX
 
         # Walk up parent chain to find SwitchboardTab
         switchboard = None
@@ -666,7 +770,16 @@ class TierItem(ResizableBox):
             if switchboard:
                 break
 
-        if chosen == act_copy and switchboard:
+        if chosen == front_action:
+            view.set_tier_layer(self, 2)
+
+        elif chosen == mid_action:
+            view.set_tier_layer(self, 1)
+
+        elif chosen == rear_action:
+            view.set_tier_layer(self, 0)
+
+        elif chosen == act_copy and switchboard:
             switchboard.copy_tier_contents(self)
 
         elif chosen == act_paste and switchboard:
@@ -767,6 +880,57 @@ class TierItem(ResizableBox):
     def paint(self, painter, option, widget=None):
         super().paint(painter, option, widget)
 
+        painter.save()
+
+        if self._active:
+            painter.setOpacity(1.0)
+            border_pen = QPen(QColor("#ffffff"), 2)
+        else:
+            painter.setOpacity(0.35)
+            border_pen = QPen(QColor("#888888"), 1)
+
+        opacity = 1.0 if self._active else 0.55
+
+        # rear < mid < front brightness
+        if self.layer_index == 0:  # rear
+            opacity *= 0.72
+        elif self.layer_index == 1:  # mid
+            opacity *= 0.88
+        else:  # front
+            opacity *= 1.00
+
+        if self.layer_index == 0:
+            painter.save()
+
+            painter.setBrush(QColor(40, 40, 40, 80))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(self._rect)
+
+            rear_hatch = QBrush(QColor(255, 255, 255, 100), Qt.Dense2Pattern)
+            painter.setBrush(rear_hatch)
+            painter.drawRect(self._rect)
+
+            painter.restore()
+
+        # ---------------- DEPTH VISUALIZATION ----------------
+
+        # FRONT tier indicator
+        if self.layer_index == 2:
+            painter.save()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(33, 80, 150, 45))  # #215096
+            painter.drawRect(self._rect)
+            painter.restore()
+
+
+        # REAR tier indicator
+        if self.layer_index == 0:
+            painter.save()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 127, 77, 65))  # #007F4D
+            painter.drawRect(self._rect)
+            painter.restore()
+        painter.restore()
 
         # 2. LOUVRES ON TOP
         if self.is_ventilated:
@@ -800,6 +964,14 @@ class TierItem(ResizableBox):
             title_col = QColor("#ff9f1c")  # 🟠 orange – active cooling required
         else:
             title_col = QColor("#2ec4b6")  # 🟢 teal – compliant
+        if self.layer_index == 0:
+            layer_label = "Rear"
+        elif self.layer_index == 1:
+            layer_label = "Mid"
+        else:
+            layer_label = "Front"
+
+        title = f"{self.name} ({layer_label})"
 
         painter.setPen(QPen(title_col))
 
@@ -811,7 +983,7 @@ class TierItem(ResizableBox):
                 22,
             ),
             Qt.AlignCenter,
-            self.name,
+            title,
         )
 
         # --- total heat ---
@@ -835,6 +1007,10 @@ class TierItem(ResizableBox):
         painter.setPen(QPen(QColor("#111")))
         painter.setFont(QFont("", 12))
         painter.drawText(tag, Qt.AlignCenter, str(self.curve_no))
+
+    @property
+    def total_heat_w(self):
+        return self.total_heat()
 
     # ----- Cables API -----
     def add_cable(self, payload: Dict[str, Any]) -> CableEntry:
@@ -884,32 +1060,6 @@ class TierItem(ResizableBox):
             temps = [ce.max_temp_C for ce in self.component_entries] or [self.max_temp_C]
             return min(int(t) for t in temps)
         return int(self.max_temp_C)
-
-    def contents_rows(self) -> List[Tuple[str, str, float, object]]:
-        """
-        Return [(category, description, heat_W, backing), ...]
-          - category: "Component" or "Cable"
-          - description: display text
-          - heat_W: numeric heat (W)
-          - backing: ("component", name)  OR  ("cable", CableEntry)
-        """
-        rows: List[Tuple[str, str, float, object]] = []
-
-        # components (from library)
-        from ..core.component_library import DEFAULT_COMPONENTS
-        for name, qty in self.components.items():
-            heat_each = float(DEFAULT_COMPONENTS.get(name, 0.0))
-            desc = f"{name} ×{qty}"
-            rows.append(("Component", desc, heat_each * qty, ("component", name)))
-
-        # cables (persisted detailed entries)
-        for ce in self.cables:
-            desc = (f"{ce.name} — {ce.csa_mm2:.0f}mm², {ce.length_m:.1f} m, "
-                    f"{ce.current_A:.1f} A @ 70°C "
-                    f"(Pn={ce.Pn_Wpm:.2f} W/m, In={ce.In_A:.1f} A)")
-            rows.append(("Cable", desc, float(ce.total_W), ("cable", ce)))
-
-        return rows
 
     # ----- JSON (de)serialisation -----
     def to_dict(self) -> dict:

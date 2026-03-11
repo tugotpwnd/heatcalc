@@ -27,7 +27,7 @@ class CurveFitTab(QWidget):
     def __init__(self, project, scene, parent=None):
         super().__init__(parent)
         self.project = project
-        self.scene = scene
+        self._scene_provider = scene
 
         self.tabs = QTabWidget(self)
         self._widgets: Dict[str, CurveFigureWidget] = {}
@@ -70,6 +70,13 @@ class CurveFitTab(QWidget):
         self.redraw_all()
 
     # -----------------------------------------------------------------
+    # Scene provider helper
+    # -----------------------------------------------------------------
+    def _get_scene(self):
+        # supports both: scene object OR lambda returning scene
+        return self._scene_provider() if callable(self._scene_provider) else self._scene_provider
+
+    # -----------------------------------------------------------------
     # Main redraw
     # -----------------------------------------------------------------
     def redraw_all(self):
@@ -94,9 +101,10 @@ class CurveFitTab(QWidget):
     # Scene helpers
     # -----------------------------------------------------------------
     def _tiers_on_scene(self) -> List[TierItem]:
-        if self.scene is None:
+        scene = self._get_scene()
+        if scene is None:
             return []
-        return [it for it in self.scene.items() if isinstance(it, TierItem)]
+        return [it for it in scene.items() if isinstance(it, TierItem)]
 
     def _build_tier_color_map(self, tiers: List[TierItem]) -> Dict[str, Tuple[float, float, float, float]]:
         """
