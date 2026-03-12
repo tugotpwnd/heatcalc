@@ -80,7 +80,7 @@ def compute_busbar_physics(
     T_bus_C: float,
     T_air_C: float,
     I_override_A: Optional[float] = None,
-    debug: bool = False,
+    debug: bool = True,
 ) -> BusbarPhysicsState:
     """
     Canonical busbar heat-balance physics.
@@ -95,9 +95,11 @@ def compute_busbar_physics(
     N = max(1, int(geom.bars_in_parallel))
 
     if I_override_A is None:
-        I_bar = therm.I_total_A / float(N)
+        I_total = float(therm.I_total_A)
     else:
-        I_bar = float(I_override_A)
+        I_total = float(I_override_A)
+
+    I_bar = I_total / float(N)
 
     R20 = resistance_20C_per_m(geom.width_m, geom.thickness_m)
     R_T = resistance_T_per_m(R20, T_bus_C)

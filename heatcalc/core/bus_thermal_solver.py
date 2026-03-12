@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
 
 from heatcalc.core.busbar_geometry import BusbarGeometry
+from heatcalc.core.busbar_joint_resistance import bolted_overlap_joint_resistance, clamped_edge_joint_resistance
 from heatcalc.core.busbar_physics import (
     compute_busbar_physics,
     resistance_20C_per_m,
@@ -17,12 +20,193 @@ from heatcalc.core.busbar_physics import (
 
 K_CU = 400.0
 
+import math
 
-def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int = 40, tol: float = 1e-3):
+@dataclass
+class ThermalEdgeResult:
+    edge_id: int
+    T_C: float
+    I_A: float
+    length_m: float
+    is_joint: bool
+    P_gen_W: float
+    P_conv_W: float
+    P_rad_W: float
+    P_cond_W: float
+    residual_W: float
+
+
+@dataclass
+class ThermalSolveResult:
+    converged: bool
+    iterations: int
+    air_temp_C: object   # float OR dict[edge_id -> air temp]
+    total_loss_W: float
+    max_T_C: float
+    min_T_C: float
+    edge_results: list[ThermalEdgeResult]
+    T_vector_C: np.ndarray
+
+def joint_contact_area(width_m, thickness_m, joint_spec):
     """
-    Graph-edge thermal solve with fixed ambient air temperature.
-    This is NOT the coupled IEC 60890 solve.
+    Estimate effective thermal contact area of a joint.
     """
+    # ---------------------------------------------------------------------------
+    # Thermal contact area model for busbar joints
+    # ---------------------------------------------------------------------------
+    #
+    # This function estimates the *thermal contact area* between two busbar
+    # segments for the purpose of computing thermal conduction across a joint.
+    #
+    # Important distinction:
+    #
+    # Electrical and thermal behaviour of parallel busbars are handled differently.
+    #
+    # Electrical:
+    #   Parallel bars create multiple current paths through the joint interface.
+    #   The electrical equivalent resistance therefore reduces as:
+    #
+    #       R_eq = R_single / (N1 * N2)
+    #
+    #   where N1 and N2 are the number of parallel bars on each side.
+    #
+    # Thermal:
+    #   The thermal model in this solver represents each bus segment as a
+    #   *single lumped thermal node*, even if multiple bars exist in parallel.
+    #   Because of this lumped representation, multiplying the thermal contact
+    #   area by the number of bar interfaces would artificially increase the
+    #   thermal conductance between nodes and effectively double-count heat flow.
+    #
+    #   Therefore:
+    #       - Electrical resistance is reduced for parallel bar interfaces
+    #       - Thermal contact area is **not multiplied by bar count**
+    #
+    #   The contact area returned here represents the physical interface area
+    #   of a single joint region between the two connected bus segments.
+    #
+    # Joint types handled:
+    #
+    #   bolted_overlap:
+    #       Contact area is based on the overlap area minus bolt holes,
+    #       scaled by the CSA reduction factor.
+    #
+    #   clamped_edge:
+    #       Edge-to-edge contact between bars. The effective patch is taken as
+    #       thickness × thickness of the contacting bars.
+    #
+    # The returned area is used only to compute thermal conductance:
+    #
+    #       G = 1 / (R_cu + R_contact)
+    #
+    # where R_contact = 1 / (h_contact * A_contact).
+    #
+    # ---------------------------------------------------------------------------
+
+    joint_type = getattr(joint_spec, "joint_type", "bolted_overlap")
+
+    if joint_type == "bolted_overlap":
+        overlap = float(joint_spec.overlap_m)
+        bolt_d = float(joint_spec.bolt_dia_mm) / 1000.0
+        bolt_area = math.pi * (bolt_d * 0.5) ** 2
+        hole_area = int(joint_spec.bolt_count) * bolt_area
+        overlap_area = float(width_m) * overlap
+
+        A_contact = (overlap_area - hole_area) * float(joint_spec.csa_factor)
+        return max(A_contact, overlap_area * 0.05)
+
+    elif joint_type == "clamped_edge":
+        other_w_mm = getattr(joint_spec, "other_bar_width_mm", None)
+        other_t_mm = getattr(joint_spec, "other_bar_thickness_mm", None)
+
+        if other_w_mm is None or other_t_mm is None:
+            raise ValueError(
+                "Clamped joint requires other_bar_width_mm and other_bar_thickness_mm on joint_spec."
+            )
+
+        this_w_mm = float(width_m) * 1000.0
+        this_t_mm = float(thickness_m) * 1000.0
+
+        # edge-face patch = thickness × thickness
+        a_mm = min(this_t_mm, float(other_t_mm))
+        l_mm = max(this_t_mm, float(other_t_mm))
+
+        A_contact = (a_mm * l_mm) * 1e-6  # mm² -> m²
+        return max(A_contact, 1e-9)
+
+    else:
+        raise ValueError(f"Unsupported joint_type: {joint_type}")
+
+def joint_R20_ohm(nd, debug=False) -> float:
+    js = nd["joint_spec"]
+    if js is None:
+        raise ValueError("Joint edge missing joint_spec.")
+
+    joint_type = getattr(js, "joint_type", "bolted_overlap")
+    n1 = max(1, int(nd.get("bars_in_parallel", 1)))
+
+    if joint_type == "bolted_overlap":
+        R_single = bolted_overlap_joint_resistance(
+            width_m=nd["w"],
+            thickness_m=nd["t"],
+            overlap_m=js.overlap_m,
+            bolt_count=js.bolt_count,
+            bolt_dia_mm=js.bolt_dia_mm,
+            torque_Nm=js.torque_Nm,
+            nut_factor=js.nut_factor,
+            e_streamline=js.e_streamline,
+            debug=debug,
+        )
+        return R_single / n1
+
+    elif joint_type == "clamped_edge":
+        other_w_mm = getattr(js, "other_bar_width_mm", None)
+        other_t_mm = getattr(js, "other_bar_thickness_mm", None)
+        other_n = max(1, int(getattr(js, "other_bar_count", 1) or 1))
+
+        if other_w_mm is None or other_t_mm is None:
+            raise ValueError(
+                "Clamped joint requires other_bar_width_mm and other_bar_thickness_mm on joint_spec."
+            )
+
+        R_single = clamped_edge_joint_resistance(
+            bar1_width_m=nd["w"],
+            bar1_thickness_m=nd["t"],
+            bar2_width_m=float(other_w_mm) / 1000.0,
+            bar2_thickness_m=float(other_t_mm) / 1000.0,
+            torque_Nm=js.torque_Nm,
+            clamp_bolt_dia_mm=js.bolt_dia_mm,
+            nut_factor=js.nut_factor,
+            bolt_count=js.bolt_count,
+            e_streamline=js.e_streamline,
+            debug=debug,
+        )
+        return R_single / (n1 * other_n)
+
+    else:
+        raise ValueError(f"Unsupported joint_type: {joint_type}")
+
+def solve_thermal(
+    graph,
+    air_temp_C,
+    debug: bool = False,
+    max_iter: int = 40,
+    tol: float = 1e-3,
+):
+    """
+    Graph-edge thermal solve.
+
+    Supports either:
+        - scalar ambient air temperature for all edges, or
+        - dict: {edge_id: air_temp_C} for per-edge ambient temperatures
+
+    This allows one global copper network solve while still applying
+    tier-specific enclosure air temperatures to each edge.
+    """
+
+    def edge_air(edge_id: int) -> float:
+        if isinstance(air_temp_C, dict):
+            return float(air_temp_C[edge_id])
+        return float(air_temp_C)
 
     thermal_nodes = []
     thermal_edges = []
@@ -31,8 +215,8 @@ def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int =
     # Build thermal nodes: one node per graph edge
     # --------------------------------------------------------
     for e in graph.edges.values():
-        width_m = e.spec.width_mm / 1000.0
-        th_m = e.spec.thickness_mm / 1000.0
+        width_m = e.width_mm / 1000.0
+        th_m = e.thickness_mm / 1000.0
 
         geom = BusbarGeometry(
             name=f"edge-{e.id}",
@@ -40,7 +224,7 @@ def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int =
             thickness_m=th_m,
             L_char_m=width_m,
             length_m=e.length_m,
-            bars_in_parallel=e.spec.bars_in_parallel,
+            bars_in_parallel=e.bars_in_parallel,
             face_to_face_dim="thickness",
             convection_mode="horizontal",
         )
@@ -54,25 +238,13 @@ def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int =
             "t": th_m,
             "area": width_m * th_m,
             "tier": e.tier,
-            "extra_R20_ohm_per_m": 0.0,
+            "is_joint": e.is_joint,
+            "joint_spec": e.joint_spec,
+            "bars_in_parallel": e.bars_in_parallel,
+            "air_temp_C": edge_air(e.id),
         })
 
     edge_map = {eid: i for i, eid in enumerate(graph.edges.keys())}
-
-    # --------------------------------------------------------
-    # Add join/contact resistance to incident edges
-    # --------------------------------------------------------
-    if getattr(graph, "joins", None):
-        for j in graph.joins:
-            incident = []
-            for e in graph.edges.values():
-                if j.node in (e.u, e.v):
-                    incident.append(e.id)
-
-            for eid in incident:
-                i = edge_map[eid]
-                L = max(thermal_nodes[i]["L"], 1e-9)
-                thermal_nodes[i]["extra_R20_ohm_per_m"] += (j.R_contact_20_uohm * 1e-6) / L
 
     # --------------------------------------------------------
     # Thermal conduction between graph edges sharing a node
@@ -94,16 +266,63 @@ def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int =
             ia = edge_map[ea.id]
             ib = edge_map[eb.id]
 
-            A_contact = min(thermal_nodes[ia]["area"], thermal_nodes[ib]["area"])
+            if thermal_nodes[ia]["is_joint"]:
+                A_contact = joint_contact_area(
+                    thermal_nodes[ia]["w"],
+                    thermal_nodes[ia]["t"],
+                    thermal_nodes[ia]["joint_spec"]
+                )
+            elif thermal_nodes[ib]["is_joint"]:
+                A_contact = joint_contact_area(
+                    thermal_nodes[ib]["w"],
+                    thermal_nodes[ib]["t"],
+                    thermal_nodes[ib]["joint_spec"]
+                )
+            else:
+                A_contact = min(thermal_nodes[ia]["area"], thermal_nodes[ib]["area"])
 
-            # heat travels from centre of segment through joint and to centre of next segment
-            L_char = 0.5 * thermal_nodes[ia]["L"] + 0.5 * thermal_nodes[ib]["L"]
+            tA = thermal_nodes[ia]["t"]
+            tB = thermal_nodes[ib]["t"]
 
-            #todo derive this mathematically, the contact thermal resistance
+            L_char = 0.5 * (tA + tB)
             R_cu = L_char / (K_CU * A_contact)
-            # R_contact = j.R_th_contact  # new parameter
-            R_contact = 0.002
-            G = 1.0 / (R_cu + R_contact)
+
+            if thermal_nodes[ia]["is_joint"]:
+                h_c = thermal_nodes[ia]["joint_spec"].h_contact
+            elif thermal_nodes[ib]["is_joint"]:
+                h_c = thermal_nodes[ib]["joint_spec"].h_contact
+            else:
+                h_c = None
+
+            R_contact = 1.0 / (h_c * A_contact) if h_c is not None else 0.0
+            R_total = R_cu + R_contact
+            G = 1.0 / R_total
+
+            thermal_edges.append((ia, ib, G))
+            thermal_edges.append((ib, ia, G))
+
+    # --------------------------------------------------------
+    # Copper conduction between tiers (continuous busbars)
+    # --------------------------------------------------------
+    if getattr(graph, "cross_tier_links", None):
+
+        for ea_id, eb_id in graph.cross_tier_links:
+            ia = edge_map[ea_id]
+            ib = edge_map[eb_id]
+
+            ndA = thermal_nodes[ia]
+            ndB = thermal_nodes[ib]
+
+            # copper cross section used for heat flow
+            A = min(ndA["area"], ndB["area"])
+
+            # characteristic conduction length
+            # assume small physical separation across tier boundary
+            L_char = 0.005  # 5 mm
+
+            R_cu = L_char / (K_CU * A)
+
+            G = 1.0 / R_cu
 
             thermal_edges.append((ia, ib, G))
             thermal_edges.append((ib, ia, G))
@@ -121,83 +340,77 @@ def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int =
         S_ac=1.0,
     )
 
-    # Initial guess above ambient
-    T = np.full(n, air_temp_C + 20.0, dtype=float)
+    T_floor = np.array([nd["air_temp_C"] for nd in thermal_nodes], dtype=float)
+    T = T_floor + 20.0
 
-    def residual(Tvec: np.ndarray) -> np.ndarray:
-        f = np.zeros(n, dtype=float)
+    def calc_terms(i: int, Tvec: np.ndarray):
+        nd = thermal_nodes[i]
+        Ti = float(Tvec[i])
+        Tai = float(nd["air_temp_C"])
 
-        for i, nd in enumerate(thermal_nodes):
-            Ti = float(Tvec[i])
+        st = compute_busbar_physics(
+            geom=nd["geom"],
+            therm=therm,
+            T_bus_C=Ti,
+            T_air_C=Tai,
+            I_override_A=nd["I"],
+            debug=debug,
+        )
 
-            st = compute_busbar_physics(
-                geom=nd["geom"],
-                therm=therm,
-                T_bus_C=Ti,
-                T_air_C=air_temp_C,
-                I_override_A=nd["I"],
-                debug=True,
-            )
+        P_conv = st.P_conv_W_per_m * nd["L"]
+        P_rad = st.P_rad_W_per_m * nd["L"]
+        P_out = P_conv + P_rad
 
-            P_out = (st.P_conv_W_per_m + st.P_rad_W_per_m) * nd["L"]
-
+        if nd["is_joint"]:
+            R20 = joint_R20_ohm(nd, debug=debug)
+            RT = R20 * (1.0 + ALPHA_CU * (Ti - 20.0))
+            P_gen = (nd["I"] ** 2) * RT
+        else:
             R20 = resistance_20C_per_m(nd["w"], nd["t"])
             RT = resistance_T_per_m(R20, Ti)
             P_gen = (nd["I"] ** 2) * RT * nd["L"] * therm.S_ac
 
-            if nd["extra_R20_ohm_per_m"] > 0.0:
-                Rj20_seg = nd["extra_R20_ohm_per_m"] * nd["L"]
-                Rj = Rj20_seg * (1.0 + ALPHA_CU * (Ti - 20.0))
-                P_gen += (nd["I"] ** 2) * Rj
+        P_cond = 0.0
+        for j, G in nbrs[i]:
+            P_cond += G * (Tvec[j] - Ti)
 
-            P_cond = 0.0
-            for j, G in nbrs[i]:
-                P_cond += G * (Tvec[j] - Ti)
+        residual = P_gen - P_out + P_cond
+        return st, P_gen, P_conv, P_rad, P_cond, residual
 
-            f[i] = P_gen - P_out + P_cond
-
-            if debug:
-                print(f"\nEDGE {nd['edge_id']}")
-                print(f"I = {nd['I']:.2f} A")
-                print(f"T = {Ti:.2f} °C")
-                print(f"R20 = {R20:.6f} Ω/m")
-                print(f"RT  = {RT:.6f} Ω/m")
-                print(f"P_gen  = {P_gen:.6f} W")
-                print(f"P_conv = {(st.P_conv_W_per_m * nd['L']):.6f} W")
-                print(f"P_rad  = {(st.P_rad_W_per_m * nd['L']):.6f} W")
-                print(f"P_cond = {P_cond:.6f} W")
-                print(f"Residual = {f[i]:.6f} W")
-
+    def residual(Tvec: np.ndarray) -> np.ndarray:
+        f = np.zeros(n, dtype=float)
+        for i in range(n):
+            _, _, _, _, _, f[i] = calc_terms(i, Tvec)
         return f
 
     def dPgen_dT(nd, Ti: float) -> float:
         I2 = float(nd["I"]) ** 2
-        R20 = resistance_20C_per_m(nd["w"], nd["t"])
-        dR_dT = R20 * ALPHA_CU
-        dP = I2 * dR_dT * nd["L"] * therm.S_ac
-
-        if nd["extra_R20_ohm_per_m"] > 0.0:
-            Rj20_seg = nd["extra_R20_ohm_per_m"] * nd["L"]
-            dP += I2 * Rj20_seg * ALPHA_CU
-
-        return dP
+        if nd["is_joint"]:
+            R20 = joint_R20_ohm(nd, debug=debug)
+            return I2 * R20 * ALPHA_CU
+        else:
+            R20 = resistance_20C_per_m(nd["w"], nd["t"])
+            return I2 * R20 * ALPHA_CU * nd["L"] * therm.S_ac
 
     def dPout_dT_fd(nd, Ti: float, h: float = 0.05) -> float:
+        Tai = float(nd["air_temp_C"])
+
         st0 = compute_busbar_physics(
             geom=nd["geom"],
             therm=therm,
             T_bus_C=Ti,
-            T_air_C=air_temp_C,
+            T_air_C=Tai,
             I_override_A=nd["I"],
+            debug=False,
         )
         st1 = compute_busbar_physics(
             geom=nd["geom"],
             therm=therm,
             T_bus_C=Ti + h,
-            T_air_C=air_temp_C,
+            T_air_C=Tai,
             I_override_A=nd["I"],
+            debug=False,
         )
-
         P0 = (st0.P_conv_W_per_m + st0.P_rad_W_per_m) * nd["L"]
         P1 = (st1.P_conv_W_per_m + st1.P_rad_W_per_m) * nd["L"]
         return (P1 - P0) / h
@@ -220,18 +433,15 @@ def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int =
         return J
 
     converged = False
+    iterations_used = max_iter
 
     for it in range(max_iter):
         f = residual(T)
         max_f = float(np.max(np.abs(f)))
 
-        if debug:
-            print(f"\n--- Newton iteration {it} ---")
-            print(f"Residual norm: {max_f:.6e}")
-            print(f"T range: {np.min(T):.3f} to {np.max(T):.3f} °C")
-
         if max_f < tol:
             converged = True
+            iterations_used = it + 1
             break
 
         J = jacobian(T)
@@ -246,27 +456,48 @@ def solve_thermal(graph, air_temp_C: float, debug: bool = False, max_iter: int =
 
         dT = np.clip(dT, -25.0, 25.0)
 
-        if debug:
-            print("dT =", dT)
-
-        # Backtracking line search + hard ambient floor
         lam = 1.0
         f_norm = max_f
-
         while lam > 0.05:
-            T_trial = np.maximum(T + lam * dT, air_temp_C)
+            T_trial = np.maximum(T + lam * dT, T_floor)
             f_trial = residual(T_trial)
-
             if np.max(np.abs(f_trial)) < f_norm:
                 T = T_trial
                 break
-
             lam *= 0.5
         else:
-            T = np.maximum(T + 0.1 * dT, air_temp_C)
+            T = np.maximum(T + 0.1 * dT, T_floor)
 
-    if debug:
-        print("\nFinal temperatures:", T)
-        print("Converged:", converged)
+    # ---------------- Final post-processing ----------------
+    edge_results = []
+    total_loss_W = 0.0
 
-    return T
+    for i, nd in enumerate(thermal_nodes):
+        _, P_gen, P_conv, P_rad, P_cond, f_i = calc_terms(i, T)
+        total_loss_W += P_gen
+
+        edge_results.append(
+            ThermalEdgeResult(
+                edge_id=int(nd["edge_id"]),
+                T_C=float(T[i]),
+                I_A=float(nd["I"]),
+                length_m=float(nd["L"]),
+                is_joint=bool(nd["is_joint"]),
+                P_gen_W=float(P_gen),
+                P_conv_W=float(P_conv),
+                P_rad_W=float(P_rad),
+                P_cond_W=float(P_cond),
+                residual_W=float(f_i),
+            )
+        )
+
+    return ThermalSolveResult(
+        converged=bool(converged),
+        iterations=int(iterations_used),
+        air_temp_C=air_temp_C,
+        total_loss_W=float(total_loss_W),
+        max_T_C=float(np.max(T)),
+        min_T_C=float(np.min(T)),
+        edge_results=edge_results,
+        T_vector_C=T.copy(),
+    )

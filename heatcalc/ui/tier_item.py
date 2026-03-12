@@ -1,6 +1,6 @@
 from typing import Dict, List, Any, Tuple
 from PyQt5.QtCore import QRectF, QPointF, pyqtSignal, Qt, QSizeF
-from PyQt5.QtGui import QPen, QBrush, QFont, QColor, QFontMetrics
+from PyQt5.QtGui import QPen, QBrush, QFont, QColor, QFontMetrics, QPainterPath
 from PyQt5.QtWidgets import (
     QGraphicsObject, QStyleOptionGraphicsItem, QWidget,
     QGraphicsRectItem, QMenu, QGraphicsItem
@@ -456,6 +456,24 @@ class ResizableBox(QGraphicsObject):
             "br": QPointF(r.left(), r.top()),
         }[role]
 
+    def shape(self):
+        path = QPainterPath()
+
+        r = self._rect
+        border = 8
+
+        # outer rect
+        outer = r.adjusted(-border, -border, border, border)
+
+        # inner rect
+        inner = r.adjusted(border, border, -border, -border)
+
+        path.addRect(outer)
+        inner_path = QPainterPath()
+        inner_path.addRect(inner)
+
+        return path.subtracted(inner_path)
+
     def _resize_from_handle(self, role: str, scene_pt: QPointF):
         # map cursor to LOCAL coords and rebuild rect from anchor -> cursor
         p = self.mapFromScene(scene_pt)
@@ -585,6 +603,9 @@ class TierItem(ResizableBox):
         self.max_temp_C = 70
         self.use_auto_component_temp = False
 
+        import uuid
+        self.tier_id = uuid.uuid4().hex
+
         # --- Interaction ---------------------------------------------------
         self._last_pos_for_commit = QPointF(self.pos())
 
@@ -601,12 +622,14 @@ class TierItem(ResizableBox):
         self.overlay_item = TierOverlayItem(self)
 
         # --- Bus layer  --------------------------------------
-        from PyQt5.QtWidgets import QGraphicsItemGroup
+        from PyQt5.QtWidgets import QGraphicsRectItem
+        from PyQt5.QtGui import QPen, QBrush
+        from PyQt5.QtCore import Qt
 
-        self.bus_layer = QGraphicsItemGroup(self)
-        self.bus_layer.setFiltersChildEvents(False)
-        self.bus_layer.setZValue(-1)
-
+        self.bus_layer = QGraphicsRectItem(0, 0, 0, 0, self)
+        self.bus_layer.setPen(QPen(Qt.NoPen))
+        self.bus_layer.setBrush(QBrush(Qt.NoBrush))
+        self.bus_layer.setZValue(10)
         # reference to model bus network (will connect later)
         self.bus_network = None
 
@@ -1065,7 +1088,7 @@ class TierItem(ResizableBox):
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-
+            "tier_id": self.tier_id,
             "vent": {
                 "enabled": self.is_ventilated,
                 "area_cm2": self.vent_area_cm2,
@@ -1106,7 +1129,8 @@ class TierItem(ResizableBox):
         )
 
         v = d.get("vent", {})
-
+        import uuid
+        t.tier_id = d.get("tier_id") or uuid.uuid4().hex
         t.is_ventilated = bool(v.get("enabled", False))
         t.vent_area_cm2 = v.get("area_cm2")
         t.vent_label = v.get("label")

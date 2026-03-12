@@ -14,6 +14,8 @@ from .bus_items import BusLineItem, BusSpecUI, BusLoadItem, BusJoinItem, BusSour
 from heatcalc.ui.temperature_legend import TemperatureLegend
 from .tier_item import TierItem
 from .geometry import GRID, snap
+from copy import deepcopy
+from ..core.models import BusbarJointSpec
 
 class DesignerView(QGraphicsView):
     """Scene with grid, zoom, and panning helpers."""
@@ -21,21 +23,11 @@ class DesignerView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # ---- sheet scenes -------------------------------------------------
+        self._scene = QGraphicsScene(self)
+        self._scene.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
+        self.setScene(self._scene)
 
-        self._sheets = []
-        self._active_sheet_index = 0
-
-        def _make_scene(name):
-            scene = QGraphicsScene(self)
-            scene.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
-            return {"name": name, "scene": scene}
-
-        # default sheets
-        self._sheets.append(_make_scene("Sheet 1"))
-        self._sheets.append(_make_scene("Sheet 2"))
-
-        self.setScene(self._sheets[self._active_sheet_index]["scene"])
+        self._joint_spec = BusbarJointSpec()
 
         self.setBackgroundBrush(QColor("#1e1f22"))
         self.setRenderHints(self.renderHints() |
@@ -48,6 +40,7 @@ class DesignerView(QGraphicsView):
         self._join_mode = False
         self._bus_draw_mode = False
         self._source_mode = False
+        self._delete_mode = False
 
         self.setDragMode(QGraphicsView.NoDrag)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
@@ -78,78 +71,10 @@ class DesignerView(QGraphicsView):
         self._snap_marker.setPen(QPen(Qt.NoPen))
         self._snap_marker.setZValue(10_000)
         self._snap_marker.setVisible(False)
-        self.scene().addItem(self._snap_marker)
-
-    # -----------------------------------------------------------
-    # Sheet management
-    # -----------------------------------------------------------
+        self._scene.addItem(self._snap_marker)
 
     def scene(self) -> QGraphicsScene:
-        """
-        Return the active sheet's scene.
-        Keeps compatibility with existing code.
-        """
-        return self._sheets[self._active_sheet_index]["scene"]
-
-    def sheet_count(self):
-        return len(self._sheets)
-
-    def add_sheet(self, name: str):
-
-        scene = QGraphicsScene(self)
-        scene.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
-
-        self._sheets.append({
-            "name": name,
-            "scene": scene
-        })
-
-        return len(self._sheets) - 1
-
-    def sheet_name(self, index: int) -> str:
-        return self._sheets[index]["name"]
-
-    def set_sheet_name(self, index: int, name: str):
-        self._sheets[index]["name"] = name
-
-    def sheet_names(self):
-        return [s["name"] for s in self._sheets]
-
-    def get_sheet(self, index: int) -> QGraphicsScene:
-        return self._sheets[index]["scene"]
-
-    def active_scene(self) -> QGraphicsScene:
-        return self._sheets[self._active_sheet_index]["scene"]
-
-    def set_active_sheet(self, index: int):
-
-        if index < 0 or index >= len(self._sheets):
-            raise IndexError("Invalid sheet index")
-
-        old_scene = self.scene()
-
-        # remove snap marker from old sheet
-        if self._snap_marker.scene() is old_scene:
-            old_scene.removeItem(self._snap_marker)
-
-        self._active_sheet_index = index
-
-        new_scene = self._sheets[index]["scene"]
-
-        # switch view scene
-        self.setScene(new_scene)
-
-        # move snap marker to new sheet
-        new_scene.addItem(self._snap_marker)
-
-    def all_scenes(self):
-        return [s["scene"] for s in self._sheets]
-
-    def all_sheets(self):
-        return list(self._sheets)
-
-    def active_sheet_index(self):
-        return self._active_sheet_index
+        return self._scene
 
     # ---- Layer support --------------------------------------------------------------
 
@@ -198,6 +123,7 @@ class DesignerView(QGraphicsView):
             self._bus_draw_mode = False
             self._join_mode = False
             self._source_mode = False
+            self._delete_mode = False
         else:
             self._set_snap_marker(None)
 
@@ -209,6 +135,7 @@ class DesignerView(QGraphicsView):
             self._bus_draw_mode = False
             self._load_mode = False
             self._source_mode = False
+            self._delete_mode = False
         else:
             self._set_snap_marker(None)
 
@@ -220,6 +147,19 @@ class DesignerView(QGraphicsView):
             self._load_mode = False
             self._join_mode = False
             self._bus_draw_mode = False
+            self._delete_mode = False
+        else:
+            self._set_snap_marker(None)
+
+    def set_delete_mode(self, enabled: bool):
+
+        self._delete_mode = enabled
+
+        if enabled:
+            self._load_mode = False
+            self._join_mode = False
+            self._bus_draw_mode = False
+            self._source_mode = False
         else:
             self._set_snap_marker(None)
 
@@ -276,6 +216,42 @@ class DesignerView(QGraphicsView):
 
                 self.update_tier_visuals()
 
+        if self._delete_mode and event.button() == Qt.LeftButton:
+            pos = self.mapToScene(event.pos())
+            # Use scene().items(pos) to get all items at the click point, sorted by ZValue (topmost first)
+            all_items = self.scene().items(pos)
+
+            # Find the first bus item (or its child that resolves to a bus item)
+            # We want to ignore TierItem and TierOverlayItem if a bus item is also present.
+            target_item = None
+            for top_item in all_items:
+                item = top_item
+                # Climb hierarchy for EACH item to see if it belongs to a bus component
+                while item and not isinstance(item, (BusLineItem, BusLoadItem, BusSourceItem, BusJoinItem, TierItem)):
+                    item = item.parentItem()
+
+                if isinstance(item, (BusLineItem, BusLoadItem, BusSourceItem, BusJoinItem)):
+                    target_item = item
+                    break # Found our bus item, stop looking
+
+            if target_item:
+                item = target_item
+                # Special handling for BusLineItem to delete its children
+                if isinstance(item, BusLineItem):
+                    # Delete all attached children
+                    children = item.endpoint_a_items + item.endpoint_b_items + item.segment_items
+                    for child in list(children): # iterate over copy to be safe
+                        self.scene().removeItem(child)
+                    self.scene().removeItem(item)
+                elif isinstance(item, (BusLoadItem, BusSourceItem, BusJoinItem)):
+                    # These are typically children of a BusLineItem in our implementation,
+                    # but let's check if we should remove them from their parent's lists too
+                    parent = item.parentItem()
+                    if isinstance(parent, BusLineItem):
+                        parent.delete_child(item)
+                    self.scene().removeItem(item)
+            return
+
         if self._source_mode and event.button() == Qt.LeftButton:
 
             pos = self.mapToScene(event.pos())
@@ -287,7 +263,14 @@ class DesignerView(QGraphicsView):
             if self._attachment_exists(node):
                 return
 
-            from .bus_items import BusSourceItem
+            # Only one source allowed globally
+            existing = self.find_existing_source()
+            if existing:
+                parent = existing.parentItem()
+                if isinstance(parent, BusLineItem):
+                    parent.delete_child(existing)
+                self.scene().removeItem(existing)
+
             bus = self.find_bus_for_point(node)
 
             if bus:
@@ -313,7 +296,6 @@ class DesignerView(QGraphicsView):
             if not ok:
                 return
 
-            from .bus_items import BusLoadItem
             bus = self.find_bus_for_point(node)
 
             if bus:
@@ -325,7 +307,12 @@ class DesignerView(QGraphicsView):
         if self._join_mode and event.button() == Qt.LeftButton:
 
             pos = self.mapToScene(event.pos())
-            node = self.find_nearest_bus_segment(pos, tol_px=self._snap_tol_px)
+            end = self.find_nearest_bus_endpoint(pos, tol_px=self._snap_tol_px)
+
+            if end is not None:
+                node = end
+            else:
+                node = self.find_nearest_bus_segment(pos, tol_px=self._snap_tol_px)
 
             if node is None:
                 return  # reject
@@ -333,11 +320,10 @@ class DesignerView(QGraphicsView):
             if self._attachment_exists(node):
                 return
 
-            from .bus_items import BusJoinItem
             bus = self.find_bus_for_point(node)
 
             if bus:
-                join = BusJoinItem(node)
+                join = BusJoinItem(node, spec=deepcopy(self._joint_spec))
                 bus.attach_child(join, node)
             return
 
@@ -530,6 +516,13 @@ class DesignerView(QGraphicsView):
 
     def set_bus_draw_mode(self, enabled: bool) -> None:
         self._draw_bus_mode = bool(enabled)
+        if enabled:
+            self._load_mode = False
+            self._join_mode = False
+            self._source_mode = False
+            self._delete_mode = False
+        else:
+            self._set_snap_marker(None)
 
     def _cancel_bus_draw(self):
         if self._bus_temp is not None:
@@ -603,73 +596,99 @@ class DesignerView(QGraphicsView):
                 self.scene().addItem(marker)
                 self._solver_overlay_items.append(marker)
 
-    def show_bus_temperature_field(self, solve_result):
+    def apply_thermal_results(self, graph_obj, graph_result, Tmin=None, Tmax=None):
 
-        segments_by_line = {}
+        temps = [
+            float(e.get("T_C", 0.0))
+            for e in graph_result.get("edges", [])
+        ]
 
-        node_meta = solve_result.node_meta
-        T_vec = solve_result.T_vec_C
+        local_Tmin = min(temps) if temps else 40.0
+        local_Tmax = max(temps) if temps else 140.0
 
-        seg_count = {}
+        if Tmin is None:
+            Tmin = local_Tmin
+        if Tmax is None:
+            Tmax = local_Tmax
 
-        for nd in node_meta:
-            seg_count.setdefault(nd.bus_name, 0)
-            seg_count[nd.bus_name] += 1
+        if hasattr(self, "legend"):
+            self.legend.set_temperature_range(Tmin, Tmax)
 
-        Tmax = -1
-        Tmax_node = None
+        # clear previous segment results
+        for e in graph_obj.edges.values():
+            if e.ui_item and hasattr(e.ui_item, "thermal_results"):
+                e.ui_item.thermal_results.clear()
 
-        for i, nd in enumerate(node_meta):
+        line_segments = {}
 
-            T = T_vec[i]
+        ambient_C = float(graph_result.get("T_air_C", 40.0))
 
-            if T > Tmax:
-                Tmax = T
-                Tmax_node = nd
+        for e in graph_result.get("edges", []):
 
-            color = temperature_to_color(T)
+            edge_id = e.get("edge_id")
+            edge_obj = graph_obj.edges.get(edge_id)
 
-            line = nd.ui_item
-
-            if line is None:
+            if edge_obj is None:
                 continue
 
-            n = seg_count[nd.bus_name]
+            e["ambient_C"] = ambient_C
 
-            s0 = nd.seg_index / n
-            s1 = (nd.seg_index + 1) / n
+            T = float(e.get("T_C", 0.0))
 
-            segments_by_line.setdefault(line, []).append(
-                (s0, s1, color)
-            )
+            color = temperature_to_color(T, Tmin, Tmax)
 
-        for line, segs in segments_by_line.items():
+            if edge_obj.ui_item is not None:
+
+                line = edge_obj.ui_item
+
+                if not hasattr(line, "thermal_results"):
+                    line.thermal_results = []
+
+                line.thermal_results.append(e)
+
+                line_segments.setdefault(line, []).append(
+                    (edge_obj, color, T)
+                )
+
+            if edge_obj.ui_join_item is not None:
+                join = edge_obj.ui_join_item
+                join.temperature_C = T
+                join.thermal_result = e
+
+                join.setBrush(QBrush(color))
+                join.setPen(QPen(color.darker(150), 2))
+                join.update()
+
+        # ---------- APPLY GRADIENTS ----------
+
+        for line, entries in line_segments.items():
+
+            entries.sort(key=lambda x: x[0].id)
+
+            n = len(entries)
+
+            segs = []
+            hottest_T = -1
+            hottest_color = QColor("#d19a66")
+
+            for i, (_, color, T) in enumerate(entries):
+
+                s0 = i / n
+                s1 = (i + 1) / n
+
+                segs.append((s0, s1, color))
+
+                if T > hottest_T:
+                    hottest_T = T
+                    hottest_color = color
+
             line.set_temperature_segments(segs)
 
-            # hottest segment colour drives glow
-            hottest = max(segs, key=lambda x: x[2].red())
-            line.update_glow(hottest[2])
+            line.temperature_C = hottest_T
+            line.update_glow(hottest_color)
 
-        # ---------- draw hotspot label ----------
-        if Tmax_node:
+            line.update()
 
-            line = self.bus_lookup.get(Tmax_node.bus_name)
-
-            if line:
-                s = (Tmax_node.seg_index + 0.5) / seg_count[Tmax_node.bus_name]
-
-                p0 = line.p0()
-                p1 = line.p1()
-
-                pos = p0 + (p1 - p0) * s
-
-                label = QGraphicsSimpleTextItem(f"{Tmax:.1f}°C")
-                label.setBrush(QBrush(QColor("#ffffff")))
-                label.setZValue(200)
-
-                label.setPos(pos + QPointF(10, -10))
-
-                self.scene().addItem(label)
 
     def find_nearest_bus_endpoint(self, p, tol_px=15):
 
@@ -841,11 +860,20 @@ class DesignerView(QGraphicsView):
 
             if isinstance(item, BusLineItem):
                 item.clear_temperature_overlay()
+                item.temperature_C = None
+                item.update_glow(Qt.transparent)
+                item.update()
+
+            elif isinstance(item, BusJoinItem):
+                item.temperature_C = None
+                item.setBrush(QBrush(QColor("#f85149")))
+                item.setPen(QPen(QColor("#a40e26"), 2))
+                item.update()
+
             if getattr(item, "_is_current_label", False) or getattr(item, "_is_tee_marker", False):
                 self.scene().removeItem(item)
 
         self._solver_overlay_items.clear()
-
     def clear_connection_markers(self):
 
         for item in self.scene().items():
@@ -863,6 +891,13 @@ class DesignerView(QGraphicsView):
     def _snap_target_for_mode(self, p: QPointF) -> Optional[QPointF]:
 
         if self._join_mode:
+
+            # prefer endpoint snap
+            end = self.find_nearest_bus_endpoint(p, tol_px=self._snap_tol_px)
+            if end is not None:
+                return end
+
+            # otherwise snap to segment
             return self.find_nearest_bus_segment(p, tol_px=self._snap_tol_px)
 
         if self._load_mode or self._source_mode:
@@ -885,11 +920,19 @@ class DesignerView(QGraphicsView):
 
         return False
 
+    def find_existing_source(self) -> Optional[BusSourceItem]:
+        for item in self.scene().items():
+            if isinstance(item, BusSourceItem):
+                return item
+        return None
 
-def temperature_to_color(T):
+    def set_default_joint_spec(self, spec: BusbarJointSpec) -> None:
+        self._joint_spec = deepcopy(spec)
 
-    Tmin = 40
-    Tmax = 140
+def temperature_to_color(T, Tmin=40, Tmax=140):
+
+    if Tmax <= Tmin:
+        Tmax = Tmin + 1e-6
 
     T = max(Tmin, min(Tmax, T))
 
@@ -897,9 +940,8 @@ def temperature_to_color(T):
 
     r = int(255 * x)
     g = int(255 * (1 - x))
-    b = 0
 
-    return QColor(r, g, b)
+    return QColor(r, g, 0)
 
 
 

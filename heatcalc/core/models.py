@@ -259,22 +259,32 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
+from dataclasses import dataclass
+
 @dataclass
 class BusbarJointSpec:
     """
     Represents a bolted connection / overlap joint in a busbar.
     Position is measured from the start of the bus.
     """
-    x_m: float
+
+    x_m: float = 0.0
 
     overlap_m: float = 0.05
-
     bolt_count: int = 4
+    bolt_dia_mm: float = 10.0
+    torque_Nm: float = 45.0
 
-    R_contact_20_uohm: float = 2.0
+    other_bar_width_mm: float | None = None
+    other_bar_thickness_mm: float | None = None
+    other_bar_count: int | None = None
+
+    joint_type: Literal["bolted_overlap", "clamped_edge"] = "bolted_overlap"
+    nut_factor: float = 0.20
+    e_streamline: float = 0.5
 
     csa_factor: float = 1.0
-
+    h_contact: float = 5000.0  # W/m²K
 
 @dataclass
 class BusbarBranchSpec:
