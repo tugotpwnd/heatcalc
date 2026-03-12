@@ -585,6 +585,9 @@ class TierItem(ResizableBox):
         self.max_temp_C = 70
         self.use_auto_component_temp = False
 
+        import uuid
+        self.tier_id = uuid.uuid4().hex
+
         # --- Interaction ---------------------------------------------------
         self._last_pos_for_commit = QPointF(self.pos())
 
@@ -1065,7 +1068,7 @@ class TierItem(ResizableBox):
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-
+            "tier_id": self.tier_id,
             "vent": {
                 "enabled": self.is_ventilated,
                 "area_cm2": self.vent_area_cm2,
@@ -1106,7 +1109,8 @@ class TierItem(ResizableBox):
         )
 
         v = d.get("vent", {})
-
+        import uuid
+        t.tier_id = d.get("tier_id") or uuid.uuid4().hex
         t.is_ventilated = bool(v.get("enabled", False))
         t.vent_area_cm2 = v.get("area_cm2")
         t.vent_label = v.get("label")

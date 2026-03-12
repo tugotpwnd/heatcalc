@@ -34,7 +34,9 @@ def filter_graph_to_source_component(graph):
 
     graph.loads = [l for l in graph.loads if l.node in visited]
 
-    graph.joins = [j for j in graph.joins if j.node in visited]
+    valid_edges = set(graph.edges.keys())
+
+    graph.joins = [j for j in graph.joins if j.edge_id in valid_edges]
 
 import numpy as np
 from scipy.sparse import lil_matrix
@@ -70,6 +72,7 @@ def solve_currents(graph):
         u = node_index[edge.u]
         v = node_index[edge.v]
 
+        #todo resolve laplacian for real model?
         A[u, u] += 1
         A[v, v] += 1
         A[u, v] -= 1

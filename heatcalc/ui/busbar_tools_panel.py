@@ -4,9 +4,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .bus_items import BusSpecUI
-from ..core.bus_current_resolver_ss import resolve_edge_currents
 from ..core.bus_current_solver import filter_graph_to_source_component
-from ..core.bus_graph_extractor_ss import extract_bus_graph_from_scene
 
 
 class BusbarToolsPanel(QWidget):
@@ -17,7 +15,7 @@ class BusbarToolsPanel(QWidget):
         self._load_mode = False
         self._join_mode = False
         self.view = designer_view
-
+        self.swb = parent
 
         layout = QVBoxLayout(self)
 
@@ -134,95 +132,175 @@ class BusbarToolsPanel(QWidget):
     def solve_network(self):
 
         from heatcalc.core.bus_graph import extract_graph
-        from heatcalc.core.bus_current_solver import solve_currents
-        from heatcalc.core.bus_thermal_solver import solve_thermal
+        from heatcalc.core.bus_current_solver import solve_currents, filter_graph_to_source_component
+        from heatcalc.core.tier_coupled_solver import calc_tier_iec60890_coupled
+        from heatcalc.ui.tier_item import TierItem, tier_effective_inlet_area_cm2
 
+        swb = self.swb
         scene = self.view.scene()
+        tiers = swb.get_tiers()
 
         print("\n==============================")
-        print("BUSBAR NETWORK SOLVE")
+        print("BUSBAR TIER COUPLED SOLVE")
         print("==============================")
 
         # -------------------------------------------------
-        # Extract graph from scene
+        # Helper: resolve an edge's actual TierItem
+        # -------------------------------------------------
+
+        def resolve_edge_tier(edge):
+            obj = getattr(edge, "tier", None)
+
+            while obj is not None:
+                if isinstance(obj, TierItem):
+                    return obj
+                if hasattr(obj, "parentItem"):
+                    obj = obj.parentItem()
+                else:
+                    break
+
+            return None
+
+        # -------------------------------------------------
+        # Project meta
+        # -------------------------------------------------
+
+        ambient = float(getattr(swb.project.meta, "ambient_C", 40.0))
+        wall = bool(swb.cb_wall.isChecked())
+        altitude_m = float(getattr(swb.project.meta, "altitude_m", 0.0))
+        ip_rating_n = int(getattr(swb.project.meta, "ip_rating_n", 0))
+
+        solar_dt = (
+            float(getattr(swb.project.meta, "solar_delta_K", 0.0))
+            if getattr(swb.project.meta, "solar_enabled", False)
+            else 0.0
+        )
+
+        louvre_def = swb._get_louvre_definition()
+
+        # -------------------------------------------------
+        # Extract graph + electrical solve once
         # -------------------------------------------------
 
         graph = extract_graph(scene)
-        print("\nGraph edges before/after filter:")
-        for e in graph.edges.values():
-            print(f"  edge {e.id}: u={e.u}, v={e.v}, L={e.length_m:.3f} m")
 
-        print("\nGraph loads before/after filter:")
-        for ld in graph.loads:
-            print(f"  load at node {ld.node}: {ld.I_A:.2f} A")
-
-        print(f"\nSource node: {graph.source_node}")
-        print(f"\nNodes: {len(graph.nodes)}")
-        print(f"Edges: {len(graph.edges)}")
-        print(f"Loads: {len(graph.loads)}")
-
-        # -------------------------------------------------
-        # Electrical solve
-        # -------------------------------------------------
+        print(f"Graph edges: {len(graph.edges)}")
+        print(f"Graph loads: {len(graph.loads)}")
+        print(f"Graph joins: {len(graph.joins)}")
 
         filter_graph_to_source_component(graph)
         solve_currents(graph)
 
-        print("\nGraph edges before/after filter:")
-        for e in graph.edges.values():
-            print(f"  edge {e.id}: u={e.u}, v={e.v}, L={e.length_m:.3f} m")
-
-        print("\nGraph loads before/after filter:")
-        for ld in graph.loads:
-            print(f"  load at node {ld.node}: {ld.I_A:.2f} A")
-
-        print(f"\nSource node: {graph.source_node}")
-
-        print("\nEdge currents:")
-
-        for e in graph.edges.values():
-            print(f"  Edge {e.id:3d}  I = {e.I_A:.2f} A")
-
         # -------------------------------------------------
-        # Thermal solve
+        # Solve each tier
         # -------------------------------------------------
 
-        air_temp = 35.0  # you can later use IEC60890 result
+        for t in tiers:
 
-        T = solve_thermal(graph, air_temp_C=air_temp, debug=True)
+            print(f"\n--- Tier {id(t)} ---")
 
-        print("\nThermal results:")
-        print("--------------------------")
+            try:
+                inlet_area_cm2 = 0.0
 
-        # -------------------------------------------------
-        # Group temperatures by tier
-        # -------------------------------------------------
+                if louvre_def:
+                    inlet_area_cm2 = tier_effective_inlet_area_cm2(
+                        tier=t,
+                        louvre_def=louvre_def,
+                        ip_rating_n=ip_rating_n,
+                    )
 
-        tier_results = {}
+                # -------------------------------------------------
+                # Extract edges belonging to this tier
+                # -------------------------------------------------
 
-        for idx, edge in enumerate(graph.edges.values()):
+                tier_edges = [
+                    e for e in graph.edges.values()
+                    if resolve_edge_tier(e) is t
+                ]
 
-            if idx >= len(T):
-                print(f"Warning: no thermal result for edge {edge.id}")
-                continue
+                print(f"Tier edge count: {len(tier_edges)}")
 
-            tier = edge.tier
+                if not tier_edges:
+                    print("No busbars in this tier")
+                    continue
 
-            if tier not in tier_results:
-                tier_results[tier] = []
+                # -------------------------------------------------
+                # Build a small graph object for this tier
+                # -------------------------------------------------
 
-            tier_results[tier].append((edge.id, T[idx]))
-        # -------------------------------------------------
-        # Print per tier
-        # -------------------------------------------------
+                class TierGraph:
+                    pass
 
-        for tier, results in tier_results.items():
+                tg = TierGraph()
+                tg.name = f"Tier-{id(t)}"
+                tg.edges = {e.id: e for e in tier_edges}
+                tg.nodes = graph.nodes
+                tg.loads = graph.loads
+                tg.joins = graph.joins
+                tg.use_air_temp = "top"
 
-            print(f"\nTier {id(tier)}")
+                # -------------------------------------------------
+                # Coupled solve
+                # -------------------------------------------------
 
-            maxT = max(t for _, t in results)
+                res = calc_tier_iec60890_coupled(
+                    tier=t,
+                    tiers=tiers,
+                    graphs=[tg],
+                    wall_mounted=wall,
+                    inlet_area_cm2=inlet_area_cm2,
+                    ambient_C=ambient,
+                    altitude_m=altitude_m,
+                    ip_rating_n=ip_rating_n,
+                    solar_delta_K=solar_dt,
+                    debug=False,
+                )
 
-            print(f"  Max temperature: {maxT:.2f} °C")
+                # -------------------------------------------------
+                # Summary
+                # -------------------------------------------------
 
-            for eid, temp in results:
-                print(f"    Edge {eid:3d} : {temp:.2f} °C")
+                print(f"Air mid  : {res['T_mid']:.2f} C")
+                print(f"Air top  : {res['T_top']:.2f} C")
+
+                coupling = res["coupling"]
+
+                print(f"P_base   : {coupling['P_base_W']:.2f} W")
+                print(f"P_busbar : {coupling['P_bus_W']:.2f} W")
+                print(f"Conv     : {coupling['converged']}")
+                print(f"Iter     : {coupling['iterations']}")
+
+                # -------------------------------------------------
+                # Edge results
+                # -------------------------------------------------
+
+                print("\nEdge temperatures")
+                print("--------------------------------------------")
+
+                g = res["graphs"][0]
+
+                for e in g["edges"]:
+                    kind = "JOINT" if e["is_joint"] else "BUS"
+
+                    dT = e["T_C"] - ambient
+
+                    print(
+                        f"{e['edge_id']:3d} | "
+                        f"{kind:5s} | "
+                        f"I={e['I_A']:8.1f} A | "
+                        f"T={e['T_C']:6.2f} C | "
+                        f"dT={dT:6.2f} K | "
+                        f"P={e['P_gen_W']:7.2f} W"
+                    )
+
+                # store on tier
+                t.live_thermal = res
+
+            except Exception as ex:
+                print(f"Tier solve failed: {ex}")
+                t.live_thermal = None
+
+            try:
+                t.update()
+            except Exception:
+                pass

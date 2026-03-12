@@ -28,8 +28,6 @@ from ..core.louvre_calc import tier_max_effective_inlet_area_cm2
 from ..core.models import SOLAR_COLOUR_TABLE
 from ..utils.qt import signals
 from PyQt5.QtWidgets import QPlainTextEdit, QDialog, QVBoxLayout
-from heatcalc.core.bus_graph_extractor_ss import extract_bus_graph_from_scene
-from heatcalc.core.bus_current_resolver_ss import resolve_edge_currents
 from heatcalc.ui.bus_items import BusSpecUI, BusLineItem, BusLoadItem, BusJoinItem, BusSourceItem
 from .busbar_tools_panel import BusbarToolsPanel
 
@@ -170,7 +168,7 @@ class SwitchboardTab(QWidget):
 
         # ---- scene/view ----------------------------------------------------
         self.view = DesignerView(self)
-        self.view.active_scene().selectionChanged.connect(self._on_selection_changed)
+        self.view.scene().selectionChanged.connect(self._on_selection_changed)
 
         # ---------- LEFT panel (wide via splitter) --------------------------
         left = QWidget()
@@ -470,23 +468,13 @@ class SwitchboardTab(QWidget):
 
         signals.project_changed.connect(self._on_louvre_definition_changed)
 
-
     # ------------------------------------------------------------------ #
     # Scene
     # ------------------------------------------------------------------ #
+
     @property
     def scene(self):
-        return self._scene
-
-    def _scene(self):
-        """
-        Return the currently active drawing sheet.
-        """
-        return self.view.active_scene()
-
-    def active_scene(self):
-        return self.view.active_scene()
-
+        return self.view.scene()
     # ------------------------------------------------------------------ #
     # Save / Load
     # ------------------------------------------------------------------ #
@@ -502,91 +490,24 @@ class SwitchboardTab(QWidget):
 
     def export_state(self) -> dict:
 
-        sheets = []
+        tiers = []
+        buses = []
 
-        for sheet in self.view.all_sheets():
+        for item in self.view.scene().items():
 
-            scene = sheet["scene"]
+            if isinstance(item, TierItem):
+                tiers.append(item.to_dict())
 
-            tiers = []
-            buses = []
-
-            for item in scene.items():
-
-                if isinstance(item, TierItem):
-                    tiers.append(item.to_dict())
-
-                elif isinstance(item, BusLineItem):
-                    buses.append(self._bus_line_to_dict(item))
-
-            sheets.append({
-                "name": sheet["name"],
-                "tiers": tiers,
-                "buses": buses
-            })
+            elif isinstance(item, BusLineItem):
+                buses.append(item.to_dict())
 
         return {
-            "version": 2,
+            "version": 3,
             "wall_mounted_global": bool(self.cb_wall.isChecked()),
             "uniform_depth": bool(self.cb_same_depth.isChecked()),
             "uniform_depth_value": int(self.sp_same_depth.value()),
-            "sheets": sheets
-        }
-
-    def _bus_line_to_dict(self, bus):
-
-        line = bus.line()
-
-        children = []
-
-        for child in bus.childItems():
-
-            if isinstance(child, BusLoadItem):
-
-                p = child.center()
-
-                children.append({
-                    "type": "load",
-                    "x": p.x(),
-                    "y": p.y(),
-                    "I_load_A": child.I_load_A
-                })
-
-            elif isinstance(child, BusJoinItem):
-
-                p = child.center()
-
-                children.append({
-                    "type": "join",
-                    "x": p.x(),
-                    "y": p.y(),
-                    "R_contact_20_uohm": child.R_contact_20_uohm
-                })
-
-            elif isinstance(child, BusSourceItem):
-
-                p = child.center()
-
-                children.append({
-                    "type": "source",
-                    "x": p.x(),
-                    "y": p.y()
-                })
-
-        return {
-            "type": "line",
-            "id": bus.bus_id,
-            "x1": line.x1(),
-            "y1": line.y1(),
-            "x2": line.x2(),
-            "y2": line.y2(),
-            "spec": {
-                "width_mm": bus.spec.width_mm,
-                "thickness_mm": bus.spec.thickness_mm,
-                "bars_in_parallel": bus.spec.bars_in_parallel,
-                "phases": bus.spec.phases
-            },
-            "children": children
+            "tiers": tiers,
+            "buses": buses
         }
 
     def import_state(self, state: dict):
@@ -595,64 +516,51 @@ class SwitchboardTab(QWidget):
         self.cb_same_depth.setChecked(bool(state.get("uniform_depth", False)))
         self.sp_same_depth.setValue(int(state.get("uniform_depth_value", 200)))
 
-        # backward compatibility
-        if "sheets" not in state:
-            self._import_legacy_state(state)
-            return
+        scene = self.view.scene()
 
-        for sheet in state["sheets"]:
+        # ----------------------------------------
+        # clear existing items
+        # ----------------------------------------
+        for item in list(scene.items()):
+            scene.removeItem(item)
 
-            idx = self.view.add_sheet(sheet["name"])
-            scene = self.view.get_sheet(idx)
+        tiers_by_id = {}
 
-            # ---- tiers ----
-            for td in sheet.get("tiers", []):
-                t = TierItem.from_dict(td)
-                t.get_louvre_definition = self._get_louvre_definition
-                self._wire_tier_signals(t)
-                scene.addItem(t)
+        # ----------------------------------------
+        # create tiers
+        # ----------------------------------------
+        for td in state.get("tiers", []):
+            t = TierItem.from_dict(td)
 
-            # ---- buses ----
-            for bd in sheet.get("buses", []):
-                self._create_bus_from_dict(scene, bd)
+            t.get_louvre_definition = self._get_louvre_definition
+            self._wire_tier_signals(t)
 
-        self._recompute_all_curves()
+            scene.addItem(t)
 
-    def _create_bus_from_dict(self, scene, d):
+            tiers_by_id[t.tier_id] = t
 
-        if d.get("type") != "line":
-            return
+        # ----------------------------------------
+        # create buses
+        # ----------------------------------------
+        for bd in state.get("buses", []):
 
-        spec = BusSpecUI(**d["spec"])
+            tier = tiers_by_id.get(bd.get("tier_id"))
 
-        bus = BusLineItem(
-            QPointF(d["x1"], d["y1"]),
-            QPointF(d["x2"], d["y2"]),
-            spec
-        )
-
-        bus.bus_id = d.get("id")
-
-        scene.addItem(bus)
-
-        # ---- restore children ----
-        for child in d.get("children", []):
-
-            p = QPointF(child["x"], child["y"])
-
-            if child["type"] == "load":
-                item = BusLoadItem(p, child["I_load_A"])
-
-            elif child["type"] == "join":
-                item = BusJoinItem(p, child["R_contact_20_uohm"])
-
-            elif child["type"] == "source":
-                item = BusSourceItem(p)
-
-            else:
+            if tier is None:
+                print("WARNING: bus has no tier", bd.get("id"))
                 continue
 
-            bus.attach_child(item, p)
+            bus = BusLineItem.from_dict(bd)
+
+            # attach to tier
+            tier.add_bus_item(bus)
+
+        # ----------------------------------------
+        # refresh visuals
+        # ----------------------------------------
+        scene.update()
+
+        self._recompute_all_curves()
 
     def _on_project_meta_changed(self):
         """
@@ -670,7 +578,7 @@ class SwitchboardTab(QWidget):
                 if t.is_ventilated:
                     t.clear_vent()
 
-        self._recompute_live_thermal()  # 🔥 this is the key line
+        self._recompute_live_thermal()
         self._update_left_from_selection()
 
     def _on_louvre_definition_changed(self):
@@ -742,7 +650,7 @@ class SwitchboardTab(QWidget):
     # Scene helpers / selection
     # ------------------------------------------------------------------ #
     def _tiers(self):
-        scene = self._scene()
+        scene = self.scene
         for item in scene.items():
             if isinstance(item, TierItem):
                 yield item
@@ -826,7 +734,7 @@ class SwitchboardTab(QWidget):
         y = snap(top)
         name = f"Tier {len(list(self._tiers())) + 1}"
 
-        scene = self._scene()
+        scene = self.scene
         scene.clearSelection()
         depth = self.sp_same_depth.value() if self.cb_same_depth.isChecked() else 200
         t = TierItem(name, x, y, w, h, depth_mm=depth)
@@ -848,7 +756,7 @@ class SwitchboardTab(QWidget):
         removed = False
         for it in list(self._tiers()):
             if it.isSelected():
-                self._scene().removeItem(it)
+                self.scene.removeItem(it)
                 removed = True
         if removed:
             self._update_left_from_selection()
@@ -857,7 +765,7 @@ class SwitchboardTab(QWidget):
 
     def _delete_item(self, it):
         print(f"Delete requested on : {it}")
-        self._scene().removeItem(it)
+        self.scene.removeItem(it)
         self._update_left_from_selection()
         self._recompute_all_curves()
         self.tierGeometryCommitted.emit()

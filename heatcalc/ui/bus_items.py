@@ -226,6 +226,77 @@ class BusLineItem(QGraphicsLineItem):
 
         return super().itemChange(change, value)
 
+    def to_dict(self):
+
+        line = self.line()
+        tier = None
+        parent = self.parentItem()
+
+        if parent and parent.parentItem():
+            tier = parent.parentItem()
+
+        tier_id = getattr(tier, "tier_id", None)
+        children = []
+
+        for child in self.childItems():
+
+            if hasattr(child, "to_dict"):
+                children.append(child.to_dict())
+
+        return {
+            "type": "line",
+            "id": self.bus_id,
+            "tier_id": tier_id,
+
+            "x1": line.x1(),
+            "y1": line.y1(),
+            "x2": line.x2(),
+            "y2": line.y2(),
+
+            "spec": {
+                "width_mm": self.spec.width_mm,
+                "thickness_mm": self.spec.thickness_mm,
+                "bars_in_parallel": self.spec.bars_in_parallel,
+                "phases": self.spec.phases,
+            },
+
+            "children": children,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+
+        spec = BusSpecUI(**d["spec"])
+
+        bus = cls(
+            QPointF(d["x1"], d["y1"]),
+            QPointF(d["x2"], d["y2"]),
+            spec,
+        )
+
+        bus.bus_id = d.get("id")
+
+        # ---- restore children ----
+        for child in d.get("children", []):
+
+            t = child["type"]
+
+            if t == "load":
+                item = BusLoadItem.from_dict(child)
+
+            elif t == "join":
+                item = BusJoinItem.from_dict(child)
+
+            elif t == "source":
+                item = BusSourceItem.from_dict(child)
+
+            else:
+                continue
+
+            item.setParentItem(bus)
+            item.setPos(child["x"], child["y"])
+
+        return bus
 
 # =========================================================
 # LOAD
@@ -288,14 +359,52 @@ class BusLoadItem(QGraphicsEllipseItem):
 
         return super().itemChange(change, value)
 
+    def to_dict(self):
+        p = self.pos()
+        return {
+            "type": "load",
+            "x": p.x(),
+            "y": p.y(),
+            "I_load_A": self.I_load_A,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        p = QPointF(d["x"], d["y"])
+        return cls(p, d.get("I_load_A", 0.0))
+
 # =========================================================
 # JOIN
 # =========================================================
+import math
+from PyQt5.QtCore import QPointF
+from PyQt5.QtGui import QBrush, QColor, QPen
+from PyQt5.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsSimpleTextItem,
+)
+
+from heatcalc.core.models import BusbarJointSpec
+
+BUS_JOIN_TYPE = 1003  # keep your existing constant if already defined
+
 
 class BusJoinItem(QGraphicsEllipseItem):
 
-    def __init__(self, center: QPointF, R_contact_20_uohm: float = 4.0):
-
+    def __init__(
+        self,
+        center: QPointF,
+        overlap_m: float = 0.05,
+        bolt_count: int = 4,
+        bolt_dia_mm: float = 10.0,
+        torque_Nm: float = 45.0,
+        joint_type: str = "bolted_overlap",
+        nut_factor: float = 0.20,
+        e_streamline: float = 0.5,
+        csa_factor: float = 1.0,
+        h_contact: float = 5000.0,
+    ):
         r = 6
         super().__init__(-r, -r, 2 * r, 2 * r)
 
@@ -306,11 +415,54 @@ class BusJoinItem(QGraphicsEllipseItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
 
-        self.R_contact_20_uohm = float(R_contact_20_uohm)
+        self.overlap_m = float(overlap_m)
+        self.bolt_count = int(bolt_count)
+        self.bolt_dia_mm = float(bolt_dia_mm)
+        self.torque_Nm = float(torque_Nm)
+        self.joint_type = str(joint_type)
+        self.nut_factor = float(nut_factor)
+        self.e_streamline = float(e_streamline)
+        self.csa_factor = float(csa_factor)
+        self.h_contact = float(h_contact)
 
-        self._label = QGraphicsSimpleTextItem(f"{self.R_contact_20_uohm:.1f}µΩ", self)
+        self.spec = BusbarJointSpec(
+            x_m=0.0,  # filled later by graph extraction
+            overlap_m=self.overlap_m,
+            bolt_count=self.bolt_count,
+            bolt_dia_mm=self.bolt_dia_mm,
+            torque_Nm=self.torque_Nm,
+            joint_type=self.joint_type,
+            nut_factor=self.nut_factor,
+            e_streamline=self.e_streamline,
+            csa_factor=self.csa_factor,
+            h_contact=self.h_contact,
+        )
+
+        self._label = QGraphicsSimpleTextItem(self._label_text(), self)
         self._label.setBrush(QBrush(QColor("#d0d7de")))
         self._label.setPos(10, -10)
+
+        self.setPos(center)
+
+    def _label_text(self) -> str:
+        return (
+            f"{self.joint_type}\n"
+            f"{self.bolt_count}x M{self.bolt_dia_mm:.0f}\n"
+            f"{self.torque_Nm:.0f} Nm"
+        )
+
+    def refresh_spec(self):
+        self.spec.x_m = 0.0
+        self.spec.overlap_m = self.overlap_m
+        self.spec.bolt_count = self.bolt_count
+        self.spec.bolt_dia_mm = self.bolt_dia_mm
+        self.spec.torque_Nm = self.torque_Nm
+        self.spec.joint_type = self.joint_type
+        self.spec.nut_factor = self.nut_factor
+        self.spec.e_streamline = self.e_streamline
+        self.spec.csa_factor = self.csa_factor
+        self.spec.h_contact = self.h_contact
+        self._label.setText(self._label_text())
 
     def type(self):
         return BUS_JOIN_TYPE
@@ -318,21 +470,50 @@ class BusJoinItem(QGraphicsEllipseItem):
     def center(self):
         return self.mapToScene(QPointF(0, 0))
 
+    def set_joint_parameters(
+        self,
+        *,
+        overlap_m: float | None = None,
+        bolt_count: int | None = None,
+        bolt_dia_mm: float | None = None,
+        torque_Nm: float | None = None,
+        joint_type: str | None = None,
+        nut_factor: float | None = None,
+        e_streamline: float | None = None,
+        csa_factor: float | None = None,
+        h_contact: float | None = None,
+    ):
+        if overlap_m is not None:
+            self.overlap_m = float(overlap_m)
+        if bolt_count is not None:
+            self.bolt_count = int(bolt_count)
+        if bolt_dia_mm is not None:
+            self.bolt_dia_mm = float(bolt_dia_mm)
+        if torque_Nm is not None:
+            self.torque_Nm = float(torque_Nm)
+        if joint_type is not None:
+            self.joint_type = str(joint_type)
+        if nut_factor is not None:
+            self.nut_factor = float(nut_factor)
+        if e_streamline is not None:
+            self.e_streamline = float(e_streamline)
+        if csa_factor is not None:
+            self.csa_factor = float(csa_factor)
+        if h_contact is not None:
+            self.h_contact = float(h_contact)
+
+        self.refresh_spec()
+
     def itemChange(self, change, value):
-
         if change == QGraphicsItem.ItemPositionChange:
-
             parent = self.parentItem()
             if parent is None:
                 return value
 
             line = parent.line()
 
-            # segment endpoints in SCENE coordinates
             a_scene = parent.mapToScene(line.p1())
             b_scene = parent.mapToScene(line.p2())
-
-            # dragged candidate point in SCENE coordinates
             p_scene = parent.mapToScene(value)
 
             ax, ay = a_scene.x(), a_scene.y()
@@ -362,12 +543,47 @@ class BusJoinItem(QGraphicsEllipseItem):
             if dist > 20:
                 return self.pos()
 
-            # convert back to parent coordinates for actual placement
             return parent.mapFromScene(proj_scene)
 
         return super().itemChange(change, value)
 
+    def to_dict(self):
 
+        p = self.pos()
+
+        return {
+            "type": "join",
+            "x": p.x(),
+            "y": p.y(),
+
+            "overlap_m": self.overlap_m,
+            "bolt_count": self.bolt_count,
+            "bolt_dia_mm": self.bolt_dia_mm,
+            "torque_Nm": self.torque_Nm,
+            "joint_type": self.joint_type,
+            "nut_factor": self.nut_factor,
+            "e_streamline": self.e_streamline,
+            "csa_factor": self.csa_factor,
+            "h_contact": self.h_contact,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+
+        p = QPointF(d["x"], d["y"])
+
+        return cls(
+            p,
+            overlap_m=d.get("overlap_m", 0.05),
+            bolt_count=d.get("bolt_count", 4),
+            bolt_dia_mm=d.get("bolt_dia_mm", 10.0),
+            torque_Nm=d.get("torque_Nm", 45.0),
+            joint_type=d.get("joint_type", "bolted_overlap"),
+            nut_factor=d.get("nut_factor", 0.20),
+            e_streamline=d.get("e_streamline", 0.5),
+            csa_factor=d.get("csa_factor", 1.0),
+            h_contact=d.get("h_contact", 5000.0),
+        )
 # =========================================================
 # SOURCE
 # =========================================================
@@ -423,3 +639,16 @@ class BusSourceItem(QGraphicsEllipseItem):
             return parent.mapFromScene(snap_scene)
 
         return super().itemChange(change, value)
+
+    def to_dict(self):
+        p = self.pos()
+        return {
+            "type": "source",
+            "x": p.x(),
+            "y": p.y(),
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        p = QPointF(d["x"], d["y"])
+        return cls(p)

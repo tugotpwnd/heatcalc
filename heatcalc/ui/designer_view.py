@@ -21,21 +21,9 @@ class DesignerView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # ---- sheet scenes -------------------------------------------------
-
-        self._sheets = []
-        self._active_sheet_index = 0
-
-        def _make_scene(name):
-            scene = QGraphicsScene(self)
-            scene.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
-            return {"name": name, "scene": scene}
-
-        # default sheets
-        self._sheets.append(_make_scene("Sheet 1"))
-        self._sheets.append(_make_scene("Sheet 2"))
-
-        self.setScene(self._sheets[self._active_sheet_index]["scene"])
+        self._scene = QGraphicsScene(self)
+        self._scene.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
+        self.setScene(self._scene)
 
         self.setBackgroundBrush(QColor("#1e1f22"))
         self.setRenderHints(self.renderHints() |
@@ -78,78 +66,10 @@ class DesignerView(QGraphicsView):
         self._snap_marker.setPen(QPen(Qt.NoPen))
         self._snap_marker.setZValue(10_000)
         self._snap_marker.setVisible(False)
-        self.scene().addItem(self._snap_marker)
-
-    # -----------------------------------------------------------
-    # Sheet management
-    # -----------------------------------------------------------
+        self._scene.addItem(self._snap_marker)
 
     def scene(self) -> QGraphicsScene:
-        """
-        Return the active sheet's scene.
-        Keeps compatibility with existing code.
-        """
-        return self._sheets[self._active_sheet_index]["scene"]
-
-    def sheet_count(self):
-        return len(self._sheets)
-
-    def add_sheet(self, name: str):
-
-        scene = QGraphicsScene(self)
-        scene.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
-
-        self._sheets.append({
-            "name": name,
-            "scene": scene
-        })
-
-        return len(self._sheets) - 1
-
-    def sheet_name(self, index: int) -> str:
-        return self._sheets[index]["name"]
-
-    def set_sheet_name(self, index: int, name: str):
-        self._sheets[index]["name"] = name
-
-    def sheet_names(self):
-        return [s["name"] for s in self._sheets]
-
-    def get_sheet(self, index: int) -> QGraphicsScene:
-        return self._sheets[index]["scene"]
-
-    def active_scene(self) -> QGraphicsScene:
-        return self._sheets[self._active_sheet_index]["scene"]
-
-    def set_active_sheet(self, index: int):
-
-        if index < 0 or index >= len(self._sheets):
-            raise IndexError("Invalid sheet index")
-
-        old_scene = self.scene()
-
-        # remove snap marker from old sheet
-        if self._snap_marker.scene() is old_scene:
-            old_scene.removeItem(self._snap_marker)
-
-        self._active_sheet_index = index
-
-        new_scene = self._sheets[index]["scene"]
-
-        # switch view scene
-        self.setScene(new_scene)
-
-        # move snap marker to new sheet
-        new_scene.addItem(self._snap_marker)
-
-    def all_scenes(self):
-        return [s["scene"] for s in self._sheets]
-
-    def all_sheets(self):
-        return list(self._sheets)
-
-    def active_sheet_index(self):
-        return self._active_sheet_index
+        return self._scene
 
     # ---- Layer support --------------------------------------------------------------
 
@@ -325,7 +245,12 @@ class DesignerView(QGraphicsView):
         if self._join_mode and event.button() == Qt.LeftButton:
 
             pos = self.mapToScene(event.pos())
-            node = self.find_nearest_bus_segment(pos, tol_px=self._snap_tol_px)
+            end = self.find_nearest_bus_endpoint(pos, tol_px=self._snap_tol_px)
+
+            if end is not None:
+                node = end
+            else:
+                node = self.find_nearest_bus_segment(pos, tol_px=self._snap_tol_px)
 
             if node is None:
                 return  # reject
@@ -863,6 +788,13 @@ class DesignerView(QGraphicsView):
     def _snap_target_for_mode(self, p: QPointF) -> Optional[QPointF]:
 
         if self._join_mode:
+
+            # prefer endpoint snap
+            end = self.find_nearest_bus_endpoint(p, tol_px=self._snap_tol_px)
+            if end is not None:
+                return end
+
+            # otherwise snap to segment
             return self.find_nearest_bus_segment(p, tol_px=self._snap_tol_px)
 
         if self._load_mode or self._source_mode:
