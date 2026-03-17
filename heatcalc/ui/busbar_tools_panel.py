@@ -222,10 +222,6 @@ class BusbarToolsPanel(QWidget):
         scene = self.view.scene()
         tiers = swb.get_tiers()
 
-        print("\n==============================")
-        print("BUSBAR GLOBAL-THERMAL SOLVE")
-        print("==============================")
-
         # -------------------------------------------------
         # Helper: resolve an edge's actual TierItem
         # -------------------------------------------------
@@ -288,8 +284,6 @@ class BusbarToolsPanel(QWidget):
                 "Disconnected items have been highlighted in red."
             )
             return
-
-        print(f"Graph edges: {len(graph.edges)}")
 
         filter_graph_to_source_component(graph)
         solve_currents(graph)
@@ -527,14 +521,14 @@ class BusbarToolsPanel(QWidget):
             }
 
             t.live_thermal = res
-
-            print(f"\n--- Tier {id(t)} ---")
-            print(f"Air mid  : {res['T_mid']:.2f} C")
-            print(f"Air top  : {res['T_top']:.2f} C")
-            print(f"P_base   : {res['coupling']['P_base_W']:.2f} W")
-            print(f"P_busbar : {res['coupling']['P_bus_W']:.2f} W")
-            print(f"Conv     : {res['coupling']['converged']}")
-            print(f"Iter     : {res['coupling']['iterations']}")
+            #
+            # print(f"\n--- Tier {id(t)} ---")
+            # print(f"Air mid  : {res['T_mid']:.2f} C")
+            # print(f"Air top  : {res['T_top']:.2f} C")
+            # print(f"P_base   : {res['coupling']['P_base_W']:.2f} W")
+            # print(f"P_busbar : {res['coupling']['P_bus_W']:.2f} W")
+            # print(f"Conv     : {res['coupling']['converged']}")
+            # print(f"Iter     : {res['coupling']['iterations']}")
 
             try:
                 t.update()
