@@ -188,7 +188,7 @@ def joint_R20_ohm(nd, debug=False) -> float:
 def solve_thermal(
     graph,
     air_temp_C,
-    debug: bool = True,
+    debug: bool = False,
     max_iter: int = 40,
     tol: float = 1e-3,
 ):
@@ -204,7 +204,6 @@ def solve_thermal(
     """
 
     cross_link_debug = []
-    debug=True
     physics_debug=False
     joint_debug=False
 

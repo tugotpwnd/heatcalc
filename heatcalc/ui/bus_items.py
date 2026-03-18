@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 )
 
 from heatcalc.core.models import BusbarJointSpec
-
+from heatcalc.ui.color_utils import temperature_to_color
 
 # --------- QGraphicsItem "type" ids ----------
 BUS_LINE_TYPE = 10001
@@ -315,8 +315,15 @@ class BusLineItem(QGraphicsLineItem):
 
         grad = QLinearGradient(line.x1(), line.y1(), line.x2(), line.y2())
 
-        for s0, s1, color in self._temperature_segments:
-            grad.setColorAt((s0 + s1) / 2, color)
+        # Build a continuous gradient using segment boundaries
+
+        for s, T in self._temperature_segments:
+            color = temperature_to_color(T, self._Tmin, self._Tmax)
+
+            # clamp just in case (Qt requires 0–1)
+            s = max(0.0, min(1.0, s))
+
+            grad.setColorAt(s, color)
 
         painter.setPen(QPen(grad, self._base_pen.width()))
         painter.drawLine(line)

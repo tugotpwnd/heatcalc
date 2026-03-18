@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QRectF, QPointF
 from .bus_items import BusLineItem, BusSpecUI, BusLoadItem, BusJoinItem, BusSourceItem
 from heatcalc.ui.temperature_legend import TemperatureLegend
+from .color_utils import temperature_to_color
 from .tier_item import TierItem
 from .geometry import GRID, snap
 from copy import deepcopy
@@ -663,24 +664,31 @@ class DesignerView(QGraphicsView):
 
         for line, entries in line_segments.items():
 
-            entries.sort(key=lambda x: x[0].id)
+            line_geom = line.line()
 
-            n = len(entries)
+            p0 = line.mapToScene(line_geom.p1())
+            p1 = line.mapToScene(line_geom.p2())
 
-            segs = []
-            hottest_T = -1
-            hottest_color = QColor("#d19a66")
+            # --- build spatially correct positions ---
+            positions = []
 
-            for i, (_, color, T) in enumerate(entries):
+            for edge_obj, _, T in entries:
+                node = graph_obj.nodes[edge_obj.v]  # pick one consistently
+                s, _ = project_point_to_segment(node.p, p0, p1)
+                positions.append((s, T))
 
-                s0 = i / n
-                s1 = (i + 1) / n
+            # sort along bus geometry
+            positions.sort(key=lambda x: x[0])
 
-                segs.append((s0, s1, color))
+            segs = positions
 
-                if T > hottest_T:
-                    hottest_T = T
-                    hottest_color = color
+            # --- find hottest ---
+            hottest_T = max(T for _, T in segs) if segs else 0.0
+            hottest_color = temperature_to_color(hottest_T, Tmin, Tmax)
+
+            # --- apply ---
+            line._Tmin = Tmin
+            line._Tmax = Tmax
 
             line.set_temperature_segments(segs)
 
@@ -928,22 +936,6 @@ class DesignerView(QGraphicsView):
 
     def set_default_joint_spec(self, spec: BusbarJointSpec) -> None:
         self._joint_spec = deepcopy(spec)
-
-def temperature_to_color(T, Tmin=40, Tmax=140):
-
-    if Tmax <= Tmin:
-        Tmax = Tmin + 1e-6
-
-    T = max(Tmin, min(Tmax, T))
-
-    x = (T - Tmin) / (Tmax - Tmin)
-
-    r = int(255 * x)
-    g = int(255 * (1 - x))
-
-    return QColor(r, g, 0)
-
-
 
 def project_point_to_segment(p: QPointF, a: QPointF, b: QPointF):
     """

@@ -183,113 +183,6 @@ def _infer_joint_edge_geometry(edges: Dict[int, Edge]) -> None:
                 ej.joint_spec.other_bar_thickness_mm = other.thickness_mm
                 ej.joint_spec.other_bar_count = other.bars_in_parallel
 
-def _debug_cross_tier_candidates(edges: Dict[int, Edge], nodes: Dict[int, Node]) -> None:
-    """
-    Debug report showing whether edges from different tiers:
-      1. share node ids
-      2. merely touch geometrically
-      3. are completely separate
-    """
-
-    print("\n================ GRAPH CROSS-TIER DEBUG ================")
-
-    edge_list = list(edges.values())
-    found = 0
-
-    for i in range(len(edge_list)):
-        ea = edge_list[i]
-        if ea.is_joint:
-            continue
-
-        for j in range(i + 1, len(edge_list)):
-            eb = edge_list[j]
-            if eb.is_joint:
-                continue
-
-            if ea.tier is eb.tier:
-                continue
-
-            a0 = nodes[ea.u].p
-            a1 = nodes[ea.v].p
-            b0 = nodes[eb.u].p
-            b1 = nodes[eb.v].p
-
-            share_id = (
-                ea.u == eb.u or
-                ea.u == eb.v or
-                ea.v == eb.u or
-                ea.v == eb.v
-            )
-
-            dists = [
-                ("ea.u / eb.u", _dist(a0, b0)),
-                ("ea.u / eb.v", _dist(a0, b1)),
-                ("ea.v / eb.u", _dist(a1, b0)),
-                ("ea.v / eb.v", _dist(a1, b1)),
-            ]
-            best_name, best_dist = min(dists, key=lambda x: x[1])
-
-            # only report pairs that look like candidate crossings
-            if share_id or best_dist < 1.0:
-                found += 1
-                print(
-                    f"Pair E{ea.id} (Tier {id(ea.tier)}) <-> "
-                    f"E{eb.id} (Tier {id(eb.tier)}) | "
-                    f"share_id={share_id} | closest={best_name} | d={best_dist:.4f}px"
-                )
-                print(
-                    f"    E{ea.id}: u={ea.u}@({a0.x():.2f},{a0.y():.2f})  "
-                    f"v={ea.v}@({a1.x():.2f},{a1.y():.2f})"
-                )
-                print(
-                    f"    E{eb.id}: u={eb.u}@({b0.x():.2f},{b0.y():.2f})  "
-                    f"v={eb.v}@({b1.x():.2f},{b1.y():.2f})"
-                )
-
-    if found == 0:
-        print("No near cross-tier candidate pairs found.")
-
-def _detect_cross_tier_links(edges: Dict[int, Edge], nodes: Dict[int, Node]) -> List[tuple[int, int]]:
-    """
-    Detect edges from different tiers that share a node id.
-
-    These are true topology-level cross-tier links.
-    """
-    links = []
-
-    print("\n================ DETECT CROSS-TIER LINKS ================")
-
-    edge_list = list(edges.values())
-
-    for i in range(len(edge_list)):
-        ea = edge_list[i]
-        if ea.is_joint:
-            continue
-
-        for j in range(i + 1, len(edge_list)):
-            eb = edge_list[j]
-            if eb.is_joint:
-                continue
-
-            if ea.tier is eb.tier:
-                continue
-
-            shared = (
-                ea.u == eb.u or
-                ea.u == eb.v or
-                ea.v == eb.u or
-                ea.v == eb.v
-            )
-
-            if shared:
-                links.append((ea.id, eb.id))
-                print(
-                    f"LINK: E{ea.id} <-> E{eb.id} | "
-                    f"nodes: ({ea.u},{ea.v}) <-> ({eb.u},{eb.v})"
-                )
-
-    print(f"Total cross-tier links detected: {len(links)}")
-    return links
 
 def extract_graph(scene, px_to_m=0.001):
 
@@ -704,12 +597,6 @@ def extract_graph(scene, px_to_m=0.001):
     # refine explicit joint geometry from connected bus edges
     _infer_joint_edge_geometry(edges)
 
-    # graph-level debug: are cross-tier buses truly sharing nodes?
-    _debug_cross_tier_candidates(edges, nodes)
-
-    # detect copper continuity between tiers
-    cross_tier_links = _detect_cross_tier_links(edges, nodes)
-
     return Graph(
         nodes=nodes,
         edges=edges,
@@ -717,5 +604,4 @@ def extract_graph(scene, px_to_m=0.001):
         joins=joins,
         source_node=source_node,
         source_ui_item=source_ui_item,
-        cross_tier_links=cross_tier_links,
     )
