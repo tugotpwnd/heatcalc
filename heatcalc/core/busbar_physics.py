@@ -128,7 +128,8 @@ def compute_busbar_physics(
         else:
             W_conv = NATURAL_CONV_HORIZONTAL * (theta ** 1.25) / (L ** 0.25)
 
-    P_conv_total = float(N) * W_conv * As_conv
+    h_nat = 6.0  # or 7.0 W/m²K
+    P_conv_total = N * h_nat * As_conv * theta
 
     eps_rel = relative_emissivity(therm.eps_bus, therm.eps_env)
     T_K = T_bus_C + 273.15

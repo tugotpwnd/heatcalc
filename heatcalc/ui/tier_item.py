@@ -77,11 +77,13 @@ class TierOverlayItem(QGraphicsItem):
         if not lt or not self.tier.show_live_overlay:
             return
 
-        # 🔒 HARD GATE: no heat → no overlay
+        has_component_heat = self.tier.total_heat() > 0.0
+        has_bus_heat = hasattr(self.tier, "live_thermal") and lt.get("P_bus_W", 0.0) > 0
+
         if (
                 not lt
                 or not self.tier.show_live_overlay
-                or self.tier.total_heat() <= 0.0
+                or not (has_component_heat or has_bus_heat)
         ):
             return
 

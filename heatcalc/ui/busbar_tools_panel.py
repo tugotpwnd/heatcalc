@@ -537,8 +537,14 @@ class BusbarToolsPanel(QWidget):
             table.setItem(row, col, item)
 
         for row, (t, res) in enumerate(tier_results.items()):
-            comp = evaluate_tier_compliance(t, global_sol, res, ambient)
-
+            comp = evaluate_tier_compliance(
+                t,
+                global_sol,
+                res,
+                ambient,
+                result["tier_edges"],
+                result["graph"]
+            )
             # Tier label
             table.setItem(row, 0, QTableWidgetItem(comp.tier_id))
 

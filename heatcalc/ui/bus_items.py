@@ -42,6 +42,7 @@ def format_thermal_tooltip(results, point_temp=None) -> str:
 
     max_I = max(float(r.get("I_A", 0.0)) for r in results)
     max_T = max(float(r.get("T_C", 0.0)) for r in results)
+    total_P = sum(float(r.get("P_gen_W", 0.0)) for r in results)
 
     html = f"""
     <div style='font-family: sans-serif; min-width: 200px;'>
@@ -58,6 +59,10 @@ def format_thermal_tooltip(results, point_temp=None) -> str:
         <tr>
             <td style='color:#8b949e;'>Max temp:</td>
             <td style='color:#d19a66; font-weight:bold;'>{max_T:.1f} °C</td>
+        </tr>
+        <tr>
+            <td style='color:#8b949e;'>Bus loss:</td>
+            <td style='color:#ff7b72; font-weight:bold;'>{total_P:.1f} W</td>
         </tr>
         </table>
 
@@ -222,6 +227,58 @@ class BusLineItem(QGraphicsLineItem):
         Tb = node_T.get(edge.v, 40.0)
 
         return (1 - t) * Ta + t * Tb
+
+    def contextMenuEvent(self, event):
+        from PyQt5.QtWidgets import QMenu, QDialog, QFormLayout, QSpinBox, QDialogButtonBox
+
+        menu = QMenu()
+        act_edit = menu.addAction("Edit bus")
+
+        action = menu.exec_(event.screenPos())
+
+        if action != act_edit:
+            return
+
+        # -----------------------------
+        # Dialog
+        # -----------------------------
+        dlg = QDialog()
+        dlg.setWindowTitle("Edit Bus")
+
+        layout = QFormLayout(dlg)
+
+        sp_w = QSpinBox()
+        sp_w.setRange(10, 500)
+        sp_w.setValue(self.spec.width_mm)
+
+        sp_t = QSpinBox()
+        sp_t.setRange(2, 50)
+        sp_t.setValue(self.spec.thickness_mm)
+
+        sp_n = QSpinBox()
+        sp_n.setRange(1, 10)
+        sp_n.setValue(self.spec.bars_in_parallel)
+
+        layout.addRow("Width (mm)", sp_w)
+        layout.addRow("Thickness (mm)", sp_t)
+        layout.addRow("Bars", sp_n)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addRow(btns)
+
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+
+        if dlg.exec_():
+            # apply
+            self.spec.width_mm = sp_w.value()
+            self.spec.thickness_mm = sp_t.value()
+            self.spec.bars_in_parallel = sp_n.value()
+
+            self.update()
+
+            if self.scene():
+                self.scene().update()
     # ---------------------------------------------------------
     # Attach children
     # ---------------------------------------------------------
@@ -342,6 +399,42 @@ class BusLineItem(QGraphicsLineItem):
     def paint(self, painter, option, widget=None):
 
         line = self.line()
+        # -----------------------------------------
+        # Bus label (size / bars)
+        # -----------------------------------------
+        try:
+            spec = self.spec  # BusSpecUI
+            if spec:
+                text = f"{spec.width_mm}x{spec.thickness_mm}x{spec.bars_in_parallel}"
+
+                # line geometry
+                p1 = self.line().p1()
+                p2 = self.line().p2()
+
+                dx = p2.x() - p1.x()
+                dy = p2.y() - p1.y()
+                angle = math.degrees(math.atan2(dy, dx))
+
+                mid = (p1 + p2) * 0.5
+
+                painter.save()
+
+                # move + rotate into line frame
+                painter.translate(mid)
+                painter.rotate(angle)
+
+                # subtle styling
+                painter.setPen(QColor(150, 150, 150, 180))
+                font = painter.font()
+                font.setPointSize(7)
+                painter.setFont(font)
+
+                # offset slightly off the line
+                painter.drawText(QPointF(0, -6), text)
+
+                painter.restore()
+        except Exception:
+            pass
 
         # ---------------------------------------------------------
         # Draw base line (thermal gradient or plain bus)
@@ -580,6 +673,33 @@ class BusLoadItem(QGraphicsEllipseItem):
         self._hover = False
         self.update()
         super().hoverLeaveEvent(event)
+
+    def contextMenuEvent(self, event):
+        from PyQt5.QtWidgets import QMenu, QInputDialog
+
+        menu = QMenu()
+
+        act_edit = menu.addAction("Edit load (A)")
+
+        action = menu.exec_(event.screenPos())
+
+        if action == act_edit:
+            val, ok = QInputDialog.getDouble(
+                None,
+                "Edit Load",
+                "Load current (A):",
+                value=float(getattr(self, "I_load_A", 0.0)),
+                min=0.0,
+                decimals=2
+            )
+
+            if ok:
+                self.I_load_A = val
+                self._label.setText(f"{self.I_load_A:.0f}A")
+
+                # trigger re-solve / refresh
+                if self.scene():
+                    self.scene().update()
 
     def paint(self, painter, option, widget=None):
         # Base circle

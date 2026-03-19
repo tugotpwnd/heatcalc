@@ -47,6 +47,258 @@ class ThermalSolveResult:
     edge_results: list[ThermalEdgeResult]
     T_vector_C: np.ndarray
 
+from typing import Any
+
+
+@dataclass
+class ThermalSeg:
+    seg_id: str
+    base_edge_id: int
+    u: Any
+    v: Any
+    length_m: float
+    width_mm: float
+    thickness_mm: float
+    bars_in_parallel: int
+    tier: object | None
+    is_joint: bool
+    joint_spec: object | None
+    I_A: float
+    air_temp_C: float
+
+
+def _shared_node(a, b) -> bool:
+    return (
+        a.u == b.u or
+        a.u == b.v or
+        a.v == b.u or
+        a.v == b.v
+    )
+
+
+def _axial_conductance(seg_a: ThermalSeg, seg_b: ThermalSeg) -> float:
+    """
+    Finite axial copper conductance between two continuous copper segments
+    sharing a node. This replaces the old G=1e12 shortcut.
+    """
+    A_a = (float(seg_a.width_mm) / 1000.0) * (float(seg_a.thickness_mm) / 1000.0)
+    A_b = (float(seg_b.width_mm) / 1000.0) * (float(seg_b.thickness_mm) / 1000.0)
+
+    La = max(float(seg_a.length_m), 1e-6)
+    Lb = max(float(seg_b.length_m), 1e-6)
+
+    R_a = 0.5 * La / (K_CU * max(A_a, 1e-12))
+    R_b = 0.5 * Lb / (K_CU * max(A_b, 1e-12))
+    R_total = R_a + R_b
+
+    return 1.0 / max(R_total, 1e-12)
+
+
+def _build_segmented_thermal_edges(
+    graph,
+    edge_air_fn,
+    interface_len_m: float = 0.025,
+    min_core_len_m: float = 0.010,
+):
+    """
+    Create a thermal-only segmented graph.
+
+    Rules:
+      - joints are kept whole
+      - a non-joint edge is split near an endpoint if that endpoint is a
+        cross-tier interface node
+      - interface stub gets mixed ambient
+      - core segment keeps original owning-tier ambient
+    """
+    node_to_edges = defaultdict(list)
+    for e in graph.edges.values():
+        node_to_edges[e.u].append(e)
+        node_to_edges[e.v].append(e)
+
+    interface_nodes = set()
+    interface_air_by_node = {}
+
+    # Detect true cross-tier interface nodes
+    for node, incident in node_to_edges.items():
+        non_joint = [e for e in incident if not getattr(e, "is_joint", False)]
+        tiers = {getattr(e, "tier", None) for e in non_joint if getattr(e, "tier", None) is not None}
+
+        if len(tiers) < 2:
+            continue
+
+        interface_nodes.add(node)
+
+        temps = [float(edge_air_fn(e.id)) for e in non_joint]
+        interface_air_by_node[node] = sum(temps) / len(temps) if temps else 0.0
+
+    segs: list[ThermalSeg] = []
+
+    for e in graph.edges.values():
+        L = float(e.length_m)
+        base_air = float(edge_air_fn(e.id))
+
+        # keep joints whole
+        if getattr(e, "is_joint", False):
+            segs.append(
+                ThermalSeg(
+                    seg_id=f"{e.id}:full",
+                    base_edge_id=int(e.id),
+                    u=e.u,
+                    v=e.v,
+                    length_m=L,
+                    width_mm=float(e.width_mm),
+                    thickness_mm=float(e.thickness_mm),
+                    bars_in_parallel=int(e.bars_in_parallel),
+                    tier=getattr(e, "tier", None),
+                    is_joint=bool(e.is_joint),
+                    joint_spec=getattr(e, "joint_spec", None),
+                    I_A=float(e.I_A),
+                    air_temp_C=base_air,
+                )
+            )
+            continue
+
+        split_u = e.u in interface_nodes
+        split_v = e.v in interface_nodes
+
+        if not split_u and not split_v:
+            segs.append(
+                ThermalSeg(
+                    seg_id=f"{e.id}:full",
+                    base_edge_id=int(e.id),
+                    u=e.u,
+                    v=e.v,
+                    length_m=L,
+                    width_mm=float(e.width_mm),
+                    thickness_mm=float(e.thickness_mm),
+                    bars_in_parallel=int(e.bars_in_parallel),
+                    tier=getattr(e, "tier", None),
+                    is_joint=bool(e.is_joint),
+                    joint_spec=getattr(e, "joint_spec", None),
+                    I_A=float(e.I_A),
+                    air_temp_C=base_air,
+                )
+            )
+            continue
+
+        stub_u = min(interface_len_m, 0.2 * L) if split_u else 0.0
+        stub_v = min(interface_len_m, 0.2 * L) if split_v else 0.0
+
+        # preserve a real middle section where possible
+        if stub_u + stub_v > max(L - min_core_len_m, 0.0):
+            total_stub = stub_u + stub_v
+            if total_stub > 0.0:
+                scale = max((L - min_core_len_m), 0.0) / total_stub
+                stub_u *= scale
+                stub_v *= scale
+
+        core_len = max(L - stub_u - stub_v, 0.0)
+
+        cursor = e.u
+
+        if stub_u > 1e-9:
+            n_u = ("if", int(e.id), "u")
+            segs.append(
+                ThermalSeg(
+                    seg_id=f"{e.id}:u_if",
+                    base_edge_id=int(e.id),
+                    u=e.u,
+                    v=n_u,
+                    length_m=stub_u,
+                    width_mm=float(e.width_mm),
+                    thickness_mm=float(e.thickness_mm),
+                    bars_in_parallel=int(e.bars_in_parallel),
+                    tier=getattr(e, "tier", None),
+                    is_joint=False,
+                    joint_spec=getattr(e, "joint_spec", None),
+                    I_A=float(e.I_A),
+                    air_temp_C=float(interface_air_by_node[e.u]),
+                )
+            )
+            cursor = n_u
+
+        if core_len > 1e-9:
+            next_node = e.v if stub_v <= 1e-9 else ("if", int(e.id), "v")
+            segs.append(
+                ThermalSeg(
+                    seg_id=f"{e.id}:core",
+                    base_edge_id=int(e.id),
+                    u=cursor,
+                    v=next_node,
+                    length_m=core_len,
+                    width_mm=float(e.width_mm),
+                    thickness_mm=float(e.thickness_mm),
+                    bars_in_parallel=int(e.bars_in_parallel),
+                    tier=getattr(e, "tier", None),
+                    is_joint=False,
+                    joint_spec=getattr(e, "joint_spec", None),
+                    I_A=float(e.I_A),
+                    air_temp_C=base_air,
+                )
+            )
+            cursor = next_node
+
+        if stub_v > 1e-9:
+            segs.append(
+                ThermalSeg(
+                    seg_id=f"{e.id}:v_if",
+                    base_edge_id=int(e.id),
+                    u=cursor,
+                    v=e.v,
+                    length_m=stub_v,
+                    width_mm=float(e.width_mm),
+                    thickness_mm=float(e.thickness_mm),
+                    bars_in_parallel=int(e.bars_in_parallel),
+                    tier=getattr(e, "tier", None),
+                    is_joint=False,
+                    joint_spec=getattr(e, "joint_spec", None),
+                    I_A=float(e.I_A),
+                    air_temp_C=float(interface_air_by_node[e.v]),
+                )
+            )
+
+    return segs
+
+
+def _aggregate_segment_results(segment_rows):
+    """
+    Collapse segmented thermal results back to original edge ids so the UI
+    and existing apply path can remain unchanged.
+    """
+    grouped = defaultdict(list)
+    for row in segment_rows:
+        grouped[row["base_edge_id"]].append(row)
+
+    out = []
+    for edge_id, rows in grouped.items():
+        total_len = sum(r["length_m"] for r in rows)
+        total_pgen = sum(r["P_gen_W"] for r in rows)
+        total_pconv = sum(r["P_conv_W"] for r in rows)
+        total_prad = sum(r["P_rad_W"] for r in rows)
+        total_pcond = sum(r["P_cond_W"] for r in rows)
+        total_resid = sum(r["residual_W"] for r in rows)
+
+        # Conservative display: report hottest segment temperature
+        Tmax = max(r["T_C"] for r in rows)
+
+        out.append(
+            ThermalEdgeResult(
+                edge_id=int(edge_id),
+                T_C=float(Tmax),
+                I_A=float(rows[0]["I_A"]),
+                length_m=float(total_len),
+                is_joint=bool(rows[0]["is_joint"]),
+                P_gen_W=float(total_pgen),
+                P_conv_W=float(total_pconv),
+                P_rad_W=float(total_prad),
+                P_cond_W=float(total_pcond),
+                residual_W=float(total_resid),
+            )
+        )
+
+    out.sort(key=lambda x: x.edge_id)
+    return out
+
 def joint_contact_area(width_m, thickness_m, joint_spec):
     """
     Estimate effective thermal contact area of a joint.
@@ -193,129 +445,126 @@ def solve_thermal(
     tol: float = 1e-3,
 ):
     """
-    Graph-edge thermal solve.
+    Segmented thermal solve.
 
     Supports either:
         - scalar ambient air temperature for all edges, or
         - dict: {edge_id: air_temp_C} for per-edge ambient temperatures
 
-    This allows one global copper network solve while still applying
-    tier-specific enclosure air temperatures to each edge.
+    Real edge temperatures are solved on a thermal-only segmented graph and
+    then collapsed back to original edge ids for the UI.
     """
 
     cross_link_debug = []
-    physics_debug=False
-    joint_debug=False
+    debug=True
+    physics_debug = True
+    joint_debug = False
 
     def edge_air(edge_id):
         if isinstance(air_temp_C, dict):
             if edge_id in air_temp_C:
                 return float(air_temp_C[edge_id])
-            # fallback to first available value
             return float(next(iter(air_temp_C.values())))
         return float(air_temp_C)
+
+    thermal_segs = _build_segmented_thermal_edges(
+        graph=graph,
+        edge_air_fn=edge_air,
+        interface_len_m=0.025,
+        min_core_len_m=0.010,
+    )
 
     thermal_nodes = []
     thermal_edges = []
 
     # --------------------------------------------------------
-    # Build thermal nodes: one node per graph edge
+    # Build thermal nodes: one node per THERMAL SEGMENT
     # --------------------------------------------------------
-    for e in graph.edges.values():
-        width_m = e.width_mm / 1000.0
-        th_m = e.thickness_mm / 1000.0
+    for seg in thermal_segs:
+        width_m = seg.width_mm / 1000.0
+        th_m = seg.thickness_mm / 1000.0
 
         geom = BusbarGeometry(
-            name=f"edge-{e.id}",
+            name=f"seg-{seg.seg_id}",
             width_m=width_m,
             thickness_m=th_m,
             L_char_m=width_m,
-            length_m=e.length_m,
-            bars_in_parallel=e.bars_in_parallel,
+            length_m=seg.length_m,
+            bars_in_parallel=seg.bars_in_parallel,
             face_to_face_dim="thickness",
             convection_mode="horizontal",
         )
 
         thermal_nodes.append({
-            "edge_id": e.id,
+            "seg_id": seg.seg_id,
+            "base_edge_id": seg.base_edge_id,
             "geom": geom,
-            "I": float(e.I_A),
-            "L": float(e.length_m),
+            "I": float(seg.I_A),
+            "L": float(seg.length_m),
             "w": width_m,
             "t": th_m,
             "area": width_m * th_m,
-            "tier": e.tier,
-            "is_joint": e.is_joint,
-            "joint_spec": e.joint_spec,
-            "bars_in_parallel": e.bars_in_parallel,
-            "air_temp_C": edge_air(e.id),
+            "tier": seg.tier,
+            "is_joint": seg.is_joint,
+            "joint_spec": seg.joint_spec,
+            "bars_in_parallel": seg.bars_in_parallel,
+            "air_temp_C": float(seg.air_temp_C),
+            "u": seg.u,
+            "v": seg.v,
         })
 
-    edge_map = {eid: i for i, eid in enumerate(graph.edges.keys())}
+    seg_map = {seg.seg_id: i for i, seg in enumerate(thermal_segs)}
 
     if debug:
         print("\n================ THERMAL SOLVER INPUT DEBUG ================")
-        print(f"Thermal nodes: {len(thermal_nodes)}")
-        print(f"Graph edges   : {len(graph.edges)}")
-        print(f"Cross-tier links on graph: {len(getattr(graph, 'cross_tier_links', []) or [])}")
-
+        print(f"Thermal segments: {len(thermal_nodes)}")
+        print(f"Graph edges      : {len(graph.edges)}")
         for nd in thermal_nodes:
             tier_id = id(nd["tier"]) if nd["tier"] is not None else None
             print(
-                f"E{nd['edge_id']} | tier={tier_id} | "
+                f"{nd['seg_id']} | base=E{nd['base_edge_id']} | tier={tier_id} | "
                 f"is_joint={nd['is_joint']} | "
                 f"L={nd['L']:.4f} m | "
                 f"w={nd['w'] * 1000:.1f} mm | t={nd['t'] * 1000:.1f} mm | "
-                f"air={nd['air_temp_C']:.2f} C"
+                f"air={nd['air_temp_C']:.2f} C | "
+                f"nodes=({nd['u']},{nd['v']})"
             )
 
     # --------------------------------------------------------
-    # Thermal conduction between graph edges sharing a node
+    # Thermal conduction between segments sharing a node
     # --------------------------------------------------------
-    for ea in graph.edges.values():
-        for eb in graph.edges.values():
-            if ea.id >= eb.id:
+    for sa in thermal_segs:
+        for sb in thermal_segs:
+            if sa.seg_id >= sb.seg_id:
                 continue
 
-            shared = (
-                    ea.u == eb.u or
-                    ea.u == eb.v or
-                    ea.v == eb.u or
-                    ea.v == eb.v
-            )
-            if not shared:
+            if not _shared_node(sa, sb):
                 continue
 
-            ia = edge_map[ea.id]
-            ib = edge_map[eb.id]
+            ia = seg_map[sa.seg_id]
+            ib = seg_map[sb.seg_id]
 
-            if thermal_nodes[ia]["is_joint"]:
-                A_contact = joint_contact_area(
-                    thermal_nodes[ia]["w"],
-                    thermal_nodes[ia]["t"],
-                    thermal_nodes[ia]["joint_spec"]
-                )
-            elif thermal_nodes[ib]["is_joint"]:
-                A_contact = joint_contact_area(
-                    thermal_nodes[ib]["w"],
-                    thermal_nodes[ib]["t"],
-                    thermal_nodes[ib]["joint_spec"]
-                )
-            else:
-                A_contact = min(thermal_nodes[ia]["area"], thermal_nodes[ib]["area"])
+            # Jointed connection: retain contact-based model
+            if thermal_nodes[ia]["is_joint"] or thermal_nodes[ib]["is_joint"]:
+                if thermal_nodes[ia]["is_joint"]:
+                    A_contact = joint_contact_area(
+                        thermal_nodes[ia]["w"],
+                        thermal_nodes[ia]["t"],
+                        thermal_nodes[ia]["joint_spec"]
+                    )
+                elif thermal_nodes[ib]["is_joint"]:
+                    A_contact = joint_contact_area(
+                        thermal_nodes[ib]["w"],
+                        thermal_nodes[ib]["t"],
+                        thermal_nodes[ib]["joint_spec"]
+                    )
+                else:
+                    A_contact = min(thermal_nodes[ia]["area"], thermal_nodes[ib]["area"])
 
-            # ---------------------------------------------
-            # Continuous copper vs jointed connection
-            # ---------------------------------------------
-            if not (thermal_nodes[ia]["is_joint"] or thermal_nodes[ib]["is_joint"]):
-                G = 1e12
-                mode = "continuous"
-            else:
                 tA = thermal_nodes[ia]["t"]
                 tB = thermal_nodes[ib]["t"]
-
                 L_char = 0.5 * (tA + tB)
-                R_cu = L_char / (K_CU * A_contact)
+                R_cu = L_char / (K_CU * max(A_contact, 1e-12))
 
                 if thermal_nodes[ia]["is_joint"]:
                     h_c = thermal_nodes[ia]["joint_spec"].h_contact
@@ -326,80 +575,40 @@ def solve_thermal(
 
                 R_contact = 1.0 / (h_c * A_contact) if h_c is not None else 0.0
                 R_total = R_cu + R_contact
-                G = 1.0 / R_total
+                G = 1.0 / max(R_total, 1e-12)
                 mode = "joint"
 
-            thermal_edges.append((ia, ib, G, "node"))
-            thermal_edges.append((ib, ia, G, "node"))
+            else:
+                G = _axial_conductance(sa, sb)
+                mode = "axial"
+
+            thermal_edges.append((ia, ib, G, mode))
+            thermal_edges.append((ib, ia, G, mode))
 
             if debug:
                 print(
-                    f"THERM LINK: E{ea.id} <-> E{eb.id} | "
-                    f"shared_nodes=({ea.u},{ea.v})<->({eb.u},{eb.v}) | "
-                    f"mode={mode} | A={A_contact:.6e} m2 | G={G:.6e}"
+                    f"THERM LINK: {sa.seg_id} <-> {sb.seg_id} | "
+                    f"mode={mode} | G={G:.6e}"
                 )
-
-    # --------------------------------------------------------
-    # Deprecated cross-tier explicit links
-    # --------------------------------------------------------
-    if debug:
-        xlinks = getattr(graph, "cross_tier_links", None) or []
-        print(f"Explicit graph.cross_tier_links count: {len(xlinks)}")
-        for ea_id, eb_id in xlinks:
-            print(f"GRAPH XLINK: E{ea_id} <-> E{eb_id}")
 
     n = len(thermal_nodes)
     nbrs = [[] for _ in range(n)]
-    for entry in thermal_edges:
-        if len(entry) == 3:
-            i, j, G = entry
-            tag = "normal"
-        else:
-            i, j, G, tag = entry
-
+    for i, j, G, tag in thermal_edges:
         nbrs[i].append((j, G, tag))
-
-    if debug:
-        print("\n================ THERMAL NEIGHBOUR LIST ================")
-        for i, nd in enumerate(thermal_nodes):
-            print(f"E{nd['edge_id']} neighbours: {len(nbrs[i])}")
-            for j, G, tag in nbrs[i]:
-                print(
-                    f"    -> E{thermal_nodes[j]['edge_id']} | "
-                    f"tag={tag} | G={G:.6e}"
-                )
 
     therm = BusbarThermalInputs(
         I_total_A=0.0,
-        eps_bus=0.7,
+        eps_bus=0.4,
         eps_env=0.9,
         v_mps=0.0,
         S_ac=1.0,
     )
 
-    # --- BUILD NODE AMBIENT TEMPERATURES ---
-    node_air = [0.0] * n
-    node_air_count = [0] * n
+    # explicit local ambient only — no neighbour air smearing
+    node_air = np.array([nd["air_temp_C"] for nd in thermal_nodes], dtype=float)
 
-    for i, nd in enumerate(thermal_nodes):
-        node_air[i] += nd["air_temp_C"]
-        node_air_count[i] += 1
-
-    # Average (defensive, future-proof if multiple contributions)
-    for i in range(n):
-        if node_air_count[i] > 0:
-            node_air[i] /= node_air_count[i]
-
-    T_floor = np.array([nd["air_temp_C"] for nd in thermal_nodes], dtype=float)
+    T_floor = node_air.copy()
     T = T_floor + 20.0
-
-    # --- ENFORCE AMBIENT CONTINUITY (iterate to convergence) ---
-    for _ in range(5):  # small fixed iteration, cheap and effective
-        for i in range(n):
-            for j, _, _ in nbrs[i]:
-                avg_air = 0.5 * (node_air[i] + node_air[j])
-                node_air[i] = avg_air
-                node_air[j] = avg_air
 
     def calc_terms(i: int, Tvec: np.ndarray):
         nd = thermal_nodes[i]
@@ -434,13 +643,12 @@ def solve_thermal(
             q = G * dT
             P_cond += q
 
-            # Only log AFTER convergence (final iteration)
             if debug and final_pass:
                 cross_link_debug.append({
-                    "from_edge": nd["edge_id"],
-                    "to_edge": thermal_nodes[j]["edge_id"],
-                    "from_tier": id(nd["tier"]) if nd["tier"] is not None else None,
-                    "to_tier": id(thermal_nodes[j]["tier"]) if thermal_nodes[j]["tier"] is not None else None,
+                    "from_seg": nd["seg_id"],
+                    "to_seg": thermal_nodes[j]["seg_id"],
+                    "from_edge": nd["base_edge_id"],
+                    "to_edge": thermal_nodes[j]["base_edge_id"],
                     "tag": tag,
                     "Ti": Ti,
                     "Tj": float(Tvec[j]),
@@ -467,8 +675,9 @@ def solve_thermal(
             R20 = resistance_20C_per_m(nd["w"], nd["t"])
             return I2 * R20 * ALPHA_CU * nd["L"] * therm.S_ac
 
-    def dPout_dT_fd(nd, Ti: float, h: float = 0.05) -> float:
+    def dPout_dT_fd(i: int, nd, Ti: float, h: float = 0.05) -> float:
         Tai = float(node_air[i])
+
         st0 = compute_busbar_physics(
             geom=nd["geom"],
             therm=therm,
@@ -485,6 +694,7 @@ def solve_thermal(
             I_override_A=nd["I"],
             debug=physics_debug,
         )
+
         P0 = (st0.P_conv_W_per_m + st0.P_rad_W_per_m) * nd["L"]
         P1 = (st1.P_conv_W_per_m + st1.P_rad_W_per_m) * nd["L"]
         return (P1 - P0) / h
@@ -502,13 +712,14 @@ def solve_thermal(
 
         for i, nd in enumerate(thermal_nodes):
             Ti = float(Tvec[i])
-            J[i, i] = dPgen_dT(nd, Ti) - dPout_dT_fd(nd, Ti) - sumG[i]
+            J[i, i] = dPgen_dT(nd, Ti) - dPout_dT_fd(i, nd, Ti) - sumG[i]
 
         return J
 
     converged = False
     iterations_used = max_iter
     final_pass = False
+
     for it in range(max_iter):
         f = residual(T)
         max_f = float(np.max(np.abs(f)))
@@ -543,40 +754,46 @@ def solve_thermal(
         else:
             T = np.maximum(T + 0.1 * dT, T_floor)
 
-    # ---------------- Final post-processing ----------------
-    edge_results = []
+    # ---------------- Final post-processing on SEGMENTS ----------------
+    segment_rows = []
     total_loss_W = 0.0
 
     for i, nd in enumerate(thermal_nodes):
         _, P_gen, P_conv, P_rad, P_cond, f_i = calc_terms(i, T)
         total_loss_W += P_gen
 
-        edge_results.append(
-            ThermalEdgeResult(
-                edge_id=int(nd["edge_id"]),
-                T_C=float(T[i]),
-                I_A=float(nd["I"]),
-                length_m=float(nd["L"]),
-                is_joint=bool(nd["is_joint"]),
-                P_gen_W=float(P_gen),
-                P_conv_W=float(P_conv),
-                P_rad_W=float(P_rad),
-                P_cond_W=float(P_cond),
-                residual_W=float(f_i),
-            )
-        )
+        segment_rows.append({
+            "seg_id": nd["seg_id"],
+            "base_edge_id": int(nd["base_edge_id"]),
+            "T_C": float(T[i]),
+            "I_A": float(nd["I"]),
+            "length_m": float(nd["L"]),
+            "is_joint": bool(nd["is_joint"]),
+            "P_gen_W": float(P_gen),
+            "P_conv_W": float(P_conv),
+            "P_rad_W": float(P_rad),
+            "P_cond_W": float(P_cond),
+            "residual_W": float(f_i),
+        })
 
-    # --------------------------------------------------------
-    # Final evaluation pass (for clean debug + outputs)
-    # --------------------------------------------------------
     final_pass = True
-    cross_link_debug.clear()  # wipe transient junk
-
+    cross_link_debug.clear()
     for i in range(n):
         calc_terms(i, T)
 
+    edge_results = _aggregate_segment_results(segment_rows)
+
     if debug:
-        print("\n================ FINAL EDGE TEMPERATURES ================")
+        print("\n================ FINAL SEGMENT TEMPERATURES ================")
+        for row in segment_rows:
+            print(
+                f"{row['seg_id']} | base=E{row['base_edge_id']} | "
+                f"T={row['T_C']:.3f} C | "
+                f"L={row['length_m']:.3f} m | "
+                f"Pgen={row['P_gen_W']:.4f} W"
+            )
+
+        print("\n================ AGGREGATED EDGE TEMPERATURES ================")
         for er in edge_results:
             print(
                 f"E{er.edge_id} | "
@@ -586,49 +803,6 @@ def solve_thermal(
                 f"Pgen={er.P_gen_W:.4f} W"
             )
 
-    # ✅ ADD THIS BLOCK HERE
-    if debug:
-        print("\n================ TEMPERATURE DISCONTINUITIES ================")
-        for i in range(n):
-            for j, _, _ in nbrs[i]:
-                dT = abs(T[i] - T[j])
-                if dT > 0.1:
-                    print(
-                        f"WARNING: E{thermal_nodes[i]['edge_id']} ↔ "
-                        f"E{thermal_nodes[j]['edge_id']} | ΔT={dT:.3f} K"
-                    )
-    if debug:
-        print("\n================ FINAL HEAT FLOW DEBUG ================")
-
-        shown = 0
-        seen = set()
-
-        for entry in cross_link_debug:
-            key = (
-                min(entry["from_edge"], entry["to_edge"]),
-                max(entry["from_edge"], entry["to_edge"]),
-                entry["tag"],
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-
-            print(
-                f"[{entry['tag']}] "
-                f"E{entry['from_edge']} (tier {entry['from_tier']}) -> "
-                f"E{entry['to_edge']} (tier {entry['to_tier']}) | "
-                f"T: {entry['Ti']:.2f} -> {entry['Tj']:.2f} | "
-                f"dT={entry['dT']:.4f} K | "
-                f"G={entry['G']:.6e} | "
-                f"Q={entry['Q_W']:.4f} W"
-            )
-
-            shown += 1
-            if shown >= 100:
-                break
-
-        if shown == 0:
-            print("No heat-flow neighbour entries were recorded.")
     return ThermalSolveResult(
         converged=bool(converged),
         iterations=int(iterations_used),
