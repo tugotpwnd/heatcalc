@@ -23,13 +23,22 @@ BUS_LOAD_TYPE = 10002
 BUS_JOIN_TYPE = 10003
 BUS_SOURCE_TYPE = 10004
 
-def format_thermal_tooltip(results) -> str:
+def format_thermal_tooltip(results, point_temp=None) -> str:
     """
     HTML tooltip showing all solver segments belonging to a bus.
     """
 
     if not isinstance(results, (list, tuple)):
         results = [results]
+
+    point_row = ""
+    if point_temp is not None:
+        point_row = f"""
+        <tr>
+            <td style='color:#8b949e;'>Point temp:</td>
+            <td style='color:#ffa657; font-weight:bold;'>{point_temp:.1f} °C</td>
+        </tr>
+        """
 
     max_I = max(float(r.get("I_A", 0.0)) for r in results)
     max_T = max(float(r.get("T_C", 0.0)) for r in results)
@@ -38,8 +47,10 @@ def format_thermal_tooltip(results) -> str:
     <div style='font-family: sans-serif; min-width: 200px;'>
 
         <b style='color:#58a6ff;'>Bus Result</b><br/>
+        
 
         <table style='border-spacing:4px; margin-top:4px;'>
+        {point_row}
         <tr>
             <td style='color:#8b949e;'>Max current:</td>
             <td style='font-weight:bold;'>{max_I:.1f} A</td>
@@ -117,7 +128,7 @@ class BusLineItem(QGraphicsLineItem):
         self.temperature_C = None
         self.thermal_results = []
 
-        self.setZValue(10)
+        self.setZValue(0)
 
         glow = QGraphicsDropShadowEffect()
         glow.setBlurRadius(20)
@@ -149,7 +160,7 @@ class BusLineItem(QGraphicsLineItem):
         path.lineTo(self.line().p2())
 
         stroker = QPainterPathStroker()
-        stroker.setWidth(14)  # hover hit width (pixels)
+        stroker.setWidth(8)  # hover hit width (pixels)
         return stroker.createStroke(path)
 
 
@@ -169,6 +180,48 @@ class BusLineItem(QGraphicsLineItem):
         self.update()
         super().hoverLeaveEvent(event)
 
+    def hoverMoveEvent(self, event):
+        scene = self.scene()
+
+        if not hasattr(scene, "thermal_graph"):
+            return
+        if not hasattr(self, "thermal_edge"):
+            return
+
+        edge = self.thermal_edge
+        graph = scene.thermal_graph
+        node_T = scene.node_temperatures
+
+        p = event.scenePos()
+
+        T = self._temperature_at_edge_point(edge, graph, node_T, p)
+
+        if getattr(self, "thermal_results", None):
+            html = format_thermal_tooltip(self.thermal_results, point_temp=T)
+            self.setToolTip(html)
+        else:
+            self.setToolTip(f"T = {T:.1f} °C")
+
+    def _temperature_at_edge_point(self, edge, graph, node_T, p_scene):
+        a = graph.nodes[edge.u].p
+        b = graph.nodes[edge.v].p
+
+        dx = b.x() - a.x()
+        dy = b.y() - a.y()
+        L2 = dx * dx + dy * dy
+
+        if L2 < 1e-12:
+            return node_T.get(edge.u, 40.0)
+
+        t = ((p_scene.x() - a.x()) * dx +
+             (p_scene.y() - a.y()) * dy) / L2
+
+        t = max(0.0, min(1.0, t))
+
+        Ta = node_T.get(edge.u, 40.0)
+        Tb = node_T.get(edge.v, 40.0)
+
+        return (1 - t) * Ta + t * Tb
     # ---------------------------------------------------------
     # Attach children
     # ---------------------------------------------------------
@@ -180,7 +233,7 @@ class BusLineItem(QGraphicsLineItem):
 
         item.setParentItem(self)
         item.setPos(local_pos)
-        item.setZValue(self.zValue() + 1)
+        item.setZValue(10000)
 
         # determine attachment type
         if isinstance(item, BusJoinItem):
@@ -294,6 +347,14 @@ class BusLineItem(QGraphicsLineItem):
         # Draw base line (thermal gradient or plain bus)
         # ---------------------------------------------------------
 
+        # Selection highlighting if parent tier is active
+        is_active = False
+        parent = self.parentItem()
+        if parent: # BusLineItem's parent is likely a QGraphicsRectItem (bus_layer)
+            tier = parent.parentItem()
+            if hasattr(tier, "_active") and tier._active:
+                is_active = True
+
         if not self._temperature_segments:
 
             pen = QPen(self._base_pen)
@@ -304,6 +365,9 @@ class BusLineItem(QGraphicsLineItem):
             elif self._hover:
                 pen.setColor(QColor("#ffd33d"))
                 pen.setWidth(self._base_pen.width() + 2)
+            elif is_active:
+                pen.setColor(QColor("#00ffea"))
+                pen.setWidth(self._base_pen.width() + 1)
 
             painter.setPen(pen)
             painter.drawLine(line)
@@ -338,6 +402,11 @@ class BusLineItem(QGraphicsLineItem):
 
             painter.setPen(hover_pen)
             painter.drawLine(line)
+        elif is_active:
+            active_pen = QPen(QColor("#00ffea"), self._base_pen.width() + 1)
+            active_pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(active_pen)
+            painter.drawLine(line)
     # ---------------------------------------------------------
 
     def update_glow(self, color):
@@ -353,6 +422,11 @@ class BusLineItem(QGraphicsLineItem):
     # ---------------------------------------------------------
 
     def itemChange(self, change, value):
+
+        scene = self.scene()
+
+        if scene is None:
+            return super().itemChange(change, value)
 
         if change == QGraphicsItem.ItemPositionChange:
             from .designer_view import snap
@@ -474,6 +548,7 @@ class BusLoadItem(QGraphicsEllipseItem):
         self.setPen(QPen(QColor("#1f6f3a"), 2))
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setZValue(100)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
@@ -510,10 +585,23 @@ class BusLoadItem(QGraphicsEllipseItem):
         # Base circle
         super().paint(painter, option, widget)
 
+        # Selection highlighting if parent tier is active
+        is_active = False
+        parent = self.parentItem()
+        if parent: # BusLineItem's parent is likely a QGraphicsRectItem (bus_layer)
+            tier = parent.parentItem()
+            if hasattr(tier, "_active") and tier._active:
+                is_active = True
+
         # Hover highlight
         if self._hover:
             hover_pen = QPen(QColor("#ffd33d"), 3)
             painter.setPen(hover_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(self.rect())
+        elif is_active:
+            active_pen = QPen(QColor("#00ffea"), 2)
+            painter.setPen(active_pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(self.rect())
 
@@ -524,6 +612,10 @@ class BusLoadItem(QGraphicsEllipseItem):
         return self.mapToScene(QPointF(0, 0))
 
     def itemChange(self, change, value):
+        scene = self.scene()
+
+        if scene is None:
+            return super().itemChange(change, value)
 
         if change == QGraphicsItem.ItemPositionChange:
 
@@ -601,6 +693,7 @@ class BusJoinItem(QGraphicsEllipseItem):
         self.setPen(QPen(QColor("#a40e26"), 2))
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setZValue(100)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
@@ -681,10 +774,23 @@ class BusJoinItem(QGraphicsEllipseItem):
         # Base circle
         super().paint(painter, option, widget)
 
+        # Selection highlighting if parent tier is active
+        is_active = False
+        parent = self.parentItem()
+        if parent: # BusLineItem's parent is likely a QGraphicsRectItem (bus_layer)
+            tier = parent.parentItem()
+            if hasattr(tier, "_active") and tier._active:
+                is_active = True
+
         # Hover highlight
         if self._hover:
             hover_pen = QPen(QColor("#ffd33d"), 3)
             painter.setPen(hover_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(self.rect())
+        elif is_active:
+            active_pen = QPen(QColor("#00ffea"), 2)
+            painter.setPen(active_pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(self.rect())
 
@@ -729,6 +835,11 @@ class BusJoinItem(QGraphicsEllipseItem):
         self.refresh_spec()
 
     def itemChange(self, change, value):
+        scene = self.scene()
+
+        if scene is None:
+            return super().itemChange(change, value)
+
         if change == QGraphicsItem.ItemPositionChange:
             parent = self.parentItem()
             if parent is None:
@@ -832,6 +943,7 @@ class BusSourceItem(QGraphicsEllipseItem):
         self.setPen(QPen(QColor("#1f6feb"), 2))
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setZValue(100)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
@@ -866,10 +978,23 @@ class BusSourceItem(QGraphicsEllipseItem):
         # Base circle
         super().paint(painter, option, widget)
 
+        # Selection highlighting if parent tier is active
+        is_active = False
+        parent = self.parentItem()
+        if parent: # BusLineItem's parent is likely a QGraphicsRectItem (bus_layer)
+            tier = parent.parentItem()
+            if hasattr(tier, "_active") and tier._active:
+                is_active = True
+
         # Hover highlight
         if self._hover:
             hover_pen = QPen(QColor("#ffd33d"), 3)
             painter.setPen(hover_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(self.rect())
+        elif is_active:
+            active_pen = QPen(QColor("#00ffea"), 2)
+            painter.setPen(active_pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(self.rect())
 
@@ -880,6 +1005,11 @@ class BusSourceItem(QGraphicsEllipseItem):
         return self.mapToScene(QPointF(0, 0))
 
     def itemChange(self, change, value):
+
+        scene = self.scene()
+
+        if scene is None:
+            return super().itemChange(change, value)
 
         if change == QGraphicsItem.ItemPositionChange:
 

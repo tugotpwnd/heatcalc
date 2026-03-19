@@ -1,11 +1,18 @@
+from types import SimpleNamespace
+
+from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout,
-    QPushButton, QSpinBox, QLabel, QButtonGroup,
-    QDoubleSpinBox, QComboBox
+    QPushButton, QSpinBox, QButtonGroup,
+    QDoubleSpinBox, QComboBox, QGroupBox,
+    QToolButton, QTableWidget
 )
-
+from .collapsible_group_box import CollapsibleGroupBox
 from .bus_items import BusSpecUI
 from ..core.models import BusbarJointSpec
+from ..utils.resources import get_resource_path
+from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
+from PyQt5.QtCore import Qt
 
 
 class BusbarToolsPanel(QWidget):
@@ -20,17 +27,16 @@ class BusbarToolsPanel(QWidget):
         self.view = designer_view
         self.swb = parent
 
+        self.setMinimumWidth(300) # approximately 1.5x larger, assuming original was around 200
+
         layout = QVBoxLayout(self)
-
-        title = QLabel("Busbar tools")
-        title.setStyleSheet("font-weight: bold")
-        layout.addWidget(title)
-
-        form = QFormLayout()
 
         # -------------------------------------------------
         # BUS DEFAULTS
         # -------------------------------------------------
+
+        gb_bus = CollapsibleGroupBox("Bus Bar Sizing")
+        form_bus = QFormLayout()
 
         self.width = QSpinBox()
         self.width.setRange(10, 500)
@@ -44,16 +50,54 @@ class BusbarToolsPanel(QWidget):
         self.bars.setRange(1, 10)
         self.bars.setValue(1)
 
-        form.addRow("Width (mm)", self.width)
-        form.addRow("Thickness (mm)", self.thickness)
-        form.addRow("Bars", self.bars)
+        form_bus.addRow("Width (mm)", self.width)
+        form_bus.addRow("Thickness (mm)", self.thickness)
+        form_bus.addRow("Bars", self.bars)
+        gb_bus.setLayout(form_bus)
+        layout.addWidget(gb_bus)
 
         # -------------------------------------------------
         # JOINT DEFAULTS
         # -------------------------------------------------
 
+        gb_joint = CollapsibleGroupBox("Joint")
+        form_joint = QFormLayout()
+
+        # Installation type: 3 image tiles (mutually exclusive)
+        inst_box = QGroupBox("Installation type")
+        inst_lay = QtWidgets.QHBoxLayout(inst_box)
+        self.inst_group = QButtonGroup(self)
+        self.inst_group.setExclusive(True)
+
+        def _make_inst_btn(idx: int, label: str, icon_name: str):
+            b = QToolButton()
+            b.setCheckable(True)
+            b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            icon_path = str(get_resource_path(f"heatcalc/assets/{icon_name}"))
+            icon = QtGui.QIcon(icon_path)
+            if icon.isNull():
+                pm = QtGui.QPixmap(64, 40)
+                pm.fill(QtGui.QColor("#ddd"))
+                painter = QtGui.QPainter(pm)
+                painter.drawText(pm.rect(), Qt.AlignCenter, str(idx))
+                painter.end()
+                icon = QtGui.QIcon(pm)
+            b.setIcon(icon)
+            b.setIconSize(QtCore.QSize(72, 48))
+            b.setText(label)
+            self.inst_group.addButton(b, idx)
+            inst_lay.addWidget(b)
+            return b
+
+        self.btn_inst1 = _make_inst_btn(0, "Type 1", "cable_install_type1.png")
+        self.btn_inst2 = _make_inst_btn(1, "Type 2", "cable_install_type2.png")
+        self.btn_inst3 = _make_inst_btn(2, "Type 3", "cable_install_type3.png")
+        self.btn_inst1.setChecked(True)
+
         self.joint_type = QComboBox()
         self.joint_type.addItems(["bolted_overlap", "clamped_edge"])
+        # Hide the actual joint_type combo box as we now use installation_type
+        self.joint_type.setVisible(False)
 
         self.overlap_m = QDoubleSpinBox()
         self.overlap_m.setRange(0.001, 1.0)
@@ -86,19 +130,22 @@ class BusbarToolsPanel(QWidget):
         self.h_contact.setValue(5000)
         self.h_contact.setSuffix(" W/m²K")
 
-        form.addRow("Joint type", self.joint_type)
-        form.addRow("Overlap", self.overlap_m)
-        form.addRow("Bolt count", self.bolt_count)
-        form.addRow("Bolt dia", self.bolt_dia)
-        form.addRow("Torque", self.torque)
-        form.addRow("Nut factor", self.nut_factor)
-        form.addRow("h contact", self.h_contact)
-
-        layout.addLayout(form)
+        form_joint.addRow(inst_box)
+        form_joint.addRow("Overlap", self.overlap_m)
+        form_joint.addRow("Bolt count", self.bolt_count)
+        form_joint.addRow("Bolt dia", self.bolt_dia)
+        form_joint.addRow("Torque", self.torque)
+        form_joint.addRow("Nut factor", self.nut_factor)
+        form_joint.addRow("h contact", self.h_contact)
+        gb_joint.setLayout(form_joint)
+        layout.addWidget(gb_joint)
 
         # -------------------------------------------------
-        # BUTTONS
+        # DRAWING TOOLS
         # -------------------------------------------------
+
+        gb_draw = CollapsibleGroupBox("Drawing tools")
+        draw_layout = QVBoxLayout()
 
         self.btn_draw = QPushButton("Draw bus")
         self.btn_draw.setCheckable(True)
@@ -119,9 +166,6 @@ class BusbarToolsPanel(QWidget):
         self.btn_delete.setCheckable(True)
         self.btn_delete.toggled.connect(self.view.set_delete_mode)
 
-        self.btn_solve = QPushButton("Solve network")
-        self.btn_solve.clicked.connect(self.solve_network)
-
         self.group = QButtonGroup(self)
         self.group.setExclusive(False)
 
@@ -137,14 +181,23 @@ class BusbarToolsPanel(QWidget):
         self.btn_join.clicked.connect(lambda: self._exclusive_toggle(self.btn_join))
         self.btn_delete.clicked.connect(lambda: self._exclusive_toggle(self.btn_delete))
 
-        layout.addWidget(self.btn_draw)
-        layout.addWidget(self.btn_source)
-        layout.addWidget(self.btn_load)
-        layout.addWidget(self.btn_join)
-        layout.addWidget(self.btn_delete)
-        layout.addWidget(self.btn_solve)
+        draw_layout.addWidget(self.btn_draw)
+        draw_layout.addWidget(self.btn_source)
+        draw_layout.addWidget(self.btn_load)
+        draw_layout.addWidget(self.btn_join)
+        draw_layout.addWidget(self.btn_delete)
+        gb_draw.setLayout(draw_layout)
+        layout.addWidget(gb_draw)
 
         layout.addStretch()
+
+        # -------------------------------------------------
+        # SOLVE BUTTON
+        # -------------------------------------------------
+
+        self.btn_solve = QPushButton("Solve network")
+        self.btn_solve.clicked.connect(self.solve_network)
+        layout.addWidget(self.btn_solve)
 
         self.btn_draw.toggled.connect(self.view.set_bus_draw_mode)
 
@@ -154,6 +207,7 @@ class BusbarToolsPanel(QWidget):
         self.bars.valueChanged.connect(self.update_spec)
 
         # joint spec bindings
+        self.inst_group.buttonClicked.connect(self._on_installation_type_changed)
         self.joint_type.currentTextChanged.connect(self.update_joint_spec)
         self.overlap_m.valueChanged.connect(self.update_joint_spec)
         self.bolt_count.valueChanged.connect(self.update_joint_spec)
@@ -163,7 +217,8 @@ class BusbarToolsPanel(QWidget):
         self.h_contact.valueChanged.connect(self.update_joint_spec)
 
         self.update_spec()
-        self.update_joint_spec()
+        self._on_installation_type_changed()  # sets initial visibility and updates spec
+        self._init_compliance_table()
 
     # -------------------------------------------------
 
@@ -187,6 +242,48 @@ class BusbarToolsPanel(QWidget):
 
     # -------------------------------------------------
 
+    def _on_installation_type_changed(self):
+        idx = self.inst_group.checkedId()
+        if idx < 0:
+            idx = 0
+
+        # Update the hidden joint_type combo box for backward compatibility
+        if idx == 0:  # Type 1
+            self.joint_type.setCurrentText("bolted_overlap")
+        elif idx == 1:  # Type 2
+            self.joint_type.setCurrentText("clamped_edge")
+        else:  # Type 3
+            # Keep existing or set to a placeholder if models were updated
+            pass
+
+        self._update_joint_fields_visibility(idx)
+        self.update_joint_spec()
+
+    def _update_joint_fields_visibility(self, type_idx):
+        """Enable/disable fields based on the selected installation type."""
+
+        is_type1 = (type_idx == 0)
+        is_type2 = (type_idx == 1)
+        is_placeholder = (type_idx == 2)
+
+        # Type 1 (Bolted Overlap): All options available.
+        # Selecting Type 1, should be effectively bolted overlap, and all of the options should be available.
+        # Type 2 (Clamped Edge): Only required inputs are Torque or pertinent values.
+        # Type 3 (Placeholder): make all unavailable.
+
+        self.overlap_m.setEnabled(is_type1)
+        self.bolt_count.setEnabled(is_type1 or is_type2)
+        self.bolt_dia.setEnabled(is_type1 or is_type2)
+        self.torque.setEnabled(is_type1 or is_type2)
+        self.nut_factor.setEnabled(is_type1 or is_type2)
+        self.h_contact.setEnabled(is_type1 or is_type2)
+
+        # Grey out/disable labels as well for clarity if needed,
+        # but QFormLayout's row labels are harder to access individually.
+        # Setting the widget's enabled state usually greys out the associated labels in most QStyles.
+
+    # -------------------------------------------------
+
     def update_joint_spec(self):
 
         spec = BusbarJointSpec(
@@ -197,296 +294,136 @@ class BusbarToolsPanel(QWidget):
             joint_type=self.joint_type.currentText(),
             nut_factor=self.nut_factor.value(),
             h_contact=self.h_contact.value(),
+            other_bar_width_mm=None,
+            other_bar_thickness_mm=None,
+            other_bar_count=None,
         )
 
         self.view.set_default_joint_spec(spec)
 
     # -------------------------------------------------
-
     def solve_network(self):
+        result = self.swb.solve_all_thermal()
+        if not result:
+            return
+        self._apply_results(result)
+        self.update_compliance_table(result)
+
+    def _apply_results(self, result: dict):
+        """
+        Apply solved thermal results to:
+          - bus / joint graphics in DesignerView
+          - thermal legend
+          - tier overlay summaries (t.live_thermal)
+        """
+
+        if not result:
+            return
+
+        global_sol = result.get("global")
+        graph = result.get("graph")
+        tier_results = result.get("tiers", {})
+        tier_edges = result.get("tier_edges", {})
+        air_by_edge = result.get("air_by_edge", {})
+
+        if global_sol is None or graph is None or not tier_results:
+            return
+
+        edge_result_by_id = {e.edge_id: e for e in global_sol.edge_results}
 
         from collections import defaultdict
 
-        from heatcalc.core.bus_graph import extract_graph
-        from heatcalc.core.bus_current_solver import (
-            solve_currents,
-            filter_graph_to_source_component,
-            get_disconnected_items,
-        )
-        from heatcalc.core.iec60890_calc import calc_tier_iec60890
-        from heatcalc.core.bus_thermal_solver import solve_thermal
-        from heatcalc.ui.tier_item import TierItem, tier_effective_inlet_area_cm2
-        from PyQt5.QtWidgets import QMessageBox
+        node_T = defaultdict(list)
 
-        swb = self.swb
+        for er in global_sol.edge_results:
+            e = graph.edges[er.edge_id]
+
+            node_T[e.u].append(er.T_C)
+            node_T[e.v].append(er.T_C)
+
+        node_T = {
+            nid: sum(vals) / len(vals)
+            for nid, vals in node_T.items()
+        }
+
+        from collections import defaultdict
+
+        bus_edge_results = defaultdict(list)
+
+        ambient = float(getattr(self.swb.project.meta, "ambient_C", 40.0))
+
+
+        for er in global_sol.edge_results:
+            edge = graph.edges[er.edge_id]
+
+            if edge.ui_item:
+                bus_edge_results[edge.ui_item].append({
+                    "T_C": float(er.T_C),
+                    "I_A": float(er.I_A),
+                    "ambient_C": float(air_by_edge.get(er.edge_id, ambient)),
+                })
+
+        # assign FULL results to each bus UI item
+        for ui_item, results in bus_edge_results.items():
+            ui_item.thermal_results = results
+
+        for er in global_sol.edge_results:
+            edge = graph.edges[er.edge_id]
+
+            if edge.ui_item:
+                edge.ui_item.thermal_edge = edge
+
         scene = self.view.scene()
-        tiers = swb.get_tiers()
+
+        scene.thermal_graph = graph
+        scene.node_temperatures = node_T
 
         # -------------------------------------------------
-        # Helper: resolve an edge's actual TierItem
+        # Clear previous disconnected highlighting
         # -------------------------------------------------
-
-        def resolve_edge_tier(edge):
-            obj = getattr(edge, "tier", None)
-
-            while obj is not None:
-                if isinstance(obj, TierItem):
-                    return obj
-                if hasattr(obj, "parentItem"):
-                    obj = obj.parentItem()
-                else:
-                    break
-
-            return None
-
-        # -------------------------------------------------
-        # Project meta
-        # -------------------------------------------------
-
-        ambient = float(getattr(swb.project.meta, "ambient_C", 40.0))
-        wall = bool(swb.cb_wall.isChecked())
-        altitude_m = float(getattr(swb.project.meta, "altitude_m", 0.0))
-        ip_rating_n = int(getattr(swb.project.meta, "ip_rating_n", 0))
-
-        solar_dt = (
-            float(getattr(swb.project.meta, "solar_delta_K", 0.0))
-            if getattr(swb.project.meta, "solar_enabled", False)
-            else 0.0
-        )
-
-        louvre_def = swb._get_louvre_definition()
-
-        # -------------------------------------------------
-        # Extract graph + electrical solve once
-        # -------------------------------------------------
-
-        graph = extract_graph(scene)
-        self.view.clear_solver_overlay()
-
+        scene = self.view.scene()
         for item in scene.items():
             if hasattr(item, "set_disconnected"):
                 item.set_disconnected(False)
 
-        if graph.source_node is None:
-            QMessageBox.warning(self, "Solve Failed", "No source node detected in the network.")
-            return
-
-        disconnected_items = get_disconnected_items(graph)
-        if disconnected_items:
-            for item in disconnected_items:
-                if hasattr(item, "set_disconnected"):
-                    item.set_disconnected(True)
-
-            QMessageBox.warning(
-                self,
-                "Disconnected Nodes",
-                "Floating nodes detected! Every busline, load, and joint must be connected to the source.\n\n"
-                "Disconnected items have been highlighted in red."
-            )
-            return
-
-        filter_graph_to_source_component(graph)
-        solve_currents(graph)
-
         # -------------------------------------------------
-        # Partition edges by owning tier
+        # Global temperature range
         # -------------------------------------------------
-
-        tier_edges = {}
-        edge_owner_tier = {}
-
-        for t in tiers:
-            owned = [e for e in graph.edges.values() if resolve_edge_tier(e) is t]
-            tier_edges[t] = owned
-            for e in owned:
-                edge_owner_tier[e.id] = t
-
-        # -------------------------------------------------
-        # Global outer iteration:
-        #   tier IEC60890 air solve
-        #   -> one global copper thermal solve
-        #   -> updated bus losses per tier
-        # -------------------------------------------------
-
-        max_iter = 30
-        tol_T = 0.05
-        tol_P = 0.5
-        relax = 0.5
-
-        P_bus_by_tier = {t: 0.0 for t in tiers}
-        prev_T_top_by_tier = {t: float(ambient) for t in tiers}
-
-        last_tier_res = {}
-        last_air_by_edge = {}
-        last_global_sol = None
-        converged = False
-        history = []
-
-        for k in range(max_iter):
-
-            # ---------------------------------------------
-            # Solve each tier enclosure temperature using
-            # current estimate of busbar watts in that tier
-            # ---------------------------------------------
-            tier_res = {}
-
-            for t in tiers:
-                inlet_area_cm2 = 0.0
-
-                if louvre_def:
-                    inlet_area_cm2 = tier_effective_inlet_area_cm2(
-                        tier=t,
-                        louvre_def=louvre_def,
-                        ip_rating_n=ip_rating_n,
-                    )
-
-                P_base = float(getattr(t, "total_heat_w", 0.0))
-                P_bus = float(P_bus_by_tier.get(t, 0.0))
-
-                res = calc_tier_iec60890(
-                    tier=t,
-                    tiers=tiers,
-                    wall_mounted=wall,
-                    inlet_area_cm2=inlet_area_cm2,
-                    ambient_C=ambient,
-                    altitude_m=altitude_m,
-                    ip_rating_n=ip_rating_n,
-                    solar_delta_K=solar_dt,
-                    P_override_W=P_base + P_bus,
-                )
-                res["ambient_C"] = float(ambient)
-                tier_res[t] = res
-
-            # ---------------------------------------------
-            # Build per-edge air temperature map
-            # ---------------------------------------------
-            air_by_edge = {}
-
-            for t in tiers:
-                # keep same air reference behaviour you already had
-                T_air_for_bus = float(tier_res[t]["T_top"])
-
-                for e in tier_edges.get(t, []):
-                    air_by_edge[e.id] = T_air_for_bus
-
-            if not air_by_edge:
-                QMessageBox.warning(self, "Solve Failed", "No bus edges found in the network.")
-                return
-
-            # ---------------------------------------------
-            # Solve copper network globally
-            # ---------------------------------------------
-            global_sol = solve_thermal(
-                graph=graph,
-                air_temp_C=air_by_edge,
-                debug=False,
-            )
-
-            edge_result_by_id = {e.edge_id: e for e in global_sol.edge_results}
-
-            # ---------------------------------------------
-            # Re-accumulate bus loss per tier
-            # ---------------------------------------------
-            P_bus_raw_by_tier = defaultdict(float)
-
-            for edge_id, er in edge_result_by_id.items():
-                t = edge_owner_tier.get(edge_id)
-                if t is not None:
-                    P_bus_raw_by_tier[t] += float(er.P_gen_W)
-
-            P_bus_new_by_tier = {}
-            for t in tiers:
-                old = float(P_bus_by_tier.get(t, 0.0))
-                raw = float(P_bus_raw_by_tier.get(t, 0.0))
-                P_bus_new_by_tier[t] = (1.0 - relax) * old + relax * raw
-
-            dT = max(
-                abs(float(tier_res[t]["T_top"]) - float(prev_T_top_by_tier.get(t, ambient)))
-                for t in tiers
-            ) if tiers else 0.0
-
-            dP = max(
-                abs(float(P_bus_new_by_tier.get(t, 0.0)) - float(P_bus_by_tier.get(t, 0.0)))
-                for t in tiers
-            ) if tiers else 0.0
-
-            history.append({
-                "iter": k + 1,
-                "max_dT_C": float(dT),
-                "max_dP_W": float(dP),
-                "P_bus_total_W": float(sum(P_bus_new_by_tier.values())),
-            })
-
-            last_tier_res = tier_res
-            last_air_by_edge = air_by_edge
-            last_global_sol = global_sol
-
-            if dT < tol_T and dP < tol_P:
-                converged = True
-                P_bus_by_tier = P_bus_new_by_tier
-                break
-
-            prev_T_top_by_tier = {t: float(tier_res[t]["T_top"]) for t in tiers}
-            P_bus_by_tier = P_bus_new_by_tier
-
-        if last_global_sol is None:
-            QMessageBox.warning(self, "Solve Failed", "Global thermal solve did not run.")
-            return
-
-        # -------------------------------------------------
-        # Global temperature scale
-        # -------------------------------------------------
-
         all_bus_temps = [
-            float(er.T_C)
-            for er in last_global_sol.edge_results
-            if not er.is_joint
+            float(e.T_C)
+            for e in global_sol.edge_results
+            if not e.is_joint
         ]
 
         if all_bus_temps:
             global_Tmin = min(all_bus_temps)
             global_Tmax = max(all_bus_temps)
         else:
-            global_Tmin = float(ambient)
-            global_Tmax = float(ambient + 100.0)
+            global_Tmin = ambient
+            global_Tmax = ambient + 100.0
 
-        self.view.legend.set_temperature_range(global_Tmin, global_Tmax)
+        if hasattr(self.view, "legend"):
+            self.view.legend.set_temperature_range(global_Tmin, global_Tmax)
 
         # -------------------------------------------------
-        # Apply UI results tier-by-tier using GLOBAL edge temps
+        # Push results tier-by-tier into DesignerView + overlays
         # -------------------------------------------------
 
-        edge_result_by_id = {e.edge_id: e for e in last_global_sol.edge_results}
-
-        for t in tiers:
-
-            owned_edges = tier_edges.get(t, [])
-
-            class TierGraph:
-                pass
-
-            tg = TierGraph()
-            tg.name = f"Tier-{id(t)}"
-            tg.edges = {e.id: e for e in owned_edges}
-            tg.nodes = graph.nodes
-            tg.loads = graph.loads
-            tg.joins = graph.joins
-            tg.use_air_temp = "top"
+        for t, res in tier_results.items():
+            owned_edge_list = tier_edges.get(t, [])
+            owned_edges = {e.id: e for e in owned_edge_list}
 
             g_serial = {
-                "name": tg.name,
+                "name": f"Tier-{id(t)}",
                 "use_air_temp": "top",
-                "T_air_C": float(last_tier_res[t]["T_top"]),
-                "P_loss_W": float(P_bus_by_tier.get(t, 0.0)),
-                "max_T_C": max((float(edge_result_by_id[e.id].T_C) for e in owned_edges), default=ambient),
-                "min_T_C": min((float(edge_result_by_id[e.id].T_C) for e in owned_edges), default=ambient),
-                "solver_converged": bool(last_global_sol.converged),
-                "solver_iterations": int(last_global_sol.iterations),
+                "T_air_C": float(res.get("T_top", ambient)),
                 "edges": [],
             }
 
-            for e in owned_edges:
-                er = edge_result_by_id[e.id]
+            for e in owned_edge_list:
+                er = edge_result_by_id.get(e.id)
+                if not er:
+                    continue
 
                 g_serial["edges"].append({
                     "edge_id": er.edge_id,
@@ -500,8 +437,19 @@ class BusbarToolsPanel(QWidget):
                     "P_rad_W": float(er.P_rad_W),
                     "P_cond_W": float(er.P_cond_W),
                     "residual_W": float(er.residual_W),
-                    "ambient_C": float(last_air_by_edge.get(er.edge_id, ambient)),
+                    "ambient_C": float(air_by_edge.get(er.edge_id, ambient)),
                 })
+
+            class TierGraph:
+                pass
+
+            tg = TierGraph()
+            tg.name = g_serial["name"]
+            tg.edges = owned_edges
+            tg.nodes = graph.nodes
+            tg.loads = graph.loads
+            tg.joins = graph.joins
+            tg.use_air_temp = "top"
 
             self.view.apply_thermal_results(
                 tg,
@@ -510,27 +458,118 @@ class BusbarToolsPanel(QWidget):
                 Tmax=global_Tmax,
             )
 
-            res = last_tier_res[t]
-            res["graphs"] = [g_serial]
-            res["coupling"] = {
-                "converged": bool(converged),
-                "iterations": len(history),
-                "history": list(history),
-                "P_base_W": float(getattr(t, "total_heat_w", 0.0)),
-                "P_bus_W": float(P_bus_by_tier.get(t, 0.0)),
-            }
+            coupling = res.get("coupling", {}) or {}
 
-            t.live_thermal = res
-            #
-            # print(f"\n--- Tier {id(t)} ---")
-            # print(f"Air mid  : {res['T_mid']:.2f} C")
-            # print(f"Air top  : {res['T_top']:.2f} C")
-            # print(f"P_base   : {res['coupling']['P_base_W']:.2f} W")
-            # print(f"P_busbar : {res['coupling']['P_bus_W']:.2f} W")
-            # print(f"Conv     : {res['coupling']['converged']}")
-            # print(f"Iter     : {res['coupling']['iterations']}")
+            P_base_W = float(coupling.get("P_base_W", getattr(t, "total_heat_w", 0.0)))
+            P_bus_W = float(coupling.get("P_bus_W", 0.0))
+            P_total_W = P_base_W + P_bus_W
+
+            edge_temps = [
+                float(edge_result_by_id[e.id].T_C)
+                for e in owned_edge_list
+                if e.id in edge_result_by_id
+            ]
+
+            if edge_temps:
+                max_graph_T = max(edge_temps)
+                min_graph_T = min(edge_temps)
+            else:
+                max_graph_T = ambient
+                min_graph_T = ambient
+
+            lt = dict(res)
+            lt["P_base_W"] = P_base_W
+            lt["P_bus_W"] = P_bus_W
+            lt["P_total_W"] = P_total_W
+            lt["max_graph_T_C"] = max_graph_T
+            lt["min_graph_T_C"] = min_graph_T
+            lt["solver_converged"] = bool(global_sol.converged)
+            lt["solver_iterations"] = int(global_sol.iterations)
+            lt["limit_C"] = float(getattr(t, "effective_max_temp_C", lambda: 70.0)())
+
+            t.live_thermal = lt
 
             try:
                 t.update()
             except Exception:
                 pass
+
+    def _init_compliance_table(self):
+        table = QTableWidget()
+        table.setColumnCount(5)
+
+        table.setHorizontalHeaderLabels([
+            "Tier",
+            "Built-in",
+            "Terminals",
+            "Enclosure",
+            "Busbars",
+        ])
+
+        self.compliance_table = table
+        self.layout().addWidget(table)
+
+    def update_compliance_table(self, result: dict):
+        from heatcalc.core.compliance_61439 import evaluate_tier_compliance
+
+        if not result:
+            return
+
+        global_sol = result.get("global")
+        tier_results = result.get("tiers", {})
+        ambient = float(self.swb.project.meta.ambient_C)
+
+        table = self.compliance_table
+        table.setRowCount(len(tier_results))
+
+        def set_cell(row, col, ok, text, tooltip=None):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignCenter)
+
+            if ok:
+                item.setBackground(Qt.green)
+            else:
+                item.setBackground(Qt.red)
+
+            if tooltip:
+                item.setToolTip(tooltip)
+
+            table.setItem(row, col, item)
+
+        for row, (t, res) in enumerate(tier_results.items()):
+            comp = evaluate_tier_compliance(t, global_sol, res, ambient)
+
+            # Tier label
+            table.setItem(row, 0, QTableWidgetItem(comp.tier_id))
+
+            # Built-in
+            set_cell(
+                row, 1,
+                comp.built_in_ok,
+                f"{comp.built_in_max_T:.1f}°C",
+                "\n".join(comp.notes)
+            )
+
+            # Terminals
+            term_text = f"{comp.terminals_max_T:.1f}°C" if comp.terminals_max_T else "-"
+            set_cell(
+                row, 2,
+                comp.terminals_ok,
+                term_text
+            )
+
+            # Enclosure
+            set_cell(
+                row, 3,
+                comp.enclosure_ok,
+                f"{comp.enclosure_surface_T:.1f}°C"
+            )
+
+            # Busbars
+            set_cell(
+                row, 4,
+                comp.busbar_ok,
+                f"{comp.busbar_max_T:.1f}°C"
+            )
+
+        table.resizeColumnsToContents()

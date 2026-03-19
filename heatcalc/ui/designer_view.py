@@ -10,7 +10,10 @@ from PyQt5.QtWidgets import (
     QGraphicsLineItem, QGraphicsItem
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF
-from .bus_items import BusLineItem, BusSpecUI, BusLoadItem, BusJoinItem, BusSourceItem
+from .bus_items import (
+    BusLineItem, BusSpecUI, BusLoadItem, BusJoinItem, BusSourceItem,
+    BUS_LINE_TYPE, BUS_LOAD_TYPE, BUS_JOIN_TYPE, BUS_SOURCE_TYPE
+)
 from heatcalc.ui.temperature_legend import TemperatureLegend
 from .color_utils import temperature_to_color
 from .tier_item import TierItem
@@ -55,6 +58,7 @@ class DesignerView(QGraphicsView):
         self._active_tier = None
 
         # ---- bus drawing tool ----
+        self._bus_z_counter = 0
         self._draw_bus_mode = False
         self._bus_start = None          # QPointF
         self._bus_temp = None           # QGraphicsLineItem
@@ -79,7 +83,7 @@ class DesignerView(QGraphicsView):
 
     # ---- Layer support --------------------------------------------------------------
 
-    def set_active_tier(self, tier: TierItem):
+    def set_active_tier(self, tier: Optional[TierItem]):
         self._active_tier = tier
         self.update_tier_visuals()
 
@@ -87,6 +91,11 @@ class DesignerView(QGraphicsView):
         tiers = [i for i in self.scene().items() if isinstance(i, TierItem)]
         for t in tiers:
             t.set_active(t is self._active_tier)
+
+        # Force all bus items to repaint so they pick up the tier activation state
+        for item in self.scene().items():
+            if item.type() in (BUS_LINE_TYPE, BUS_LOAD_TYPE, BUS_JOIN_TYPE, BUS_SOURCE_TYPE):
+                item.update()
 
     def refresh_tier_stack_visuals(self):
         tiers = [i for i in self.scene().items() if isinstance(i, TierItem)]

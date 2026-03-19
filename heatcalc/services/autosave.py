@@ -55,7 +55,7 @@ class AutoSaveController(QObject):
         self._on_timeout()
 
     def _on_timeout(self) -> None:
-        print("[AUTOSAVE] debounce timeout fired")
+        # print("[AUTOSAVE] debounce timeout fired")
 
         if not self._settings.autosave_enabled:
             print("[AUTOSAVE] aborted (autosave disabled)")
@@ -68,5 +68,5 @@ class AutoSaveController(QObject):
         data = self._get_project_json()
 
         self._persist.save_project(data, self._current_path)
-        print("[AUTOSAVE] JSON written to disk")
+        # print("[AUTOSAVE] JSON written to disk")
 

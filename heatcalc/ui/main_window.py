@@ -303,6 +303,8 @@ class MainWindow(QMainWindow):
             self._project_changed, Qt.UniqueConnection
         )
 
+
+
     # ======================= Internals ======================================
     def _rebuild_tabs(self):
         """Recreate tab contents that depend on the current Project instance."""

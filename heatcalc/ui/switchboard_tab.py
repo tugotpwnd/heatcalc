@@ -14,6 +14,7 @@ from PyQt5.QtGui import QFontMetrics
 
 from .designer_view import DesignerView, GRID, snap
 from .tier_item import TierItem, _Handle, CableEntry, tier_effective_inlet_area_cm2
+from ..core.bus_thermal_solver import solve_thermal
 from ..core.component_library import DEFAULT_COMPONENTS  # we’ll enrich this map with catalog entries
 from PyQt5.QtWidgets import QDialog, QDialogButtonBox
 from ..core.component_store import (
@@ -22,10 +23,10 @@ from ..core.component_store import (
 )
 from .component_table_model import ComponentTableModel
 from .cable_adder import CableAdderWidget
-from ..core.iec60890_calc import calc_tier_iec60890
 from ..core.iec60890_geometry import apply_curve_state_to_tiers, apply_covered_sides_to_tiers
 from ..core.louvre_calc import tier_max_effective_inlet_area_cm2
 from ..core.models import SOLAR_COLOUR_TABLE
+from ..core.tier_coupled_solver import calc_tier_iec60890_coupled
 from ..utils.qt import signals
 from PyQt5.QtWidgets import QPlainTextEdit, QDialog, QVBoxLayout
 from heatcalc.ui.bus_items import BusSpecUI, BusLineItem, BusLoadItem, BusJoinItem, BusSourceItem
@@ -115,48 +116,7 @@ class _NewComponentDialog(QDialog):
 
 
 
-class CollapsibleGroupBox(QGroupBox):
-    def __init__(self, title="", parent=None, start_expanded=True):
-        super().__init__(title, parent)
-        self.setCheckable(True)
-        self.setChecked(bool(start_expanded))
-        self._content = QWidget(self)
-        self._inner_layout = QVBoxLayout(self._content)
-        self._inner_layout.setContentsMargins(0, 0, 0, 0)
-
-        outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self._content)
-        super().setLayout(outer)
-
-        # size policy: expand when open, fixed when closed
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.toggled.connect(self._on_toggled)
-
-        # start in correct visual state
-        self._apply_collapsed_look(not start_expanded)
-
-    def setLayout(self, layout):
-        """Put caller's layout inside the collapsible content area."""
-        self._inner_layout.addLayout(layout)
-
-    # --- helpers ---------------------------------------------------------
-    def _header_height_px(self) -> int:
-        fm = QFontMetrics(self.font())
-        # room for check box + text + frame margins
-        return int(fm.height() + fm.leading() + 10)
-
-    def _apply_collapsed_look(self, collapsed: bool):
-        self._content.setVisible(not collapsed)
-        if collapsed:
-            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self.setMaximumHeight(self._header_height_px())
-        else:
-            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
-
-    def _on_toggled(self, checked: bool):
-        self._apply_collapsed_look(not checked)
+from .collapsible_group_box import CollapsibleGroupBox
 
 
 class SwitchboardTab(QWidget):
@@ -578,7 +538,6 @@ class SwitchboardTab(QWidget):
                 if t.is_ventilated:
                     t.clear_vent()
 
-        self._recompute_live_thermal()
         self._update_left_from_selection()
 
     def _on_louvre_definition_changed(self):
@@ -773,7 +732,6 @@ class SwitchboardTab(QWidget):
     def _on_tier_geometry_committed(self):
         # recompute curve IDs (adjacency can change) and notify others
         self._recompute_all_curves()
-        self._recompute_live_thermal()
         self._update_left_from_selection()
         self.tierGeometryCommitted.emit()
 
@@ -794,7 +752,6 @@ class SwitchboardTab(QWidget):
             return
         it.is_ventilated = on
         self._recompute_all_curves()
-        self._recompute_live_thermal()
         self._update_left_from_selection()
 
     def _mark_project_dirty(self):
@@ -846,7 +803,6 @@ class SwitchboardTab(QWidget):
             it.vent_cols = max(1, getattr(it, "vent_cols", 1))
 
         self._update_left_from_selection()
-        self._recompute_live_thermal()
         self._mark_project_dirty()
 
     def _apply_vent_grid(self):
@@ -876,7 +832,6 @@ class SwitchboardTab(QWidget):
         self.sp_vent_cols.blockSignals(False)
 
         it.update()
-        self._recompute_live_thermal()
         self._mark_project_dirty()
 
     # ------------------------------------------------------------------ #
@@ -891,60 +846,244 @@ class SwitchboardTab(QWidget):
             except Exception:
                 pass
 
-    def _recompute_live_thermal(self):
+    # ------------------------------------------------------------------ #
+    # Solver
+    # ------------------------------------------------------------------ #
+    def _resolve_edge_tier(self, edge):
+        """
+        Resolve the true owning TierItem for an edge, even if edge.tier is a child
+        object or stale intermediate reference.
+        """
+        obj = getattr(edge, "tier", None)
+
+        while obj is not None:
+            if isinstance(obj, TierItem):
+                return obj
+            if hasattr(obj, "parentItem"):
+                obj = obj.parentItem()
+            else:
+                break
+
+        return None
+
+    def solve_all_thermal(self):
+        from heatcalc.core.bus_graph import extract_graph
+        from heatcalc.core.bus_current_solver import (
+            solve_currents,
+            filter_graph_to_source_component,
+            get_disconnected_items,
+        )
+        from heatcalc.core.iec60890_calc import calc_tier_iec60890
+        from PyQt5.QtWidgets import QMessageBox
+
+        scene = self.scene
         tiers = list(self._tiers())
 
-        # Project-wide meta (safe defaults)
         ambient = float(getattr(self.project.meta, "ambient_C", 40.0))
         wall = bool(self.cb_wall.isChecked())
-        project_altitude_m = float(getattr(self.project.meta, "altitude_m", 0.0))
+        altitude_m = float(getattr(self.project.meta, "altitude_m", 0.0))
         ip_rating_n = int(getattr(self.project.meta, "ip_rating_n", 0))
-        solar_dt = float(getattr(self.project.meta, "solar_delta_K", 0.0)) \
-            if getattr(self.project.meta, "solar_enabled", False) else 0.0
+        solar_dt = (
+            float(getattr(self.project.meta, "solar_delta_K", 0.0))
+            if getattr(self.project.meta, "solar_enabled", False)
+            else 0.0
+        )
 
         louvre_def = self._get_louvre_definition()
 
-        for t in tiers:
-            try:
-                inlet_area_cm2 = 0.0
-                vent_test_area_cm2 = None
+        # -----------------------------------
+        # 1. Build and solve electrical graph
+        # -----------------------------------
+        graph = extract_graph(scene)
 
+        if graph.source_node is None:
+            QMessageBox.warning(self, "Solve Failed", "No source node detected in the network.")
+            return None
+
+        disconnected = get_disconnected_items(graph)
+        if disconnected:
+            QMessageBox.warning(
+                self,
+                "Disconnected Nodes",
+                "Floating nodes detected! Every busline, load, and joint must be connected to the source."
+            )
+            return None
+
+        filter_graph_to_source_component(graph)
+        solve_currents(graph)
+
+        self._graph = graph
+
+        # -------------------------------------------------
+        # 2. Resolve edge ownership robustly
+        # -------------------------------------------------
+        tier_edges = {}
+        edge_owner_tier = {}
+
+        for t in tiers:
+            owned = [e for e in graph.edges.values() if self._resolve_edge_tier(e) is t]
+            tier_edges[t] = owned
+            for e in owned:
+                edge_owner_tier[e.id] = t
+
+        if not edge_owner_tier:
+            QMessageBox.warning(self, "Solve Failed", "No bus edges found in the network.")
+            return None
+
+        # -------------------------------------------------
+        # 3. Global outer iteration
+        #    tier IEC60890 air solve
+        #    -> one global copper solve
+        #    -> update bus watts per tier
+        # -------------------------------------------------
+        max_iter = 30
+        tol_T = 0.05
+        tol_P = 0.5
+        relax = 0.5
+
+        P_bus_by_tier = {t: 0.0 for t in tiers}
+        prev_T_top_by_tier = {t: ambient for t in tiers}
+
+        last_tier_res = {}
+        last_air_by_edge = {}
+        last_global_sol = None
+        converged = False
+        history = []
+
+        for k in range(max_iter):
+            tier_res = {}
+
+            # -----------------------------
+            # Solve tier enclosure air temps
+            # -----------------------------
+            for t in tiers:
+                inlet_area_cm2 = 0.0
                 if louvre_def:
-                    # Current (what user has configured)
                     inlet_area_cm2 = tier_effective_inlet_area_cm2(
                         tier=t,
                         louvre_def=louvre_def,
                         ip_rating_n=ip_rating_n,
                     )
 
-                    # Max possible (for “would vents help?” test)
-                    vent_test_area_cm2 = tier_max_effective_inlet_area_cm2(
-                        tier=t,
-                        louvre_def=louvre_def,
-                        ip_rating_n=ip_rating_n,
-                    )
+                P_base = float(getattr(t, "total_heat_w", 0.0))
+                P_bus = float(P_bus_by_tier.get(t, 0.0))
 
-                t.live_thermal = calc_tier_iec60890(
+                res = calc_tier_iec60890(
                     tier=t,
                     tiers=tiers,
                     wall_mounted=wall,
                     inlet_area_cm2=inlet_area_cm2,
                     ambient_C=ambient,
-                    altitude_m=project_altitude_m,
+                    altitude_m=altitude_m,
                     ip_rating_n=ip_rating_n,
-                    vent_test_area_cm2=vent_test_area_cm2,
                     solar_delta_K=solar_dt,
+                    P_override_W=P_base + P_bus,
                 )
+                res["ambient_C"] = float(ambient)
+                tier_res[t] = res
 
-            except Exception:
-                t.live_thermal = None
+            # -----------------------------
+            # Build per-edge air map
+            # -----------------------------
+            air_by_edge = {}
 
-            try:
-                t.update()
-            except Exception:
-                pass
+            for e in graph.edges.values():
+                t = edge_owner_tier.get(e.id)
+                if t is None:
+                    air_by_edge[e.id] = ambient
+                else:
+                    air_by_edge[e.id] = float(tier_res[t].get("T_top", ambient))
 
-    # ----- list ops
+            # -----------------------------
+            # Solve copper network globally
+            # -----------------------------
+            global_sol = solve_thermal(
+                graph=graph,
+                air_temp_C=air_by_edge,
+                debug=False,
+            )
+
+            edge_result_by_id = {er.edge_id: er for er in global_sol.edge_results}
+
+            # -----------------------------
+            # Re-accumulate bus/joint losses by owning tier
+            # -----------------------------
+            P_bus_raw_by_tier = {t: 0.0 for t in tiers}
+
+            for e_id, er in edge_result_by_id.items():
+                t = edge_owner_tier.get(e_id)
+                if t is None:
+                    continue
+                P_bus_raw_by_tier[t] += float(er.P_gen_W)
+
+            P_bus_new_by_tier = {}
+            for t in tiers:
+                old = float(P_bus_by_tier.get(t, 0.0))
+                raw = float(P_bus_raw_by_tier.get(t, 0.0))
+                P_bus_new_by_tier[t] = (1.0 - relax) * old + relax * raw
+
+            dT = max(
+                abs(float(tier_res[t]["T_top"]) - float(prev_T_top_by_tier.get(t, ambient)))
+                for t in tiers
+            ) if tiers else 0.0
+
+            dP = max(
+                abs(float(P_bus_new_by_tier[t]) - float(P_bus_by_tier.get(t, 0.0)))
+                for t in tiers
+            ) if tiers else 0.0
+
+            history.append({
+                "iter": k + 1,
+                "dT": float(dT),
+                "dP": float(dP),
+                "T_top_by_tier": {id(t): float(tier_res[t]["T_top"]) for t in tiers},
+                "P_bus_by_tier": {id(t): float(P_bus_new_by_tier[t]) for t in tiers},
+            })
+
+            last_tier_res = tier_res
+            last_air_by_edge = dict(air_by_edge)
+            last_global_sol = global_sol
+
+            if dT < tol_T and dP < tol_P:
+                converged = True
+                P_bus_by_tier = P_bus_new_by_tier
+                break
+
+            prev_T_top_by_tier = {t: float(tier_res[t]["T_top"]) for t in tiers}
+            P_bus_by_tier = P_bus_new_by_tier
+
+        if last_global_sol is None:
+            QMessageBox.warning(self, "Solve Failed", "Global thermal solve did not run.")
+            return None
+
+        # -----------------------------------
+        # 4. Enrich tier results consistently
+        # -----------------------------------
+        final_tier_results = {}
+
+        for t in tiers:
+            res = dict(last_tier_res.get(t, {}))
+            res["coupling"] = {
+                "converged": bool(converged),
+                "iterations": len(history),
+                "history": history,
+                "P_base_W": float(getattr(t, "total_heat_w", 0.0)),
+                "P_bus_W": float(P_bus_by_tier.get(t, 0.0)),
+                "P_total_W": float(getattr(t, "total_heat_w", 0.0)) + float(P_bus_by_tier.get(t, 0.0)),
+            }
+            final_tier_results[t] = res
+
+        return {
+            "graph": graph,
+            "tiers": final_tier_results,
+            "global": last_global_sol,
+            "air_by_edge": last_air_by_edge,
+            "edge_owner_tier": edge_owner_tier,
+            "tier_edges": tier_edges,
+            "solver_history": history,
+            "solver_converged": converged,
+        }
+    # ----- list ops -----
     def _remove_selected_component(self):
         it = self._selected_tier()
         if not it:
@@ -1208,7 +1347,6 @@ class SwitchboardTab(QWidget):
             # update effective label whenever contents change (affects auto mode)
             self._update_effective_limit_label(it)
 
-        self._recompute_live_thermal()
         self.lbl_total_heat.setText(f"Total heat: {total:.1f} W")
 
     # ------------------------------------------------------------------ #
@@ -1226,9 +1364,6 @@ class SwitchboardTab(QWidget):
 
         # visual feedback for covered faces
         apply_covered_sides_to_tiers(tiers)
-
-        # keep live overlay in sync
-        self._recompute_live_thermal()
 
 
     # ------------------------------------------------------------------ #

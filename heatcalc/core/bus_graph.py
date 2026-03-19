@@ -167,22 +167,25 @@ def _infer_joint_edge_geometry(edges: Dict[int, Edge]) -> None:
 
         if ej.joint_spec is not None:
 
-            # find the neighbour with different geometry
-            other_candidates = [
-                e for e in neighbours
-                if (
-                    e.width_mm != ej.width_mm or
-                    e.thickness_mm != ej.thickness_mm
-                )
-            ]
+            # find neighbours grouped by geometry
+            unique_geoms = {}
+            for e in neighbours:
+                key = (e.width_mm, e.thickness_mm, e.bars_in_parallel)
+                unique_geoms[key] = e
 
-            if other_candidates:
-                other = other_candidates[0]
+            if len(unique_geoms) >= 2:
+                # TRUE junction between different buses
+                (w2, t2, n2), other = list(unique_geoms.items())[1]
 
-                ej.joint_spec.other_bar_width_mm = other.width_mm
-                ej.joint_spec.other_bar_thickness_mm = other.thickness_mm
-                ej.joint_spec.other_bar_count = other.bars_in_parallel
+            else:
+                # Same bus both sides → mirror
+                w2 = ej.width_mm
+                t2 = ej.thickness_mm
+                n2 = ej.bars_in_parallel
 
+            ej.joint_spec.other_bar_width_mm = w2
+            ej.joint_spec.other_bar_thickness_mm = t2
+            ej.joint_spec.other_bar_count = n2
 
 def extract_graph(scene, px_to_m=0.001):
 

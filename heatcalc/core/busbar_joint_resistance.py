@@ -216,7 +216,7 @@ def clamped_edge_joint_resistance(
         print(f"a_mm               = {a_mm:.3f}")
         print(f"b_mm               = {b_mm:.3f}")
         print(f"l_mm               = {l_mm:.3f}")
-        print(f"d_mm               = {d_mm:.3f}")
+        print(f"d_m               = {d_m:.3f}")
         print(f"bolt_count         = {bolt_count}")
         print(f"torque_Nm          = {torque_Nm:.3f}")
         print(f"nut_factor         = {nut_factor:.3f}")

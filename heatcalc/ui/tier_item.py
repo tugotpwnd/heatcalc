@@ -907,10 +907,10 @@ class TierItem(ResizableBox):
 
         if self._active:
             painter.setOpacity(1.0)
-            border_pen = QPen(QColor("#ffffff"), 2)
+            border_pen = QPen(QColor("#00ffea"), 3, Qt.SolidLine)
         else:
             painter.setOpacity(0.35)
-            border_pen = QPen(QColor("#888888"), 1)
+            border_pen = QPen(QColor("#888888"), 1, Qt.DashLine)
 
         opacity = 1.0 if self._active else 0.55
 
@@ -953,7 +953,20 @@ class TierItem(ResizableBox):
             painter.setBrush(QColor(0, 127, 77, 65))  # #007F4D
             painter.drawRect(self._rect)
             painter.restore()
+
+        # Selection hatching
+        if self._active:
+            painter.save()
+            hatch_pen = QPen(QColor(255, 255, 255, 30), 1)
+            painter.setPen(hatch_pen)
+            painter.setBrush(QBrush(QColor(255, 255, 255, 20), Qt.DiagCrossPattern))
+            painter.drawRect(self._rect)
+            painter.restore()
+
         painter.restore()
+
+        painter.setPen(border_pen)
+        painter.drawRect(self._rect)
 
         # 2. LOUVRES ON TOP
         if self.is_ventilated:

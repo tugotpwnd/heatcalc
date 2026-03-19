@@ -154,7 +154,7 @@ def joint_R20_ohm(nd, debug=False) -> float:
             torque_Nm=js.torque_Nm,
             nut_factor=js.nut_factor,
             e_streamline=js.e_streamline,
-            debug=debug,
+            debug=False,
         )
         return R_single / n1
 
@@ -178,7 +178,7 @@ def joint_R20_ohm(nd, debug=False) -> float:
             nut_factor=js.nut_factor,
             bolt_count=js.bolt_count,
             e_streamline=js.e_streamline,
-            debug=debug,
+            debug=False,
         )
         return R_single / (n1 * other_n)
 
@@ -207,9 +207,12 @@ def solve_thermal(
     physics_debug=False
     joint_debug=False
 
-    def edge_air(edge_id: int) -> float:
+    def edge_air(edge_id):
         if isinstance(air_temp_C, dict):
-            return float(air_temp_C[edge_id])
+            if edge_id in air_temp_C:
+                return float(air_temp_C[edge_id])
+            # fallback to first available value
+            return float(next(iter(air_temp_C.values())))
         return float(air_temp_C)
 
     thermal_nodes = []

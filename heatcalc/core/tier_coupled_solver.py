@@ -42,6 +42,7 @@ def calc_tier_iec60890_coupled(
     ambient_C: float,
     altitude_m: float,
     ip_rating_n: int,
+    vent_test_area_cm2: float | None = None,
     solar_delta_K: float = 0.0,
     max_iter: int = 30,
     tol_T: float = 0.05,
@@ -67,6 +68,7 @@ def calc_tier_iec60890_coupled(
             ambient_C=ambient_C,
             altitude_m=altitude_m,
             ip_rating_n=ip_rating_n,
+            vent_test_area_cm2=vent_test_area_cm2,
             solar_delta_K=solar_delta_K,
         )
         res["coupling"] = {
@@ -96,6 +98,7 @@ def calc_tier_iec60890_coupled(
             ambient_C=ambient_C,
             altitude_m=altitude_m,
             ip_rating_n=ip_rating_n,
+            vent_test_area_cm2=vent_test_area_cm2,
             solar_delta_K=solar_delta_K,
             P_override_W=P_total,
         )
@@ -146,7 +149,7 @@ def calc_tier_iec60890_coupled(
                 "P_total_W": float(P_base + P_bus_new),
                 "T_air_mid_C": float(res["T_mid"]),
                 "T_air_top_C": float(res["T_top"]),
-                "T_air_075_C": float(res.get("T_075", res["T_top"])),
+                "T_air_075_C": float(res.get("T_075") or res.get("T_top", 0.0)),
                 "max_graph_T_C": float(max_graph_T),
             }
         )
@@ -162,6 +165,33 @@ def calc_tier_iec60890_coupled(
                 "P_base_W": float(P_base),
                 "P_bus_W": float(P_bus_new),
             }
+
+            print("\n" + "=" * 60)
+            print(f"[COUPLED SOLVER] Tier: {getattr(tier, 'name', id(tier))}")
+            print(f"Iterations: {k + 1}")
+            print(f"P_base = {P_base:.2f} W | P_bus = {P_bus_new:.2f} W")
+            print("-" * 60)
+
+            for g in last_res.get("graphs", []):
+                print(f"\n[GRAPH] {g['name']}")
+                print(f"  Air Ref: {g['use_air_temp']}")
+                print(f"  Air Temp: {g['T_air_C']:.2f} °C")
+                print(f"  Total Loss: {g['P_loss_W']:.2f} W")
+                print(f"  Max/Min Temp: {g['max_T_C']:.2f} / {g['min_T_C']:.2f} °C")
+                print(f"  Converged: {g['solver_converged']} ({g['solver_iterations']} iters)")
+
+                print("  --- EDGES ---")
+                for e in g["edges"]:
+                    print(
+                        f"    [{e['kind'].upper()}] "
+                        f"id={e['edge_id']} | "
+                        f"I={e['I_A']:.1f}A | "
+                        f"T={e['T_C']:.1f}°C | "
+                        f"P={e['P_gen_W']:.2f}W "
+                        f"(conv={e['P_conv_W']:.2f}, rad={e['P_rad_W']:.2f}, cond={e['P_cond_W']:.2f})"
+                    )
+
+            print("=" * 60 + "\n")
             return last_res
 
         Ta_prev = Ta_top
@@ -175,6 +205,7 @@ def calc_tier_iec60890_coupled(
         "P_base_W": float(P_base),
         "P_bus_W": float(P_bus),
     }
+
     return last_res
 
 
