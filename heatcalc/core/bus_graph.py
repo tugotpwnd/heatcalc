@@ -34,6 +34,8 @@ class Edge:
     width_mm: float = 0.0
     thickness_mm: float = 0.0
     bars_in_parallel: int = 1
+    gap_to_wall_mm: float = 50.0
+    orientation_to_wall: str = "width"
 
     # ---- joint metadata ----
     is_joint: bool = False
@@ -362,6 +364,8 @@ def extract_graph(scene, px_to_m=0.001):
             width_mm=seg["spec"].width_mm,
             thickness_mm=seg["spec"].thickness_mm,
             bars_in_parallel=seg["spec"].bars_in_parallel,
+            gap_to_wall_mm=getattr(seg["spec"], "gap_to_wall_mm", 50.0),
+            orientation_to_wall=getattr(seg["spec"], "orientation_to_wall", "width"),
             is_joint=False,
             joint_spec=None,
             ui_item=seg.get("ui_item"),

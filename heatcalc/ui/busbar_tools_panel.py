@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Literal
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import (
@@ -35,7 +36,7 @@ class BusbarToolsPanel(QWidget):
         # BUS DEFAULTS
         # -------------------------------------------------
 
-        gb_bus = CollapsibleGroupBox("Bus Bar Sizing")
+        gb_bus = CollapsibleGroupBox("Bus Bar Geometry")
         form_bus = QFormLayout()
 
         self.width = QSpinBox()
@@ -50,11 +51,59 @@ class BusbarToolsPanel(QWidget):
         self.bars.setRange(1, 10)
         self.bars.setValue(1)
 
+        self.gap_to_wall = QDoubleSpinBox()
+        self.gap_to_wall.setRange(1, 1000)
+        self.gap_to_wall.setValue(50)
+        self.gap_to_wall.setSuffix(" mm")
+
         form_bus.addRow("Width (mm)", self.width)
         form_bus.addRow("Thickness (mm)", self.thickness)
         form_bus.addRow("Bars", self.bars)
+        form_bus.addRow("Gap to wall", self.gap_to_wall)
+
+        # -------------------------------------------------
+        # ORIENTATION TO WALL
+        # -------------------------------------------------
+
+        orient_box = QGroupBox("Face to wall")
+        orient_layout = QtWidgets.QHBoxLayout(orient_box)
+
+        self.orient_group = QButtonGroup(self)
+        self.orient_group.setExclusive(True)
+
+        def _make_orient_btn(idx: int, label: str, icon_name: str):
+            b = QToolButton()
+            b.setCheckable(True)
+            b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+
+            icon_path = str(get_resource_path(f"heatcalc/assets/{icon_name}"))
+            icon = QtGui.QIcon(icon_path)
+
+            if icon.isNull():
+                pm = QtGui.QPixmap(64, 40)
+                pm.fill(QtGui.QColor("#ddd"))
+                painter = QtGui.QPainter(pm)
+                painter.drawText(pm.rect(), Qt.AlignCenter, label)
+                painter.end()
+                icon = QtGui.QIcon(pm)
+
+            b.setIcon(icon)
+            b.setIconSize(QtCore.QSize(72, 48))
+            b.setText(label)
+
+            self.orient_group.addButton(b, idx)
+            orient_layout.addWidget(b)
+
+            return b
+
+        self.btn_face_width = _make_orient_btn(0, "Broad", "cable_install_type1.png")
+        self.btn_face_thickness = _make_orient_btn(1, "Edge", "cable_install_type2.png")
+
+        self.btn_face_width.setChecked(True)
+        form_bus.addRow(orient_box)
         gb_bus.setLayout(form_bus)
         layout.addWidget(gb_bus)
+
 
         # -------------------------------------------------
         # JOINT DEFAULTS
@@ -205,6 +254,8 @@ class BusbarToolsPanel(QWidget):
         self.width.valueChanged.connect(self.update_spec)
         self.thickness.valueChanged.connect(self.update_spec)
         self.bars.valueChanged.connect(self.update_spec)
+        self.gap_to_wall.valueChanged.connect(self.update_spec)
+        self.orient_group.buttonClicked.connect(self.update_spec)
 
         # joint spec bindings
         self.inst_group.buttonClicked.connect(self._on_installation_type_changed)
@@ -230,12 +281,20 @@ class BusbarToolsPanel(QWidget):
 
     # -------------------------------------------------
 
+    from typing import Literal
+
     def update_spec(self):
+
+        orientation: Literal["width", "thickness"] = (
+            "width" if self.orient_group.checkedId() == 0 else "thickness"
+        )
 
         spec = BusSpecUI(
             width_mm=self.width.value(),
             thickness_mm=self.thickness.value(),
             bars_in_parallel=self.bars.value(),
+            gap_to_wall_mm=self.gap_to_wall.value(),
+            orientation_to_wall=orientation,
         )
 
         self.view.set_default_bus_spec(spec)
@@ -357,11 +416,8 @@ class BusbarToolsPanel(QWidget):
             edge = graph.edges[er.edge_id]
 
             if edge.ui_item:
-                bus_edge_results[edge.ui_item].append({
-                    "T_C": float(er.T_C),
-                    "I_A": float(er.I_A),
-                    "ambient_C": float(air_by_edge.get(er.edge_id, ambient)),
-                })
+                er.ambient_C = float(air_by_edge.get(er.edge_id, ambient))
+                bus_edge_results[edge.ui_item].append(er)
 
         # assign FULL results to each bus UI item
         for ui_item, results in bus_edge_results.items():
@@ -502,8 +558,8 @@ class BusbarToolsPanel(QWidget):
             "Tier",
             "Built-in",
             "Terminals",
-            "Enclosure",
-            "Busbars",
+            "Enclosure\n(Bulk / Hotspot)",
+            "Busbars"
         ])
 
         self.compliance_table = table
@@ -564,11 +620,16 @@ class BusbarToolsPanel(QWidget):
                 term_text
             )
 
-            # Enclosure
+            # Enclosure (bulk + hotspot)
+            enc_text = (
+                f"B:{comp.enclosure_surface_T_bulk:.1f}°C\n"
+                f"H:{comp.enclosure_surface_T_hotspot:.1f}°C"
+            )
+
             set_cell(
                 row, 3,
                 comp.enclosure_ok,
-                f"{comp.enclosure_surface_T:.1f}°C"
+                enc_text
             )
 
             # Busbars

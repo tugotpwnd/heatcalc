@@ -41,10 +41,10 @@ def resistance_T_per_m(R20: float, T_bus_C: float) -> float:
 @dataclass(frozen=True)
 class BusbarThermalInputs:
     I_total_A: float
-    eps_bus: float = 0.10
+    eps_bus: float = 0.4 # Varies depending on cooling / heating
     eps_env: float = 0.90
     v_mps: float = 0.0
-    S_ac: float = 1.0
+    S_ac: float = 1.2
 
 
 @dataclass(frozen=True)

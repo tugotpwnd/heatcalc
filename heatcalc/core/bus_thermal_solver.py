@@ -34,6 +34,11 @@ class ThermalEdgeResult:
     P_rad_W: float
     P_cond_W: float
     residual_W: float
+    width_mm: float
+    thickness_mm: float
+    bars_in_parallel: int
+    gap_to_wall_mm: float = 50.0
+    orientation_to_wall: str = "width"
 
 
 @dataclass
@@ -65,6 +70,8 @@ class ThermalSeg:
     joint_spec: object | None
     I_A: float
     air_temp_C: float
+    gap_to_wall_mm: float
+    orientation_to_wall: str
 
 
 def _shared_node(a, b) -> bool:
@@ -154,6 +161,8 @@ def _build_segmented_thermal_edges(
                     joint_spec=getattr(e, "joint_spec", None),
                     I_A=float(e.I_A),
                     air_temp_C=base_air,
+                    gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
+                    orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
                 )
             )
             continue
@@ -177,6 +186,8 @@ def _build_segmented_thermal_edges(
                     joint_spec=getattr(e, "joint_spec", None),
                     I_A=float(e.I_A),
                     air_temp_C=base_air,
+                    gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
+                    orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
                 )
             )
             continue
@@ -213,6 +224,8 @@ def _build_segmented_thermal_edges(
                     joint_spec=getattr(e, "joint_spec", None),
                     I_A=float(e.I_A),
                     air_temp_C=float(interface_air_by_node[e.u]),
+                    gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
+                    orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
                 )
             )
             cursor = n_u
@@ -234,6 +247,8 @@ def _build_segmented_thermal_edges(
                     joint_spec=getattr(e, "joint_spec", None),
                     I_A=float(e.I_A),
                     air_temp_C=base_air,
+                    gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
+                    orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
                 )
             )
             cursor = next_node
@@ -254,11 +269,15 @@ def _build_segmented_thermal_edges(
                     joint_spec=getattr(e, "joint_spec", None),
                     I_A=float(e.I_A),
                     air_temp_C=float(interface_air_by_node[e.v]),
+                    gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
+                    orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
                 )
             )
 
     return segs
 
+
+from collections import defaultdict
 
 def _aggregate_segment_results(segment_rows):
     """
@@ -266,10 +285,12 @@ def _aggregate_segment_results(segment_rows):
     and existing apply path can remain unchanged.
     """
     grouped = defaultdict(list)
+
     for row in segment_rows:
         grouped[row["base_edge_id"]].append(row)
 
     out = []
+
     for edge_id, rows in grouped.items():
         total_len = sum(r["length_m"] for r in rows)
         total_pgen = sum(r["P_gen_W"] for r in rows)
@@ -278,26 +299,34 @@ def _aggregate_segment_results(segment_rows):
         total_pcond = sum(r["P_cond_W"] for r in rows)
         total_resid = sum(r["residual_W"] for r in rows)
 
-        # Conservative display: report hottest segment temperature
         Tmax = max(r["T_C"] for r in rows)
+
+        # 🔥 THIS WAS MISSING
+        first = rows[0]
 
         out.append(
             ThermalEdgeResult(
                 edge_id=int(edge_id),
                 T_C=float(Tmax),
-                I_A=float(rows[0]["I_A"]),
+                I_A=float(first["I_A"]),
                 length_m=float(total_len),
-                is_joint=bool(rows[0]["is_joint"]),
+                is_joint=bool(first["is_joint"]),
                 P_gen_W=float(total_pgen),
                 P_conv_W=float(total_pconv),
                 P_rad_W=float(total_prad),
                 P_cond_W=float(total_pcond),
                 residual_W=float(total_resid),
+                width_mm=float(first.get("width_mm", 0.0)),
+                thickness_mm=float(first.get("thickness_mm", 0.0)),
+                bars_in_parallel=int(first.get("bars_in_parallel", 1)),
+                gap_to_wall_mm=float(first.get("gap_to_wall_mm", 50.0)),
+                orientation_to_wall=str(first.get("orientation_to_wall", "width")),
             )
         )
 
     out.sort(key=lambda x: x.edge_id)
     return out
+
 
 def joint_contact_area(width_m, thickness_m, joint_spec):
     """
@@ -443,6 +472,8 @@ def solve_thermal(
     debug: bool = False,
     max_iter: int = 40,
     tol: float = 1e-3,
+    eps_bus_self_cooling: float = 0.04,
+
 ):
     """
     Segmented thermal solve.
@@ -456,8 +487,7 @@ def solve_thermal(
     """
 
     cross_link_debug = []
-    debug=True
-    physics_debug = True
+    physics_debug = False
     joint_debug = False
 
     def edge_air(edge_id):
@@ -598,7 +628,7 @@ def solve_thermal(
 
     therm = BusbarThermalInputs(
         I_total_A=0.0,
-        eps_bus=0.4,
+        eps_bus=eps_bus_self_cooling,
         eps_env=0.9,
         v_mps=0.0,
         S_ac=1.0,
@@ -774,6 +804,11 @@ def solve_thermal(
             "P_rad_W": float(P_rad),
             "P_cond_W": float(P_cond),
             "residual_W": float(f_i),
+            "width_mm": nd["w"] * 1000,
+            "thickness_mm": nd["t"] * 1000,
+            "bars_in_parallel": nd["bars_in_parallel"],
+            "gap_to_wall_mm": getattr(nd, "gap_to_wall_mm", 50.0),
+            "orientation_to_wall": getattr(nd, "orientation_to_wall", "width"),
         })
 
     final_pass = True

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Literal
 import uuid
 from PyQt5.QtCore import QPointF, Qt, QRect
 from PyQt5.QtGui import QColor, QPen, QBrush, QPainterPath, QPainterPathStroker
@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsSimpleTextItem,
     QGraphicsItem,
-    QGraphicsDropShadowEffect,
+    QGraphicsDropShadowEffect, QDoubleSpinBox, QComboBox,
 )
 
 from heatcalc.core.models import BusbarJointSpec
@@ -26,10 +26,41 @@ BUS_SOURCE_TYPE = 10004
 def format_thermal_tooltip(results, point_temp=None) -> str:
     """
     HTML tooltip showing all solver segments belonging to a bus.
+
+    Accepts either:
+      - ThermalEdgeResult-like objects with attributes
+      - dicts with equivalent keys
     """
 
     if not isinstance(results, (list, tuple)):
         results = [results]
+
+    if not results:
+        return ""
+
+    def _get(res, key, default=None):
+        if isinstance(res, dict):
+            return res.get(key, default)
+        return getattr(res, key, default)
+
+    first = results[0]
+
+    orient = _get(first, "orientation_to_wall", "width")
+    orient_txt = "Wide face" if orient == "width" else "Edge face"
+
+    gap = _get(first, "gap_to_wall_mm", None)
+    gap_txt = f"{float(gap):.0f} mm" if gap is not None else "-"
+
+    geom_row = f"""
+    <tr>
+        <td style='color:#8b949e;'>Orientation:</td>
+        <td>{orient_txt}</td>
+    </tr>
+    <tr>
+        <td style='color:#8b949e;'>Gap to wall:</td>
+        <td>{gap_txt}</td>
+    </tr>
+    """
 
     point_row = ""
     if point_temp is not None:
@@ -39,19 +70,47 @@ def format_thermal_tooltip(results, point_temp=None) -> str:
             <td style='color:#ffa657; font-weight:bold;'>{point_temp:.1f} °C</td>
         </tr>
         """
+    # Prefer true segment max if available
+    segment_max_T = None
+    hot_s = None
 
-    max_I = max(float(r.get("I_A", 0.0)) for r in results)
-    max_T = max(float(r.get("T_C", 0.0)) for r in results)
-    total_P = sum(float(r.get("P_gen_W", 0.0)) for r in results)
+    # Try get UI item from first result (works because you injected it)
+    ui_item = results[0].get("ui_item") if isinstance(results[0], dict) else getattr(results[0], "ui_item", None)
+
+    if ui_item and hasattr(ui_item, "_thermal_segments"):
+        segs = ui_item._thermal_segments
+        if segs:
+            hot_s, hot_T = max(segs, key=lambda x: x[1])
+            segment_max_T = hot_T
+
+    if segment_max_T is not None:
+        max_T = segment_max_T
+    else:
+        max_T = max(float(_get(r, "T_C", 0.0)) for r in results)
+    max_I = max(float(_get(r, "I_A", 0.0)) for r in results)
+    total_P = sum(float(_get(r, "P_gen_W", 0.0)) for r in results)
+
+    hotspot_row = ""
+
+    if hot_s is not None:
+        hotspot_row = f"""
+        <tr>
+            <td style='color:#8b949e;'>Hotspot:</td>
+            <td style='color:#ff7b72; font-weight:bold;'>
+                {hot_T:.1f} °C @ {hot_s * 100:.0f}%
+            </td>
+        </tr>
+        """
 
     html = f"""
-    <div style='font-family: sans-serif; min-width: 200px;'>
+    <div style='font-family: sans-serif; min-width: 220px;'>
 
         <b style='color:#58a6ff;'>Bus Result</b><br/>
-        
 
         <table style='border-spacing:4px; margin-top:4px;'>
         {point_row}
+        {geom_row}
+        {hotspot_row}
         <tr>
             <td style='color:#8b949e;'>Max current:</td>
             <td style='font-weight:bold;'>{max_I:.1f} A</td>
@@ -66,7 +125,7 @@ def format_thermal_tooltip(results, point_temp=None) -> str:
         </tr>
         </table>
 
-        <hr style='border:none;border-top:1px solid #30363d;margin:4px 0;'/>
+        <hr style='border:none; border-top:1px solid #30363d; margin:4px 0;'/>
 
         <b style='color:#8b949e;'>Segments</b>
 
@@ -80,23 +139,21 @@ def format_thermal_tooltip(results, point_temp=None) -> str:
     """
 
     for i, res in enumerate(results):
-
-        temp = float(res.get("T_C", 0.0))
-        current = float(res.get("I_A", 0.0))
-        ambient = float(res.get("ambient_C", 40.0))
-        dt = temp - ambient
+        temp = float(_get(res, "T_C", 0.0))
+        current = float(_get(res, "I_A", 0.0))
+        ambient = float(_get(res, "ambient_C", 0.0))
+        dT = temp - ambient
 
         html += f"""
         <tr>
             <td style='padding-right:24px;'>{i}</td>
             <td align='right' style='padding-left:24px; padding-right:24px;'>{current:.1f} A</td>
             <td align='right' style='padding-left:24px; padding-right:24px;'>{temp:.1f} °C</td>
-            <td align='right' style='padding-left:24px;'>+{dt:.1f} K</td>
+            <td align='right' style='padding-left:24px;'>{dT:.1f} K</td>
         </tr>
         """
 
     html += "</table></div>"
-
     return html
 
 @dataclass
@@ -105,7 +162,8 @@ class BusSpecUI:
     thickness_mm: float = 10.0
     bars_in_parallel: int = 1
     phases: int = 3
-
+    gap_to_wall_mm: float = 50.0
+    orientation_to_wall: Literal["width", "thickness"] = "width"
 
 # =========================================================
 # BUS LINE
@@ -174,6 +232,7 @@ class BusLineItem(QGraphicsLineItem):
 
         if getattr(self, "thermal_results", None):
             self.setToolTip(format_thermal_tooltip(self.thermal_results))
+
         else:
             self.setToolTip("")
 
@@ -188,45 +247,54 @@ class BusLineItem(QGraphicsLineItem):
     def hoverMoveEvent(self, event):
         scene = self.scene()
 
-        if not hasattr(scene, "thermal_graph"):
-            return
-        if not hasattr(self, "thermal_edge"):
-            return
-
-        edge = self.thermal_edge
-        graph = scene.thermal_graph
-        node_T = scene.node_temperatures
-
         p = event.scenePos()
 
-        T = self._temperature_at_edge_point(edge, graph, node_T, p)
+        T = self._temperature_at_point_from_segments(p)
 
         if getattr(self, "thermal_results", None):
             html = format_thermal_tooltip(self.thermal_results, point_temp=T)
             self.setToolTip(html)
-        else:
-            self.setToolTip(f"T = {T:.1f} °C")
 
-    def _temperature_at_edge_point(self, edge, graph, node_T, p_scene):
-        a = graph.nodes[edge.u].p
-        b = graph.nodes[edge.v].p
+    def _temperature_at_point_from_segments(self, p_scene):
+        if not hasattr(self, "_thermal_segments") or not self._thermal_segments:
+            return None
 
-        dx = b.x() - a.x()
-        dy = b.y() - a.y()
+        line_geom = self.line()
+        p0 = self.mapToScene(line_geom.p1())
+        p1 = self.mapToScene(line_geom.p2())
+
+        dx = p1.x() - p0.x()
+        dy = p1.y() - p0.y()
         L2 = dx * dx + dy * dy
 
         if L2 < 1e-12:
-            return node_T.get(edge.u, 40.0)
+            return self._thermal_segments[0][1]
 
-        t = ((p_scene.x() - a.x()) * dx +
-             (p_scene.y() - a.y()) * dy) / L2
+        # projection
+        t = ((p_scene.x() - p0.x()) * dx +
+             (p_scene.y() - p0.y()) * dy) / L2
 
         t = max(0.0, min(1.0, t))
 
-        Ta = node_T.get(edge.u, 40.0)
-        Tb = node_T.get(edge.v, 40.0)
+        segs = self._thermal_segments
 
-        return (1 - t) * Ta + t * Tb
+        # ---- find enclosing segment ----
+        for i in range(len(segs) - 1):
+            s0, T0 = segs[i]
+            s1, T1 = segs[i + 1]
+
+            if s0 <= t <= s1:
+                # linear interp BETWEEN SEGMENTS (not nodes)
+                if abs(s1 - s0) < 1e-9:
+                    return T0
+                alpha = (t - s0) / (s1 - s0)
+                return (1 - alpha) * T0 + alpha * T1
+
+        # outside bounds → clamp
+        if t <= segs[0][0]:
+            return segs[0][1]
+
+        return segs[-1][1]
 
     def contextMenuEvent(self, event):
         from PyQt5.QtWidgets import QMenu, QDialog, QFormLayout, QSpinBox, QDialogButtonBox
@@ -259,9 +327,22 @@ class BusLineItem(QGraphicsLineItem):
         sp_n.setRange(1, 10)
         sp_n.setValue(self.spec.bars_in_parallel)
 
+        sp_gap = QDoubleSpinBox()
+        sp_gap.setRange(0.0, 500.0)
+        sp_gap.setDecimals(1)
+        sp_gap.setValue(getattr(self.spec, "gap_to_wall_mm", 50.0))
+
+        cb_orient = QComboBox()
+        cb_orient.addItems(["Wide face to wall", "Edge face to wall"])
+
+        current_orient = getattr(self.spec, "orientation_to_wall", "width")
+        cb_orient.setCurrentIndex(0 if current_orient == "width" else 1)
+
         layout.addRow("Width (mm)", sp_w)
         layout.addRow("Thickness (mm)", sp_t)
         layout.addRow("Bars", sp_n)
+        layout.addRow("Gap to wall (mm)", sp_gap)
+        layout.addRow("Orientation", cb_orient)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         layout.addRow(btns)
@@ -270,10 +351,13 @@ class BusLineItem(QGraphicsLineItem):
         btns.rejected.connect(dlg.reject)
 
         if dlg.exec_():
-            # apply
             self.spec.width_mm = sp_w.value()
             self.spec.thickness_mm = sp_t.value()
             self.spec.bars_in_parallel = sp_n.value()
+            self.spec.gap_to_wall_mm = sp_gap.value()
+            self.spec.orientation_to_wall = (
+                "width" if cb_orient.currentIndex() == 0 else "thickness"
+            )
 
             self.update()
 
@@ -397,19 +481,20 @@ class BusLineItem(QGraphicsLineItem):
     # ---------------------------------------------------------
 
     def paint(self, painter, option, widget=None):
-
         line = self.line()
+
         # -----------------------------------------
         # Bus label (size / bars)
         # -----------------------------------------
         try:
             spec = self.spec  # BusSpecUI
+
             if spec:
                 text = f"{spec.width_mm}x{spec.thickness_mm}x{spec.bars_in_parallel}"
 
                 # line geometry
-                p1 = self.line().p1()
-                p2 = self.line().p2()
+                p1 = line.p1()
+                p2 = line.p2()
 
                 dx = p2.x() - p1.x()
                 dy = p2.y() - p1.y()
@@ -433,9 +518,9 @@ class BusLineItem(QGraphicsLineItem):
                 painter.drawText(QPointF(0, -6), text)
 
                 painter.restore()
+
         except Exception:
             pass
-
         # ---------------------------------------------------------
         # Draw base line (thermal gradient or plain bus)
         # ---------------------------------------------------------

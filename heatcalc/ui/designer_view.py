@@ -641,7 +641,19 @@ class DesignerView(QGraphicsView):
             if edge_obj is None:
                 continue
 
+            # --- inject missing physics + geometry ---
             e["ambient_C"] = ambient_C
+
+            # 👇 THIS is what your tooltip needs
+            e["gap_to_wall_mm"] = float(
+                getattr(edge_obj, "gap_to_wall_mm", 50.0)
+            )
+
+            e["orientation_to_wall"] = str(
+                getattr(edge_obj, "orientation_to_wall", "width")
+            )
+
+            e["P_gen_W"] = float(e.get("P_gen_W", 0.0))
 
             T = float(e.get("T_C", 0.0))
 
@@ -655,6 +667,7 @@ class DesignerView(QGraphicsView):
                     line.thermal_results = []
 
                 line.thermal_results.append(e)
+                e["ui_item"] = line
 
                 line_segments.setdefault(line, []).append(
                     (edge_obj, color, T)
@@ -682,14 +695,22 @@ class DesignerView(QGraphicsView):
             positions = []
 
             for edge_obj, _, T in entries:
-                node = graph_obj.nodes[edge_obj.v]  # pick one consistently
-                s, _ = project_point_to_segment(node.p, p0, p1)
+                u_node = graph_obj.nodes[edge_obj.u].p
+                v_node = graph_obj.nodes[edge_obj.v].p
+
+                mid = QPointF(
+                    (u_node.x() + v_node.x()) * 0.5,
+                    (u_node.y() + v_node.y()) * 0.5,
+                )
+
+                s, _ = project_point_to_segment(mid, p0, p1)
                 positions.append((s, T))
 
-            # sort along bus geometry
-            positions.sort(key=lambda x: x[0])
+            # ensure clamped and sorted
+            segs = sorted(positions, key=lambda x: x[0])
 
-            segs = positions
+            # store FULL segment field for UI usage
+            line._thermal_segments = segs
 
             # --- find hottest ---
             hottest_T = max(T for _, T in segs) if segs else 0.0

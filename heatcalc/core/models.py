@@ -136,6 +136,9 @@ class BusSegment:
 
     bars_in_parallel: int = 1
 
+    orientation_to_wall: Literal["broad", "edge"] = "broad"
+    gap_to_wall_mm: float = 50.0
+
 @dataclass
 class BusLoad:
 
@@ -334,7 +337,7 @@ class BusbarSpec:
     Number of parallel conductors sharing the phase current.
     """
 
-    S_ac: float = 1.0
+    S_ac: float = 1.2
     """
     AC resistance correction factor.
     Accounts for skin/proximity effects if required.
@@ -410,7 +413,7 @@ class BusbarSpec:
     # SURFACE / THERMAL PROPERTIES
     # ==========================================================
 
-    eps_bus: float = 0.10
+    eps_bus: float = 0.4
     """
     Busbar emissivity.
     Typical values:
