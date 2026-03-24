@@ -63,3 +63,22 @@ class ToastMessage(QWidget):
         anim.finished.connect(self.close)
         anim.start()
         self._anim = anim
+
+def show_toast(parent_window: QWidget, text: str, duration: int = 3000, color: str = None):
+    """Convenience helper to show a toast message."""
+    toast = ToastMessage(text, parent=parent_window, timeout=duration)
+    if color:
+        # Find the label child and update its style
+        label = toast.findChild(QLabel)
+        if label:
+            label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {color};
+                    color: white;
+                    padding: 14px 28px;
+                    border-radius: 12px;
+                    font-size: 12pt;
+                }}
+            """)
+    toast.show_centered(parent_window)
+    return toast

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional
 
-from PyQt5.QtCore import Qt, QSortFilterProxyModel, QModelIndex, pyqtSignal, QPointF
+from PyQt5.QtCore import Qt, QSortFilterProxyModel, QModelIndex, pyqtSignal, QPointF, QRectF
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QGroupBox,
     QLabel, QFormLayout, QLineEdit, QCheckBox, QSpinBox,
@@ -604,6 +604,108 @@ class SwitchboardTab(QWidget):
 
         tier.update()
         self._refresh_selected_contents()
+
+    def copy_tier(self, tier: TierItem):
+        """Full copy of tier including bus items."""
+        d = tier.to_dict()
+        bus_data = []
+        for item in tier.bus_items():
+            if hasattr(item, "to_dict"):
+                bus_data.append({
+                    "type": item.__class__.__name__,
+                    "data": item.to_dict()
+                })
+        d["bus_items"] = bus_data
+        self._tier_full_clipboard = d
+
+    def paste_tier(self, scene_pos: QPointF):
+        """Paste the full tier at scene_pos, avoiding overlaps."""
+        if not hasattr(self, "_tier_full_clipboard") or not self._tier_full_clipboard:
+            return
+
+        d = self._tier_full_clipboard.copy()
+        orig_name = d.get("name", "Tier")
+
+        # 1. Iterate name
+        existing_names = [t.name for t in self._tiers()]
+        import re
+        base_name = orig_name
+        # If orig_name already has (n), strip it to find base
+        match = re.search(r"^(.*) \(\d+\)$", orig_name)
+        if match:
+            base_name = match.group(1)
+
+        counter = 1
+        new_name = orig_name
+        while new_name in existing_names:
+            new_name = f"{base_name} ({counter})"
+            counter += 1
+        d["name"] = new_name
+
+        # 2. Position and collision
+        w = d.get("w", GRID * 8)
+        h = d.get("h", GRID * 6)
+        
+        # User said "pasted at the users mouse location".
+        # event.scenePos() gives us that.
+        target_x = snap(scene_pos.x())
+        target_y = snap(scene_pos.y())
+        
+        def overlaps(x, y, w, h):
+            rect = QRectF(x, y, w, h)
+            for t in self._tiers():
+                # use sceneBoundingRect for global check
+                if rect.intersects(t.sceneBoundingRect()):
+                    return True
+            return False
+
+        if overlaps(target_x, target_y, w, h):
+            found = False
+            # Search in a grid around the target
+            for r in range(1, 20):
+                for dx in range(-r, r + 1):
+                    for dy in [-r, r]:
+                        if not overlaps(target_x + dx * GRID, target_y + dy * GRID, w, h):
+                            target_x += dx * GRID
+                            target_y += dy * GRID
+                            found = True; break
+                    if found: break
+                if found: break
+                for dy in range(-r + 1, r):
+                    for dx in [-r, r]:
+                        if not overlaps(target_x + dx * GRID, target_y + dy * GRID, w, h):
+                            target_x += dx * GRID
+                            target_y += dy * GRID
+                            found = True; break
+                    if found: break
+                if found: break
+        
+        d["x"] = target_x
+        d["y"] = target_y
+
+        # 3. Create Tier
+        new_tier = TierItem.from_dict(d)
+        new_tier.get_louvre_definition = self._get_louvre_definition
+        self.scene.addItem(new_tier)
+        self._wire_tier_signals(new_tier)
+
+        # 4. Bus items
+        bus_map = {
+            "BusLineItem": BusLineItem,
+            "BusLoadItem": BusLoadItem,
+            "BusJoinItem": BusJoinItem,
+            "BusSourceItem": BusSourceItem
+        }
+        for b_entry in d.get("bus_items", []):
+            cls = bus_map.get(b_entry["type"])
+            if cls:
+                b_item = cls.from_dict(b_entry["data"])
+                new_tier.add_bus_item(b_item)
+
+        new_tier.setSelected(True)
+        self._mark_project_dirty()
+        self._recompute_all_curves()
+        self.view.refresh_tier_stack_visuals()
 
     # ------------------------------------------------------------------ #
     # Scene helpers / selection

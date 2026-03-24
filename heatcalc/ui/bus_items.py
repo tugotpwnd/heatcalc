@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 
 from heatcalc.core.models import BusbarJointSpec
 from heatcalc.ui.color_utils import temperature_to_color
+from heatcalc.ui.geometry import GRID
 
 # --------- QGraphicsItem "type" ids ----------
 BUS_LINE_TYPE = 10001
@@ -846,6 +847,26 @@ class BusLoadItem(QGraphicsEllipseItem):
             if dist > 20:
                 return self.pos()
 
+            # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
+            # parent is BusLineItem, its parent is bus_layer (QGraphicsRectItem), its parent is TierItem
+            bus_layer = parent.parentItem()
+            if bus_layer:
+                tier = bus_layer.parentItem()
+                from heatcalc.ui.tier_item import TierItem
+                if isinstance(tier, TierItem):
+                    tr = tier.boundingRect()
+                    margin = GRID
+                    
+                    # Target point in Tier local coordinates
+                    snap_tier = tier.mapFromScene(snap_scene)
+                    
+                    # If snapping to this endpoint would place it on the edge, refuse.
+                    if (snap_tier.x() < tr.left() + margin - 0.1 or 
+                        snap_tier.x() > tr.right() - margin + 0.1 or
+                        snap_tier.y() < tr.top() + margin - 0.1 or 
+                        snap_tier.y() > tr.bottom() - margin + 0.1):
+                        return self.pos()
+
             # Check if another attachment exists at this endpoint
             # We must ignore self during the check
             for item in self.scene().items():
@@ -1073,6 +1094,60 @@ class BusJoinItem(QGraphicsEllipseItem):
             s = (wx * vx + wy * vy) / vv
             s = max(0.0, min(1.0, s))
 
+            # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
+            # parent is BusLineItem, its parent is bus_layer (QGraphicsRectItem), its parent is TierItem
+            bus_layer = parent.parentItem()
+            if bus_layer:
+                tier = bus_layer.parentItem()
+                from heatcalc.ui.tier_item import TierItem
+                if isinstance(tier, TierItem):
+                    # Valid range for s on this line segment
+                    s_min, s_max = 0.0, 1.0
+                    
+                    # Tier local rect
+                    tr = tier.boundingRect()
+                    margin = GRID
+                    
+                    # Bus endpoints in Tier local coordinates
+                    p1_tier = tier.mapFromItem(parent, line.p1())
+                    p2_tier = tier.mapFromItem(parent, line.p2())
+                    
+                    # Line: P(s) = p1_tier + s * (p2_tier - p1_tier)
+                    dp = p2_tier - p1_tier
+                    
+                    # For each dimension (x, y), check the 25mm boundary
+                    for val, dval, low, high in [
+                        (p1_tier.x(), dp.x(), tr.left() + margin, tr.right() - margin),
+                        (p1_tier.y(), dp.y(), tr.top() + margin, tr.bottom() - margin)
+                    ]:
+                        if abs(dval) < 1e-9:
+                            # Parallel to this edge. If it's outside, the whole line is invalid?
+                            # Usually bus lines are fully inside the tier, but let's be safe.
+                            if val < low or val > high:
+                                # This whole bus line is in the margin zone for this dimension.
+                                # Not much we can do but let it be, or reject movement.
+                                pass
+                        else:
+                            # Intersection with low boundary: val + s*dval = low  => s = (low - val) / dval
+                            s_low = (low - val) / dval
+                            # Intersection with high boundary: val + s*dval = high => s = (high - val) / dval
+                            s_high = (high - val) / dval
+                            
+                            s_start = min(s_low, s_high)
+                            s_end = max(s_low, s_high)
+                            
+                            s_min = max(s_min, s_start)
+                            s_max = min(s_max, s_end)
+
+                    if s_min > s_max:
+                        # No part of the line is in the valid zone. 
+                        # This shouldn't happen for properly placed buses.
+                        # We'll just clamp to the closest available point in the valid zone if it existed,
+                        # but since s_min > s_max, we'll just keep it at original s or middle.
+                        pass
+                    else:
+                        s = max(s_min, min(s_max, s))
+
             proj_scene = QPointF(
                 ax + s * vx,
                 ay + s * vy
@@ -1237,6 +1312,26 @@ class BusSourceItem(QGraphicsEllipseItem):
 
             if dist > 20:
                 return self.pos()
+
+            # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
+            # parent is BusLineItem, its parent is bus_layer (QGraphicsRectItem), its parent is TierItem
+            bus_layer = parent.parentItem()
+            if bus_layer:
+                tier = bus_layer.parentItem()
+                from heatcalc.ui.tier_item import TierItem
+                if isinstance(tier, TierItem):
+                    tr = tier.boundingRect()
+                    margin = GRID
+                    
+                    # Target point in Tier local coordinates
+                    snap_tier = tier.mapFromScene(snap_scene)
+                    
+                    # If snapping to this endpoint would place it on the edge, refuse.
+                    if (snap_tier.x() < tr.left() + margin - 0.1 or 
+                        snap_tier.x() > tr.right() - margin + 0.1 or
+                        snap_tier.y() < tr.top() + margin - 0.1 or 
+                        snap_tier.y() > tr.bottom() - margin + 0.1):
+                        return self.pos()
 
             # Check if another attachment exists at this endpoint
             for item in self.scene().items():

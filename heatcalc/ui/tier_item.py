@@ -718,12 +718,7 @@ class TierItem(ResizableBox):
         rect = None
 
         for b in buses:
-            line = b.line()
-            p1 = line.p1()
-            p2 = line.p2()
-
-            r = QRectF(p1, p2).normalized()
-
+            r = b.mapRectToParent(b.boundingRect())
             rect = r if rect is None else rect.united(r)
 
         return rect
@@ -761,57 +756,15 @@ class TierItem(ResizableBox):
 
 
     def contextMenuEvent(self, event):
-
-        menu = QMenu()
-
-        front_action = menu.addAction("Set Front")
-        mid_action = menu.addAction("Set Mid")
-        rear_action = menu.addAction("Set Rear")
-
-        menu.addSeparator()
-
-        act_copy = menu.addAction("Copy tier contents")
-        act_paste = menu.addAction("Paste tier contents")
-
-        menu.addSeparator()
-
-        act_delete = menu.addAction("Delete tier")
-
-        chosen = menu.exec_(event.screenPos())
-        if not chosen:
+        """ Delegate context menu to the view for unified handling. """
+        scene = self.scene()
+        if not scene:
             return
-
-        view = self.scene().views()[0]  # <-- FIX
-
-        # Walk up parent chain to find SwitchboardTab
-        switchboard = None
-        for view in self.scene().views():
-            w = view
-            while w is not None:
-                if w.__class__.__name__ == "SwitchboardTab":
-                    switchboard = w
-                    break
-                w = w.parent()
-            if switchboard:
+        for view in scene.views():
+            if hasattr(view, "contextMenuEvent"):
+                # Pass the event to the view
+                view.contextMenuEvent(event)
                 break
-
-        if chosen == front_action:
-            view.set_tier_layer(self, 2)
-
-        elif chosen == mid_action:
-            view.set_tier_layer(self, 1)
-
-        elif chosen == rear_action:
-            view.set_tier_layer(self, 0)
-
-        elif chosen == act_copy and switchboard:
-            switchboard.copy_tier_contents(self)
-
-        elif chosen == act_paste and switchboard:
-            switchboard.paste_tier_contents(self)
-
-        elif chosen == act_delete:
-            self.requestDelete.emit(self)
 
     def max_louvre_grid(self, d: dict) -> tuple[int, int]:
         """

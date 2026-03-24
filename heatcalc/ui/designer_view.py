@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsEllipseItem,
-    QGraphicsLineItem, QGraphicsItem
+    QGraphicsLineItem, QGraphicsItem,
+    QMenu
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF
 from .bus_items import (
@@ -213,6 +214,85 @@ class DesignerView(QGraphicsView):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(factor, factor)
 
+    def contextMenuEvent(self, event):
+        # Walk up parent chain to find SwitchboardTab
+        switchboard = None
+        w = self
+        while w is not None:
+            if w.__class__.__name__ == "SwitchboardTab":
+                switchboard = w
+                break
+            w = w.parent()
+
+        if not switchboard:
+            super().contextMenuEvent(event)
+            return
+
+        pos = self.mapToScene(event.pos())
+        tier = self.tier_at_point(pos)
+
+        menu = QMenu(self)
+
+        # 1. Layer actions
+        front_action = menu.addAction("Set Front")
+        mid_action = menu.addAction("Set Mid")
+        rear_action = menu.addAction("Set Rear")
+        
+        menu.addSeparator()
+
+        # 2. Content actions
+        act_copy_contents = menu.addAction("Copy tier contents")
+        act_paste_contents = menu.addAction("Paste tier contents")
+
+        menu.addSeparator()
+
+        # 3. Tier actions
+        act_copy_tier = menu.addAction("Copy tier")
+        act_paste_tier = menu.addAction("Paste tier")
+
+        menu.addSeparator()
+
+        # 4. Delete action
+        act_delete = menu.addAction("Delete tier")
+
+        # Enable/disable based on whether a tier was clicked
+        has_tier = (tier is not None)
+        front_action.setEnabled(has_tier)
+        mid_action.setEnabled(has_tier)
+        rear_action.setEnabled(has_tier)
+        act_copy_contents.setEnabled(has_tier)
+        act_copy_tier.setEnabled(has_tier)
+        act_delete.setEnabled(has_tier)
+
+        # Content paste: enabled if we have tier AND something in contents clipboard
+        has_contents_cb = bool(getattr(switchboard, "_tier_clipboard", None))
+        act_paste_contents.setEnabled(has_tier and has_contents_cb)
+
+        # Full Tier paste: ONLY enabled if NO tier clicked AND something in full clipboard
+        has_full_cb = hasattr(switchboard, "_tier_full_clipboard") and switchboard._tier_full_clipboard
+        act_paste_tier.setEnabled(not has_tier and bool(has_full_cb))
+
+        chosen = menu.exec_(event.globalPos())
+        if not chosen:
+            return
+
+        if chosen == front_action:
+            self.set_tier_layer(tier, 2)
+        elif chosen == mid_action:
+            self.set_tier_layer(tier, 1)
+        elif chosen == rear_action:
+            self.set_tier_layer(tier, 0)
+        elif chosen == act_copy_contents:
+            switchboard.copy_tier_contents(tier)
+        elif chosen == act_paste_contents:
+            switchboard.paste_tier_contents(tier)
+        elif chosen == act_copy_tier:
+            switchboard.copy_tier(tier)
+        elif chosen == act_paste_tier:
+            switchboard.paste_tier(pos)
+        elif chosen == act_delete:
+            tier.requestDelete.emit(tier)
+
     def mousePressEvent(self, event):
 
         if event.button() == Qt.LeftButton:
@@ -270,6 +350,24 @@ class DesignerView(QGraphicsView):
             if node is None:
                 return  # reject
 
+            # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
+            bus = self.find_bus_for_point(node)
+            if bus:
+                bus_layer = bus.parentItem()
+                if bus_layer:
+                    tier = bus_layer.parentItem()
+                    if isinstance(tier, TierItem):
+                        tr = tier.boundingRect()
+                        margin = GRID
+                        node_tier = tier.mapFromScene(node)
+                        if (node_tier.x() < tr.left() + margin - 0.1 or 
+                            node_tier.x() > tr.right() - margin + 0.1 or
+                            node_tier.y() < tr.top() + margin - 0.1 or 
+                            node_tier.y() > tr.bottom() - margin + 0.1):
+                            from .toast_message import show_toast
+                            show_toast(self, "Cannot place on edges (>25mm from edge)", duration=2000, color="#f85149")
+                            return
+
             if self._attachment_exists(node):
                 return
 
@@ -297,6 +395,24 @@ class DesignerView(QGraphicsView):
 
             if node is None:
                 return  # reject
+
+            # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
+            bus = self.find_bus_for_point(node)
+            if bus:
+                bus_layer = bus.parentItem()
+                if bus_layer:
+                    tier = bus_layer.parentItem()
+                    if isinstance(tier, TierItem):
+                        tr = tier.boundingRect()
+                        margin = GRID
+                        node_tier = tier.mapFromScene(node)
+                        if (node_tier.x() < tr.left() + margin - 0.1 or 
+                            node_tier.x() > tr.right() - margin + 0.1 or
+                            node_tier.y() < tr.top() + margin - 0.1 or 
+                            node_tier.y() > tr.bottom() - margin + 0.1):
+                            from .toast_message import show_toast
+                            show_toast(self, "Cannot place on edges (>25mm from edge)", duration=2000, color="#f85149")
+                            return
 
             if self._attachment_exists(node):
                 return
@@ -326,6 +442,24 @@ class DesignerView(QGraphicsView):
 
             if node is None:
                 return  # reject
+
+            # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
+            bus = self.find_bus_for_point(node)
+            if bus:
+                bus_layer = bus.parentItem()
+                if bus_layer:
+                    tier = bus_layer.parentItem()
+                    if isinstance(tier, TierItem):
+                        tr = tier.boundingRect()
+                        margin = GRID
+                        node_tier = tier.mapFromScene(node)
+                        if (node_tier.x() < tr.left() + margin - 0.1 or 
+                            node_tier.x() > tr.right() - margin + 0.1 or
+                            node_tier.y() < tr.top() + margin - 0.1 or 
+                            node_tier.y() > tr.bottom() - margin + 0.1):
+                            from .toast_message import show_toast
+                            show_toast(self, "Cannot place on edges (>25mm from edge)", duration=2000, color="#f85149")
+                            return
 
             if self._attachment_exists(node):
                 return
