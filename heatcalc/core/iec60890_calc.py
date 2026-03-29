@@ -203,6 +203,7 @@ def annex_k_sealed_p890(
         "x": float(x_ak),
         "f": f_ak,
         "g": g_ak,
+        "curve_no": int(curve_no),
         "coeff_sources": sorted(set(coeff_sources)),
     }
 
@@ -221,7 +222,8 @@ def calc_tier_iec60890(
     P_override_W: float | None = None,
 ) -> Dict:
 
-    # ---------------- Geometry ----------------
+    # ---------------- IEC 60890 Geometry ----------------
+    from .iec60890_geometry import dimensions_m, tier_geometry, curve_no_for_tier
     w_m, h_m, d_m = dimensions_m(tier)
     geom = tier_geometry(tier, tiers)
 
@@ -248,7 +250,8 @@ def calc_tier_iec60890(
     P_base = float(tier.total_heat_w)
     P = float(P_override_W) if P_override_W is not None else P_base
 
-    curve_no = int(getattr(tier, "curve_no", 1))
+    # Ensure curve_no is calculated using the latest logic (front/rear/wall-mount)
+    curve_no = curve_no_for_tier(tier, tiers, wall_mounted)
 
     vent_requested = bool(tier.is_ventilated)
     vent_effective = (
@@ -578,8 +581,8 @@ def calc_tier_iec60890(
         "T_top": T_top,
         "T_075": T_075,
         "limit_C": limit_C,
-        "compliant_mid": False,
-        "compliant_top": False,
+        "compliant_mid": T_mid <= limit_C,
+        "compliant_top": compliant_top,
         "surfaces": surfaces,
         "coeff_sources": sorted(set(coeff_sources)),
         "profile_source": profile_source,

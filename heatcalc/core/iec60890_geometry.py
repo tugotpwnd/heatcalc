@@ -54,6 +54,28 @@ def b_map_for_tier(t: TierItem, touching: Dict[str, bool]) -> Dict[str, float]:
     IEC 60890 Table III surface factors.
     """
 
+    wall_mounted = getattr(t, "wall_mounted", False)
+    layer_index = getattr(t, "layer_index", 1)  # 2=Front, 1=Mid, 0=Rear
+
+    front_factor = 0.9
+    rear_factor = 0.5 if wall_mounted else 0.9
+
+    # if the tier is wall mounted and wall mounted, both
+    # front and rear surface factors are 0.5
+    if layer_index == 0 and wall_mounted:
+        front_factor = 0.5
+        rear_factor = 0.5
+
+    # If the tier is rear layer (layer 0), we reduce its front surface factor
+    # by the covered front face (0.5) even if not wall mounted.
+    elif layer_index == 0:
+        front_factor = 0.5
+
+    # If the tier is front (layer 2), we must reduce its rear surface factor
+    # by the covered rear face (0.5) even if not wall mounted.
+    if layer_index == 2:
+        rear_factor = 0.5
+
     bmap = {
         # top
         "top": 0.7 if touching["top"] else 1.4,
@@ -62,21 +84,10 @@ def b_map_for_tier(t: TierItem, touching: Dict[str, bool]) -> Dict[str, float]:
         # sides
         "left": 0.5 if touching["left"] else 0.9,
         "right": 0.5 if touching["right"] else 0.9,
-        # front always exposed in this model
-        "front": 0.9,
-        # rear covered if wall-mounted
-        "rear": 0.5 if getattr(t, "wall_mounted", False) else 0.9,
+        # front/rear factors based on layer and wall-mount
+        "front": front_factor,
+        "rear": rear_factor,
     }
-
-    # # ---- DEBUG PRINT (SAFE, NO API CHANGES) -----------------------------
-    # print(
-    #     f"[IEC60890][b-factors] Tier '{getattr(t, 'name', '?')}' | "
-    #     f"top={bmap['top']}, bottom={bmap['bottom']}, "
-    #     f"left={bmap['left']}, right={bmap['right']}, "
-    #     f"front={bmap['front']}, rear={bmap['rear']}"
-    # )
-    # print(f"    touching={touching}, wall_mounted={getattr(t, 'wall_mounted', False)}")
-    # --------------------------------------------------------------------
 
     return bmap
 
@@ -159,15 +170,26 @@ def curve_no_for_tier(t: TierItem, tiers: List[TierItem], wall_mounted: bool) ->
     one = (left_touch ^ right_touch)
 
     if not left_touch and not right_touch and not top_covered:
-        return 3 if wall_mounted else 1
-    if one and not top_covered:
-        return 4 if wall_mounted else 2
-    if both and not top_covered:
-        return 5 if wall_mounted else 3
-    if wall_mounted and both and top_covered:
+        base = 1
+    elif one and not top_covered:
+        base = 2
+    elif both and not top_covered:
+        base = 3
+    elif wall_mounted and both and top_covered:
         return 4
+    else:
+        base = 3
 
-    return 4 if wall_mounted else 3
+    # Adjust base for wall-mount OR front/rear layers
+    is_front_or_rear = getattr(t, "layer_index", 1) in (0, 2)
+    if wall_mounted or is_front_or_rear:
+        if base == 1:
+            return 3
+        if base == 2:
+            return 4
+        if base == 3:
+            return 5
+    return base
 
 
 def apply_curve_state_to_tiers(

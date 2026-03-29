@@ -382,7 +382,7 @@ def export_project_report(
                     g=res.get("g"),
 
                     vent=bool(res.get("ventilated", False)),
-                    curve=int(getattr(t, "curve_no", 1) or 1),
+                    curve=int(res.get("curve_no", 1)),
                     ambient_C=float(res.get("ambient_C", ambient)),
 
                     dt_mid=float(res.get("dt_mid", 0.0)),

@@ -149,12 +149,18 @@ class DesignerView(QGraphicsView):
         self._apply_layer_visuals(tiers)
 
     def set_tier_layer(self, tier: TierItem, layer: int):
-
         tier.layer_index = layer
-
         tiers = [i for i in self.scene().items() if isinstance(i, TierItem)]
-
         self._apply_layer_visuals(tiers)
+
+        # Notify SwitchboardTab so it can recompute curves (layer affects curve)
+        w = self.parent()
+        while w:
+            if w.__class__.__name__ == "SwitchboardTab":
+                if hasattr(w, "_recompute_all_curves"):
+                    w._recompute_all_curves()
+                break
+            w = w.parent()
 
     def _apply_layer_visuals(self, tiers):
 

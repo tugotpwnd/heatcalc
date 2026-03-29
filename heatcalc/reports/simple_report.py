@@ -974,7 +974,7 @@ def iec60890_tab_sheet(th: TierThermal) -> Table:
         repeatRows=1
     )
 
-    tbl.setStyle(_standard_table_style())  # ✅ THIS IS KEY
+    tbl.setStyle(_standard_table_style())
 
     return tbl
 
