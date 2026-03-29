@@ -99,7 +99,10 @@ class TierOverlayItem(QGraphicsItem):
         Ae_raw = lt.get("Ae")
         Ae_snap = k_meta.get("used_ae")
 
+        heat_w = self.tier.total_heat()
+
         lines = [
+            f"Heat: {heat_w:.1f} W",
             f"Ae: {Ae_raw:.2f} m²" if Ae_snap is None else
             f"Ae: {Ae_raw:.2f} → {Ae_snap:.2f} m²",
 
@@ -156,39 +159,12 @@ class TierOverlayItem(QGraphicsItem):
                 and ak.get("vents_ignored", False)
         )
 
+        ctx = []
         if special_annex_k_case:
-            ctx = [
-                "Annex K: SEALED ENCLOSURE",
-                f"k(K): {ak.get('k', 0.0):.3f}",
-                f"c(K): {ak.get('c', 0.0):.3f}",
-                f"x(K): {ak.get('x', 0.0):.3f}",
-            ]
-        else:
-            # ---- context / coefficients ----
-            ctx = [
-                f"k={lt.get('k', 0.0):.3f}",
-                f"c={lt.get('c', 0.0):.3f}",
-                f"x={lt.get('x', 0.0):.3f}",
-            ]
-
-        if special_annex_k_case:
+            ctx.append("Annex K: SEALED ENCLOSURE")
             ctx.append("⚠ Vents ignored (Annex K)")
 
-        if lt.get("g") is not None:
-            ctx.append(f"g={lt['g']:.3f}")
-
-        f_raw = lt.get("f")
-        f_snap = c_meta.get("used_f")
-        if f_raw is not None:
-            ctx.append(
-                f"f={f_raw:.3f}" if not f_snap
-                else f"f={f_raw:.3f} → {f_snap:.2f}"
-            )
-
-        if lt.get("d") is not None:
-            ctx.append(f"d={lt['d']:.3f}")
-
-        all_lines = lines + [""] + ctx
+        all_lines = lines + ([""] + ctx if ctx else [])
 
         fm = QFontMetrics(font_main)
         lh = fm.height()
@@ -199,7 +175,10 @@ class TierOverlayItem(QGraphicsItem):
         block_h = len(all_lines) * lh + 2 * PAD
 
         x = self.boundingRect().left() + 4
-        y = self.boundingRect().bottom() - block_h - 4
+        if self.tier.layer_index == 0: # Rear tier - top left
+            y = self.boundingRect().top() + 4
+        else: # Front or Mid tier - bottom left
+            y = self.boundingRect().bottom() - block_h - 4
 
         # ---- background ----
         painter.setPen(Qt.NoPen)
@@ -565,6 +544,10 @@ class ComponentEntry:
     heat_each_w: float
     qty: int
     max_temp_C: int = 70  # NEW: per-component temperature rating
+    rated_current_A: float | None = None
+    derating_temp_start_C: float | None = None
+    derating_function: str | None = None
+    derated_current_A: float | None = None  # computed
 
 class TierItem(ResizableBox):
     """A tier: draggable/resizable, components, curve tag, context menu delete."""
@@ -597,13 +580,16 @@ class TierItem(ResizableBox):
 
         # --- Layered Tiers Support  -----------------------------------------
         self.layer_index = 1
-        self.setZValue(self.layer_index * 1000)
         self._active = False
         self._overlapped_by_front = False
 
         # --- Temperature limits --------------------------------------------
         self.max_temp_C = 70
         self.use_auto_component_temp = False
+
+        # --- Horizontal partitions -----------------------------------------
+        self.h_partitions_enabled = False
+        self.h_partitions_count = 1
 
         import uuid
         self.tier_id = uuid.uuid4().hex
@@ -648,9 +634,6 @@ class TierItem(ResizableBox):
                     if hasattr(view, "refresh_tier_stack_visuals"):
                         view.refresh_tier_stack_visuals()
 
-                    if hasattr(view, "set_tier_layer"):
-                        view.set_tier_layer(self, self.layer_index)
-
     def set_depth_mm(self, mm: int):
         self.depth_mm = max(1, int(mm))
         self.update()
@@ -661,6 +644,14 @@ class TierItem(ResizableBox):
 
     def set_auto_limit(self, on: bool):
         self.use_auto_component_temp = bool(on)
+        self.update()
+
+    def set_h_partitions_enabled(self, on: bool):
+        self.h_partitions_enabled = bool(on)
+        self.update()
+
+    def set_h_partitions_count(self, count: int):
+        self.h_partitions_count = max(1, min(5, int(count)))
         self.update()
 
     def itemChange(self, change, value):
@@ -680,7 +671,11 @@ class TierItem(ResizableBox):
 
         for i, t in enumerate(tiers):
             t.layer_index = i
-            t.setZValue(i * 1000)
+            
+        if tiers and tiers[0].scene():
+            for view in tiers[0].scene().views():
+                if hasattr(view, "refresh_tier_stack_visuals"):
+                    view.refresh_tier_stack_visuals()
 
     # ---------------------------------------------------------
     # Bus management
@@ -752,7 +747,17 @@ class TierItem(ResizableBox):
         return sum(ce.heat_each_w * ce.qty for ce in self.component_entries)
 
     def total_heat(self) -> float:
-        return self.components_total_heat_W() + self.cables_total_heat_W()
+        components_w = self.components_total_heat_W()
+        cables_w = self.cables_total_heat_W()
+        bus_w = 0.0
+        if self.live_thermal:
+            # check for direct key (from busbar_tools_panel.py) or coupling subkey (from switchboard_tab.py)
+            bus_w = float(self.live_thermal.get("P_bus_W", 0.0))
+            if bus_w == 0.0:
+                coupling = self.live_thermal.get("coupling")
+                if coupling:
+                    bus_w = float(coupling.get("P_bus_W", 0.0))
+        return components_w + cables_w + bus_w
 
 
     def contextMenuEvent(self, event):
@@ -865,7 +870,7 @@ class TierItem(ResizableBox):
             border_pen = QPen(QColor("#00ffea"), 3, Qt.SolidLine)
         else:
             painter.setOpacity(0.35)
-            border_pen = QPen(QColor("#888888"), 1, Qt.DashLine)
+            border_pen = QPen(QColor("#215096"), 1, Qt.DashLine)
 
         opacity = 1.0 if self._active else 0.55
 
@@ -877,35 +882,23 @@ class TierItem(ResizableBox):
         else:  # front
             opacity *= 1.00
 
-        if self.layer_index == 0:
-            painter.save()
-
-            painter.setBrush(QColor(40, 40, 40, 80))
-            painter.setPen(Qt.NoPen)
-            painter.drawRect(self._rect)
-
-            rear_hatch = QBrush(QColor(255, 255, 255, 100), Qt.Dense2Pattern)
-            painter.setBrush(rear_hatch)
-            painter.drawRect(self._rect)
-
-            painter.restore()
-
-        # ---------------- DEPTH VISUALIZATION ----------------
-
-        # FRONT tier indicator
-        if self.layer_index == 2:
+        # ---------------- LAYER BACKGROUNDS ----------------
+        if self.layer_index == 0:  # rear (slightly grey)
             painter.save()
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(33, 80, 150, 45))  # #215096
+            painter.setBrush(QColor(100, 100, 100, 40))
             painter.drawRect(self._rect)
             painter.restore()
-
-
-        # REAR tier indicator
-        if self.layer_index == 0:
+        elif self.layer_index == 1:  # mid (white)
             painter.save()
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(0, 127, 77, 65))  # #007F4D
+            painter.setBrush(QColor(255, 255, 255, 20))
+            painter.drawRect(self._rect)
+            painter.restore()
+        elif self.layer_index == 2:  # front (slightly blue)
+            painter.save()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 100, 255, 30))
             painter.drawRect(self._rect)
             painter.restore()
 
@@ -929,6 +922,26 @@ class TierItem(ResizableBox):
             painter.setPen(QPen(Qt.darkGray, 1))
             painter.setBrush(Qt.NoBrush)
             self._draw_louvres(painter)
+            painter.restore()
+
+        # 3. HORIZONTAL PARTITIONS
+        if self.h_partitions_enabled and self.h_partitions_count > 1:
+            painter.save()
+            # Green line
+            partition_pen = QPen(QColor("#007F4D"), 1, Qt.SolidLine)
+            painter.setPen(partition_pen)
+            
+            # Calculate height and divisions
+            h = self._rect.height()
+            w = self._rect.width()
+            top = self._rect.top()
+            left = self._rect.left()
+            right = self._rect.right()
+            
+            # Draw n-1 lines for n partitions
+            for i in range(1, self.h_partitions_count):
+                y = top + (i * h / self.h_partitions_count)
+                painter.drawLine(QPointF(left, y), QPointF(right, y))
             painter.restore()
 
         # --- cooling state (authoritative) ---
@@ -1000,6 +1013,11 @@ class TierItem(ResizableBox):
         painter.drawText(tag, Qt.AlignCenter, str(self.curve_no))
 
     @property
+    def static_heat_w(self) -> float:
+        """Sum of component and cable heat only (no bus/joint losses)."""
+        return self.components_total_heat_W() + self.cables_total_heat_W()
+
+    @property
     def total_heat_w(self):
         return self.total_heat()
 
@@ -1023,10 +1041,15 @@ class TierItem(ResizableBox):
             heat_each_w: float,
             qty: int = 1,
             max_temp_C: int = 70,  # NEW
+            rated_current_A: float | None = None,
+            derating_temp_start_C: float | None = None,
+            derating_function: str | None = None,
     ):
         # Merge only when both heat_each and rating match (so mixed ratings remain distinct)
         for ce in self.component_entries:
-            if ce.key == key and ce.heat_each_w == float(heat_each_w) and ce.max_temp_C == int(max_temp_C):
+            if ce.key == key and ce.heat_each_w == float(heat_each_w) and ce.max_temp_C == int(max_temp_C) \
+               and ce.rated_current_A == rated_current_A and ce.derating_temp_start_C == derating_temp_start_C \
+               and ce.derating_function == derating_function:
                 ce.qty += int(qty)
                 self.update()
                 return
@@ -1039,6 +1062,9 @@ class TierItem(ResizableBox):
                 heat_each_w=float(heat_each_w),
                 qty=int(qty),
                 max_temp_C=int(max_temp_C),
+                rated_current_A=rated_current_A,
+                derating_temp_start_C=derating_temp_start_C,
+                derating_function=derating_function,
             )
         )
         self.update()
@@ -1077,6 +1103,15 @@ class TierItem(ResizableBox):
             # Limits
             "max_temp_C": self.max_temp_C,
             "use_auto_component_temp": self.use_auto_component_temp,
+
+            # Horizontal partitions
+            "h_partitions": {
+                "enabled": self.h_partitions_enabled,
+                "count": int(self.h_partitions_count),
+            },
+
+            # Layer / Stack
+            "layer_index": int(self.layer_index),
 
             # Position
             "x": float(self.pos().x()),
@@ -1117,6 +1152,14 @@ class TierItem(ResizableBox):
         t.max_temp_C = int(d.get("max_temp_C", 70))
         t.use_auto_component_temp = bool(d.get("use_auto_component_temp", False))
 
+        # Horizontal partitions
+        hp = d.get("h_partitions", {})
+        t.h_partitions_enabled = bool(hp.get("enabled", False))
+        t.h_partitions_count = int(hp.get("count", 1))
+
+        # Layer / Stack
+        t.layer_index = int(d.get("layer_index", 1))
+
         # Components
         t.component_entries = [
             ComponentEntry(
@@ -1127,6 +1170,9 @@ class TierItem(ResizableBox):
                 heat_each_w=float(ce.get("heat_each_w", 0.0)),
                 qty=int(ce.get("qty", 1)),
                 max_temp_C=int(ce.get("max_temp_C", 70)),
+                rated_current_A=ce.get("rated_current_A"),
+                derating_temp_start_C=ce.get("derating_temp_start_C"),
+                derating_function=ce.get("derating_function"),
             )
             for ce in d.get("component_entries", [])
         ]

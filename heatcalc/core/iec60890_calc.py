@@ -52,6 +52,50 @@ def air_k_factor_from_altitude_m(alt_m: float) -> float:
 
     return 1.0
 
+def _partition_factor_d(
+    *,
+    Ae: float,
+    tier,
+    vents_effective: bool,
+) -> float:
+    """
+    IEC 60890 Table 4 / 5 partition factor d
+    """
+
+    # ---- Condition: only valid if Ae > 1.25 ----
+    if Ae <= 1.25:
+        return 1.0
+
+    # ---- Horizontal partitions ----
+    enabled = getattr(tier, "h_partitions_enabled", False)
+    if not enabled:
+        return 1.0
+
+    n = int(getattr(tier, "h_partitions_count", 0))
+    n = max(0, min(n, 5))  # clamp to standard table range
+
+    # ---- Tables ----
+    if vents_effective:
+        # Table 5 (with ventilation)
+        d_table = {
+            0: 1.00,
+            1: 1.05,
+            2: 1.10,
+            3: 1.15,
+            4: 1.20,
+            5: 1.25,
+        }
+    else:
+        # Table 4 (no ventilation)
+        d_table = {
+            0: 1.00,
+            1: 1.05,
+            2: 1.15,
+            3: 1.30,
+            4: 1.45,
+            5: 1.55,
+        }
+    return d_table[n]
 
 def _calc_p_890_from_allowable_top_rise(
     *,
@@ -214,7 +258,13 @@ def calc_tier_iec60890(
     )
 
     x = 0.715 if vent_effective else 0.804
-    d_fac = 1.0
+    # ---------------- Partition factor d (IEC 60890 Table 4 / 5) ----------------
+
+    d_fac = _partition_factor_d(
+        Ae=Ae,
+        tier=tier,
+        vents_effective=vent_effective,
+    )
 
     coeff_sources = []
 
@@ -320,6 +370,9 @@ def calc_tier_iec60890(
             "f": f,
             "g": g,
 
+            "d_factor": d_fac,
+            "h_partitions": getattr(tier, "h_partitions_count", 0),
+
             "curve_no": curve_no,
             "wall_mounted": bool(wall_mounted),
             "ventilated": False,  # explicitly meaningless here
@@ -372,6 +425,8 @@ def calc_tier_iec60890(
             "wall_mounted": bool(wall_mounted),
             "ventilated": bool(vent_effective),
 
+            "d_factor": d_fac,
+            "h_partitions": getattr(tier, "h_partitions_count", 0),
 
             # standards-aligned outputs
             "P_890": float(P_890_installed),  # ✅ limit, not actual
@@ -494,6 +549,9 @@ def calc_tier_iec60890(
         "curve_no": curve_no,
         "wall_mounted": bool(wall_mounted),
         "ventilated": bool(vent_effective),
+
+        "d_factor": d_fac,
+        "h_partitions": getattr(tier, "h_partitions_count", 0),
 
         # standards-aligned outputs
         "P_890": P_890,

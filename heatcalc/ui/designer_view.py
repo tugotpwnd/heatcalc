@@ -79,6 +79,50 @@ class DesignerView(QGraphicsView):
         self._snap_marker.setVisible(False)
         self._scene.addItem(self._snap_marker)
 
+        # --- Tier swapping (Tab key & Button) ---
+        self._tiers_swapped = False
+        self._create_layer_toggle_button()
+
+    def _create_layer_toggle_button(self):
+        from PyQt5.QtWidgets import QPushButton
+        from PyQt5.QtGui import QIcon, QColor
+        
+        self.btn_toggle_layers = QPushButton("Toggle Layers", self)
+        self.btn_toggle_layers.setCheckable(True)
+        self.btn_toggle_layers.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(50, 50, 50, 180);
+                color: white;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px 10px;
+                font-size: 10pt;
+            }
+            QPushButton:hover {
+                background-color: rgba(70, 70, 70, 220);
+                border: 1px solid #777;
+            }
+            QPushButton:checked {
+                background-color: #cc8800;
+                color: black;
+                font-weight: bold;
+            }
+        """)
+        self.btn_toggle_layers.clicked.connect(self._on_toggle_layers_clicked)
+        self.btn_toggle_layers.setToolTip("Toggle Front & Rear Layer Priority (Tab)")
+        self.btn_toggle_layers.move(10, 10)
+        self.btn_toggle_layers.show()
+
+    def _on_toggle_layers_clicked(self, checked: bool):
+        self._tiers_swapped = checked
+        self.refresh_tier_stack_visuals()
+        
+        # Show toast message
+        from .toast_message import show_toast
+        msg = "Rear Tiers at Front (Edit Rear)" if self._tiers_swapped else "Normal View (Edit Front/Mid)"
+        color = "#cc8800" if self._tiers_swapped else "#0088cc"
+        show_toast(self, msg, duration=1500, color=color)
+
     def scene(self) -> QGraphicsScene:
         return self._scene
 
@@ -87,6 +131,8 @@ class DesignerView(QGraphicsView):
     def set_active_tier(self, tier: Optional[TierItem]):
         self._active_tier = tier
         self.update_tier_visuals()
+        if tier:
+            self.refresh_tier_stack_visuals()
 
     def update_tier_visuals(self):
         tiers = [i for i in self.scene().items() if isinstance(i, TierItem)]
@@ -113,10 +159,25 @@ class DesignerView(QGraphicsView):
     def _apply_layer_visuals(self, tiers):
 
         for t in tiers:
+            # Swap logic: 
+            # Normal: Rear=0, Mid=1000, Front=2000
+            # Swapped: Rear=2000, Mid=1000, Front=0
+            
+            z_value = t.layer_index * 1000
+            if self._tiers_swapped:
+                if t.layer_index == 0:  # Rear
+                    z_value = 2000
+                elif t.layer_index == 2:  # Front
+                    z_value = 0
+                # Mid (layer 1) stays at 1000
+
+            # Boost active tier slightly within its layer
+            if t is self._active_tier:
+                z_value += 10
 
             # enforce depth ordering
-            t.setZValue(t.layer_index * 1000)
-            t.setFlag(QGraphicsItem.ItemStacksBehindParent, t.layer_index == 0)
+            t.setZValue(z_value)
+            t.setFlag(QGraphicsItem.ItemStacksBehindParent, z_value == 0)
 
             # keep overlay above tier
             if hasattr(t, "overlay_item") and t.overlay_item is not None:
@@ -203,18 +264,58 @@ class DesignerView(QGraphicsView):
 
         super().resizeEvent(event)
 
+        # 1. Update Legend position (bottom right)
         margin = 20
+        lx = self.width() - self.legend.width() - margin
+        ly = self.height() - self.legend.height() - margin
+        self.legend.move(lx, ly)
 
-        x = self.width() - self.legend.width() - margin
-        y = self.height() - self.legend.height() - margin
-
-        self.legend.move(x, y)
+        # 2. Maintain Toggle Button position (top left)
+        if hasattr(self, "btn_toggle_layers"):
+            self.btn_toggle_layers.move(10, 10)
 
     def wheelEvent(self, event):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(factor, factor)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Tab:
+            # Sync button state
+            self.btn_toggle_layers.setChecked(not self.btn_toggle_layers.isChecked())
+            self._on_toggle_layers_clicked(self.btn_toggle_layers.isChecked())
+            
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
     def contextMenuEvent(self, event):
+        # 0. Check for bus items at this position first
+        pos = self.mapToScene(event.pos())
+        all_items = self.scene().items(pos)
+        
+        target_item = None
+        for top_item in all_items:
+            item = top_item
+            while item and not isinstance(item, (BusLineItem, BusLoadItem, BusSourceItem, BusJoinItem, TierItem)):
+                item = item.parentItem()
+            
+            if isinstance(item, (BusLineItem, BusLoadItem, BusSourceItem, BusJoinItem)):
+                target_item = item
+                break
+        
+        # If we found a bus item, let it handle its own context menu
+        if target_item:
+            # Ensure the bus item handles the context menu event
+            # Use the event directly
+            target_item.contextMenuEvent(event)
+            return
+
+        # 1. Update active tier based on right-click location if no bus item found
+        tier = self.tier_at_point(pos)
+        if tier:
+            self.set_active_tier(tier)
+            self.update_tier_visuals()
+
         # Walk up parent chain to find SwitchboardTab
         switchboard = None
         w = self
@@ -227,9 +328,6 @@ class DesignerView(QGraphicsView):
         if not switchboard:
             super().contextMenuEvent(event)
             return
-
-        pos = self.mapToScene(event.pos())
-        tier = self.tier_at_point(pos)
 
         menu = QMenu(self)
 
@@ -417,15 +515,42 @@ class DesignerView(QGraphicsView):
             if self._attachment_exists(node):
                 return
 
-            from PyQt5.QtWidgets import QInputDialog
-            I, ok = QInputDialog.getDouble(self, "Load Current", "Enter load current (A):", 100.0, 0, 10000, 1)
-            if not ok:
+            from PyQt5.QtWidgets import QInputDialog, QDialog, QVBoxLayout, QFormLayout, QDoubleSpinBox, QDialogButtonBox
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Add Load")
+            layout = QVBoxLayout(dialog)
+            form = QFormLayout()
+
+            spin_i = QDoubleSpinBox()
+            spin_i.setRange(0, 10000)
+            spin_i.setDecimals(2)
+            spin_i.setValue(100.0)
+            spin_i.setSuffix(" A")
+            form.addRow("Load current:", spin_i)
+
+            spin_t = QDoubleSpinBox()
+            spin_t.setRange(0, 500)
+            spin_t.setDecimals(1)
+            spin_t.setValue(105.0)
+            spin_t.setSuffix(" °C")
+            form.addRow("Max terminal temp:", spin_t)
+
+            layout.addLayout(form)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+
+            if dialog.exec_() != QDialog.Accepted:
                 return
+
+            I = spin_i.value()
+            T_max = spin_t.value()
 
             bus = self.find_bus_for_point(node)
 
             if bus:
-                load = BusLoadItem(node, I)
+                load = BusLoadItem(node, I, max_terminal_temp_c=T_max)
                 bus.attach_child(load, node)
             return
 

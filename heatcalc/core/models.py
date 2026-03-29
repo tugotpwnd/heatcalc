@@ -146,6 +146,7 @@ class BusLoad:
     y_mm: float
 
     I_A: float
+    max_terminal_temp_c: float = 105.0
 
 @dataclass
 class BusJoin:
@@ -220,7 +221,15 @@ class Project:
 
             bus_network = BusNetwork(
                 segments=[BusSegment(**s) for s in net_data.get("segments", [])],
-                loads=[BusLoad(**l) for l in net_data.get("loads", [])],
+                loads=[
+                    BusLoad(
+                        x_mm=l.get("x_mm", 0.0),
+                        y_mm=l.get("y_mm", 0.0),
+                        I_A=float(l.get("I_A", 0.0)),
+                        max_terminal_temp_c=float(l.get("max_terminal_temp_c", 105.0))
+                    )
+                    for l in net_data.get("loads", [])
+                ],
                 joins=[BusJoin(**j) for j in net_data.get("joins", [])],
                 source_segment=net_data.get("source_segment"),
             )
@@ -337,7 +346,7 @@ class BusbarSpec:
     Number of parallel conductors sharing the phase current.
     """
 
-    S_ac: float = 1.2
+    S_ac: float = 1.3
     """
     AC resistance correction factor.
     Accounts for skin/proximity effects if required.

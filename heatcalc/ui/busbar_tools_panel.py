@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QToolButton, QTableWidget
 )
 from .collapsible_group_box import CollapsibleGroupBox
-from .bus_items import BusSpecUI
+from .bus_items import BusSpecUI, BusLineItem, BusJoinItem
 from ..core.models import BusbarJointSpec
 from ..utils.resources import get_resource_path
 from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
@@ -365,8 +365,19 @@ class BusbarToolsPanel(QWidget):
         result = self.swb.solve_all_thermal()
         if not result:
             return
+
+        # -----------------------------------------
+        # STORE RESULT (AUTHORITATIVE SOURCE)
+        # -----------------------------------------
+        self.last_result = result
+        self.swb.last_solve_result = result  # <-- important for report layer
+
+        # -----------------------------------------
+        # EXISTING BEHAVIOUR
+        # -----------------------------------------
         self._apply_results(result)
         self.update_compliance_table(result)
+
 
     def _apply_results(self, result: dict):
         """
@@ -375,7 +386,6 @@ class BusbarToolsPanel(QWidget):
           - thermal legend
           - tier overlay summaries (t.live_thermal)
         """
-
         if not result:
             return
 
@@ -384,26 +394,20 @@ class BusbarToolsPanel(QWidget):
         tier_results = result.get("tiers", {})
         tier_edges = result.get("tier_edges", {})
         air_by_edge = result.get("air_by_edge", {})
+        node_T = result.get("node_temps", {})
 
         if global_sol is None or graph is None or not tier_results:
             return
 
+        # NEW: Clear previous thermal results from all bus items first
+        for item in self.view.scene().items():
+            if isinstance(item, (BusLineItem, BusJoinItem)):
+                if isinstance(item, BusLineItem):
+                    item.thermal_results = []
+                else:
+                    item.thermal_result = None
+
         edge_result_by_id = {e.edge_id: e for e in global_sol.edge_results}
-
-        from collections import defaultdict
-
-        node_T = defaultdict(list)
-
-        for er in global_sol.edge_results:
-            e = graph.edges[er.edge_id]
-
-            node_T[e.u].append(er.T_C)
-            node_T[e.v].append(er.T_C)
-
-        node_T = {
-            nid: sum(vals) / len(vals)
-            for nid, vals in node_T.items()
-        }
 
         from collections import defaultdict
 
@@ -422,6 +426,12 @@ class BusbarToolsPanel(QWidget):
         # assign FULL results to each bus UI item
         for ui_item, results in bus_edge_results.items():
             ui_item.thermal_results = results
+
+        # assign explicit joint results
+        for er in global_sol.edge_results:
+            edge = graph.edges[er.edge_id]
+            if edge.is_joint and edge.ui_join_item:
+                edge.ui_join_item.thermal_result = er
 
         for er in global_sol.edge_results:
             edge = graph.edges[er.edge_id]
@@ -558,7 +568,7 @@ class BusbarToolsPanel(QWidget):
             "Tier",
             "Built-in",
             "Terminals",
-            "Enclosure\n(Bulk / Hotspot)",
+            "Enclosure\n(Top / Hotspot)",
             "Busbars"
         ])
 
@@ -620,9 +630,9 @@ class BusbarToolsPanel(QWidget):
                 term_text
             )
 
-            # Enclosure (bulk + hotspot)
+            # Enclosure (top + hotspot)
             enc_text = (
-                f"B:{comp.enclosure_surface_T_bulk:.1f}°C\n"
+                f"T:{comp.enclosure_surface_T_top_side:.1f}°C\n"
                 f"H:{comp.enclosure_surface_T_hotspot:.1f}°C"
             )
 

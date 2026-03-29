@@ -44,7 +44,7 @@ class BusbarThermalInputs:
     eps_bus: float = 0.4 # Varies depending on cooling / heating
     eps_env: float = 0.90
     v_mps: float = 0.0
-    S_ac: float = 1.2
+    S_ac: float = 1.3
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,8 @@ class BusbarPhysicsState:
     rad_blockage_frac: float
 
     theta_K: float
-    W_conv_W_m2: float
+    W_conv_major_W_m2: float
+    W_conv_minor_W_m2: float
     P_conv_W_per_m: float
 
     eps_rel: float
@@ -116,20 +117,59 @@ def compute_busbar_physics(
         face_to_face_dim=geom.face_to_face_dim,
     )
 
-    # Passive loss-only convention
+    # -------------------------------------------------------------------------
+    # FACE-BASED NATURAL CONVECTION (RECTANGULAR BUSBAR)
+    #
+    # We treat the busbar as 4 faces:
+    #   - 2 major faces (width x length)
+    #   - 2 minor faces (thickness x length)
+    #
+    # Each face uses its own:
+    #   - characteristic length (L)
+    #   - convection correlation (vertical / horizontal)
+    #
+    # This avoids applying a single W_conv to the full perimeter, which is
+    # physically incorrect for rectangular sections.
+    # -------------------------------------------------------------------------
+
     theta = max(T_bus_C - T_air_C, 0.0)
-    L = max(geom.L_char_m, 1e-6)
 
-    if therm.v_mps > 0.0:
-        W_conv = FORCED_CONV_COEFF * np.sqrt(therm.v_mps) * theta
+    # Dimensions
+    w = geom.width_m
+    t = geom.thickness_m
+
+    # Convert to mm for Copper Handbook correlations
+    L_major_mm = w * 1000.0
+    L_minor_mm = t * 1000.0
+
+    # Areas per metre length
+    A_major = 2.0 * w  # two large faces
+    A_minor = 2.0 * t  # two thin edges
+
+    # -----------------------------
+    # Major faces (usually dominant)
+    # -----------------------------
+    if geom.convection_mode == "vertical":
+        W_major = NATURAL_CONV_VERTICAL * (theta ** 1.25) / (L_major_mm ** 0.25)
     else:
-        if geom.convection_mode == "vertical":
-            W_conv = NATURAL_CONV_VERTICAL * (theta ** 1.25) / (L ** 0.25)
-        else:
-            W_conv = NATURAL_CONV_HORIZONTAL * (theta ** 1.25) / (L ** 0.25)
+        W_major = NATURAL_CONV_HORIZONTAL * (theta ** 1.25) / (L_major_mm ** 0.25)
 
-    h_nat = 6.0  # or 7.0 W/m²K
-    P_conv_total = N * h_nat * As_conv * theta
+    P_major = N * W_major * A_major
+
+    # -----------------------------
+    # Minor faces (less important)
+    # -----------------------------
+    # These are usually less effective; treat as horizontal surfaces by default
+    W_minor = NATURAL_CONV_HORIZONTAL * (theta ** 1.25) / (L_minor_mm ** 0.25)
+
+    P_minor = N * W_minor * A_minor
+
+    # -----------------------------
+    # Total convection
+    # -----------------------------
+    P_conv_total = P_major + P_minor
+    A_conv_total = N * (A_major + A_minor)
+    W_conv_eff = P_conv_total / max(A_conv_total, 1e-12)
 
     eps_rel = relative_emissivity(therm.eps_bus, therm.eps_env)
     T_K = T_bus_C + 273.15
@@ -157,7 +197,8 @@ def compute_busbar_physics(
         rad_blockage_frac=float(blockage),
 
         theta_K=float(theta),
-        W_conv_W_m2=float(W_conv),
+        W_conv_major_W_m2=float(W_major),
+        W_conv_minor_W_m2=float(W_minor),
         P_conv_W_per_m=float(P_conv_total),
 
         eps_rel=float(eps_rel),
@@ -166,7 +207,6 @@ def compute_busbar_physics(
 
         f_W_per_m=float(f),
     )
-
     if debug:
         print(
             f"[busbar_physics] {geom.name} | "

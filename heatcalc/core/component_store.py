@@ -13,6 +13,9 @@ class ComponentRow:
     description: str
     heat_w: float
     max_temp_C: int = 70  # default safe rating
+    rated_current_A: float | None = None
+    derating_temp_start_C: float | None = None
+    derating_function: str | None = None
 
 # Accept common header variants (case/spacing insensitive)
 ALIASES: Dict[str, list[str]] = {
@@ -24,11 +27,15 @@ ALIASES: Dict[str, list[str]] = {
         "max_temp_C", "Max Temp (°C)", "MaxTemp", "Max Temperature", "Temperature (°C)",
         "Temp (°C)", "Max T", "Tmax", "MaxTempC", "Max Temp C", "Max Temperature (°C)"
     ],
+    "rated_current_A": ["rated_current_A", "Rated Current (A)", "RatedCurrent", "Rated Current", "Ie", "In"],
+    "derating_temp_start_C": ["derating_temp_start_C", "Derating Temp Start (°C)", "DeratingTempStart", "Derating Temp Start"],
+    "derating_function": ["derating_function", "Derating Function", "DeratingFunction", "Derating Func"],
 }
 
 # The header we WRITE when creating/appending the CSV
-CANON_HEADERS: Tuple[str, str, str, str, str] = (
-    "Category", "Part #", "Description", "Heat (W)", "Max Temp (°C)"
+CANON_HEADERS: Tuple[str, str, str, str, str, str, str, str] = (
+    "Category", "Part #", "Description", "Heat (W)", "Max Temp (°C)",
+    "Rated Current (A)", "Derating Temp Start (°C)", "Derating Function"
 )
 
 def _norm(s: str) -> str:
@@ -93,6 +100,9 @@ def load_component_catalog(csv_path: Path) -> List[ComponentRow]:
             desc = _norm(rec.get(header_map["description"] or "", ""))
             heat_raw = _norm(rec.get(header_map["heat_w"] or "", ""))
             max_raw  = _norm(rec.get(header_map["max_temp_C"] or "", ""))
+            rated_current_raw = _norm(rec.get(header_map["rated_current_A"] or "", ""))
+            derating_temp_raw = _norm(rec.get(header_map["derating_temp_start_C"] or "", ""))
+            derating_func_raw = _norm(rec.get(header_map["derating_function"] or "", ""))
 
             try:
                 heat = float(heat_raw.replace(",", "")) if heat_raw else 0.0
@@ -105,6 +115,22 @@ def load_component_catalog(csv_path: Path) -> List[ComponentRow]:
             except Exception:
                 max_temp = 70
 
+            rated_current = None
+            try:
+                if rated_current_raw:
+                    rated_current = float(rated_current_raw.replace(",", ""))
+            except Exception:
+                pass
+
+            derating_temp = None
+            try:
+                if derating_temp_raw:
+                    derating_temp = float(derating_temp_raw.replace(",", ""))
+            except Exception:
+                pass
+
+            derating_func = derating_func_raw if derating_func_raw else None
+
             if not (cat or pn or desc):
                 continue
 
@@ -114,6 +140,9 @@ def load_component_catalog(csv_path: Path) -> List[ComponentRow]:
                 description=desc,
                 heat_w=heat,
                 max_temp_C=max_temp,
+                rated_current_A=rated_current,
+                derating_temp_start_C=derating_temp,
+                derating_function=derating_func,
             ))
         return rows
 
@@ -135,4 +164,7 @@ def append_component_to_csv(csv_path: Path, row: ComponentRow) -> None:
             row.description,
             f"{row.heat_w:.6g}",
             int(row.max_temp_C),
+            f"{row.rated_current_A:.6g}" if row.rated_current_A is not None else "",
+            f"{row.derating_temp_start_C:.6g}" if row.derating_temp_start_C is not None else "",
+            row.derating_function or "",
         ])

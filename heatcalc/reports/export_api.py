@@ -7,6 +7,7 @@ import re
 
 from PyQt5.QtWidgets import QGraphicsScene
 
+from ..core.compliance_61439 import evaluate_tier_compliance
 from ..core.louvre_calc import tier_max_effective_inlet_area_cm2
 from ..ui.tier_item import TierItem, tier_effective_inlet_area_cm2
 from ..core.iec60890_calc import calc_tier_iec60890
@@ -17,6 +18,7 @@ from .simple_report import (
     TierRow as ReportTier,
     ComponentRow as ReportComponent,
     CableRow as ReportCable,
+    BusRow as ReportBus,
     TierThermal,
 )
 from PyQt5.QtWidgets import QMessageBox
@@ -57,7 +59,7 @@ def _dims_m_from_tier(t: TierItem) -> Tuple[float, float, float]:
     return wmm / 1000.0, hmm / 1000.0, dmm / 1000.0
 
 
-def _map_tier_item(t: TierItem) -> ReportTier:
+def _map_tier_item(t: TierItem, solve) -> ReportTier:
     rect = t._rect if hasattr(t, "_rect") else t.rect()
     wmm = max(1, int(rect.width() / GRID * MM_PER_GRID_MM))
     hmm = max(1, int(rect.height() / GRID * MM_PER_GRID_MM))
@@ -67,6 +69,7 @@ def _map_tier_item(t: TierItem) -> ReportTier:
     for c in getattr(t, "component_entries", []) or []:
         qty = int(getattr(c, "qty", 1) or 1)
         each = float(getattr(c, "heat_each_w", 0.0) or 0.0)
+
         comps.append(
             ReportComponent(
                 description=getattr(c, "description", getattr(c, "key", "Component")),
@@ -74,6 +77,12 @@ def _map_tier_item(t: TierItem) -> ReportTier:
                 qty=qty,
                 heat_each_w=each,
                 heat_total_w=qty * each,
+                max_temp_C=getattr(c, "max_temp_C", 70),
+                rated_current_A=getattr(c, "rated_current_A", None),
+                derating_temp_start_C=getattr(c, "derating_temp_start_C", None),
+                derating_function=getattr(c, "derating_function", None),
+                key=getattr(c, "key", None),
+                category=getattr(c, "category", None),
             )
         )
 
@@ -91,6 +100,47 @@ def _map_tier_item(t: TierItem) -> ReportTier:
             )
         )
 
+    buses: List[ReportBus] = []
+
+    schedule = []
+    tier_edges = {}
+
+    if solve:
+        thermal = solve["global"]  # ← FIX HERE
+        graph = solve["graph"]
+        tier_edges = solve["tier_edges"]
+
+        from heatcalc.reports.bus_schedule import build_bus_schedule, build_joint_schedule
+        schedule = build_bus_schedule(graph, thermal)
+        joint_schedule = build_joint_schedule(graph, thermal)
+
+        tier_edge_ids = {e.id for e in tier_edges.get(t, [])}
+
+        for row in schedule:
+            if row.bus_id not in tier_edge_ids:
+                continue
+
+            buses.append(
+                ReportBus(
+                    name=f"Bus {row.bus_id}",
+                    width_mm=row.width_mm,
+                    thickness_mm=row.thickness_mm,
+                    parallel_bars=row.bars,
+                    length_m=row.length_m,
+                    current_A=row.I_max_A,
+                    total_W=row.P_total_W,
+                    T_max_C=row.T_max_C,
+                    T_min_C=row.T_min_C,
+                )
+            )
+
+        tier_joint_rows = []
+
+        for jr in joint_schedule:
+            if jr.joint_id not in tier_edge_ids:
+                continue
+            tier_joint_rows.append(jr)
+
     return ReportTier(
         tag=str(getattr(t, "name", getattr(t, "tag", "Tier"))),
         width_mm=wmm,
@@ -98,8 +148,10 @@ def _map_tier_item(t: TierItem) -> ReportTier:
         depth_mm=dmm,
         components=comps,
         cables=cabs,
+        buses=buses,
+        joints=tier_joint_rows,  # ✅ clean
+        loads=[],  # placeholder for later
     )
-
 
 def _meta_from_project(project: Any) -> ReportMeta:
     m = getattr(project, "meta", None)
@@ -137,6 +189,39 @@ def _safe_bool(obj: Any, name: str, default: bool) -> bool:
     except Exception:
         return bool(default)
 
+def build_tier_compliance_results(
+    tiers,
+    global_sol,
+    tier_thermals,
+    ambient_C,
+    tier_edges,
+    graph,
+):
+    """
+    Build 61439 compliance results per tier.
+    """
+
+    results = []
+
+    for th in tier_thermals:
+        tier = next(t for t in tiers if str(getattr(t, "name")) == th.tag)
+        tier_res = {
+            "T_top": th.T_top,
+        }
+
+        comp = evaluate_tier_compliance(
+            tier=tier,
+            global_sol=global_sol,
+            tier_res=tier_res,
+            ambient_C=ambient_C,
+            tier_edges=tier_edges,
+            graph=graph,
+        )
+
+        results.append(comp)
+
+    return results
+
 
 def export_project_report(
     project: Any,
@@ -163,6 +248,19 @@ def export_project_report(
     if scene is None:
         raise RuntimeError("SwitchboardTab.scene is not available")
 
+    # -----------------------------------------
+    # REQUIRE SOLVE RESULTS (NEW)
+    # -----------------------------------------
+    solve = getattr(switchboard_tab, "last_solve_result", None)
+
+    if not solve:
+        QMessageBox.warning(
+            None,
+            "No Results",
+            "Please run the thermal solve before exporting the report."
+        )
+        return out_pdf
+
     # Refresh curve_no + wall_mounted etc from the latest geometry before reporting.
     if hasattr(switchboard_tab, "_recompute_all_curves"):
         try:
@@ -187,7 +285,7 @@ def export_project_report(
         key=lambda t: _natural_tier_key(str(getattr(t, "name", getattr(t, "tag", ""))))
     )
 
-    report_tiers = [_map_tier_item(t) for t in report_tier_items]
+    report_tiers = [_map_tier_item(t, solve) for t in report_tier_items]
     total_w = sum(t.heat_w for t in report_tiers)
     totals = {"heat_total_w": round(total_w, 3)}
 
@@ -310,6 +408,9 @@ def export_project_report(
                     dims_m=_dims_m_from_tier(t),
                     surfaces=res.get("surfaces"),
                     figures_used=res.get("figures_used", []),
+
+                    h_partitions_enabled=bool(getattr(t, "h_partitions_enabled", False)),
+                    h_partitions_count=int(getattr(t, "h_partitions_count", 1)),
                 )
             )
 
@@ -340,6 +441,23 @@ def export_project_report(
         return None
 
     out_pdf = Path(out_pdf)
+    out_pdf = Path(out_pdf)
+
+    # ---------------------------------------------------------
+    # BUILD 61439 COMPLIANCE RESULTS
+    # ---------------------------------------------------------
+    tier_compliance_results = build_tier_compliance_results(
+        tiers=report_tier_items,
+        global_sol=solve["global"],
+        tier_thermals=tier_thermals,
+        ambient_C=ambient_C,
+        tier_edges=solve["tier_edges"],
+        graph=solve["graph"],
+    )
+
+    # ---------------------------------------------------------
+    # EXPORT REPORT
+    # ---------------------------------------------------------
     return export_simple_report(
         out_pdf=out_pdf,
         meta=meta,
@@ -351,6 +469,7 @@ def export_project_report(
         curve_ys=ys,
         ambient_C=ambient_C,
         tier_thermals=tier_thermals if tier_thermals else None,
+        tier_compliance_results=tier_compliance_results,
         header_logo_path=header_logo_path,
         footer_image_path=footer_image_path,
         iec60890_checklist=iec60890_checklist,

@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Literal
 import uuid
-from PyQt5.QtCore import QPointF, Qt, QRect
+from PyQt5.QtCore import QPointF, Qt, QRect, QRectF
 from PyQt5.QtGui import QColor, QPen, QBrush, QPainterPath, QPainterPathStroker
 from PyQt5.QtWidgets import (
     QGraphicsLineItem,
@@ -23,6 +23,26 @@ BUS_LINE_TYPE = 10001
 BUS_LOAD_TYPE = 10002
 BUS_JOIN_TYPE = 10003
 BUS_SOURCE_TYPE = 10004
+
+def get_tier_constraints(item: QGraphicsItem) -> tuple[QRectF, float, QGraphicsItem] | None:
+    """Helper to find the parent tier and its bounding constraints."""
+    # Bus items are children of bus_layer (QGraphicsRectItem), which is a child of TierItem.
+    bus_layer = item.parentItem()
+    if not bus_layer:
+        return None
+        
+    # Some items like loads/joins might be children of BusLineItem
+    if bus_layer.type() == BUS_LINE_TYPE:
+        bus_line = bus_layer
+        bus_layer = bus_line.parentItem()
+        if not bus_layer:
+            return None
+
+    from heatcalc.ui.tier_item import TierItem
+    tier = bus_layer.parentItem()
+    if isinstance(tier, TierItem):
+        return tier.boundingRect(), GRID, tier
+    return None
 
 def format_thermal_tooltip(results, point_temp=None) -> str:
     """
@@ -155,6 +175,68 @@ def format_thermal_tooltip(results, point_temp=None) -> str:
         """
 
     html += "</table></div>"
+    return html
+
+
+def format_joint_tooltip(result) -> str:
+    """
+    Joint-specific tooltip in the same visual style as bus results.
+    Expects a ThermalEdgeResult-like dict with at least keys: T_C, I_A, P_gen_W,
+    gap_to_wall_mm, orientation_to_wall, ambient_C.
+    """
+    if result is None:
+        return ""
+
+    def _get(res, key, default=None):
+        if isinstance(res, dict):
+            return res.get(key, default)
+        return getattr(res, key, default)
+
+    orient = _get(result, "orientation_to_wall", "width")
+    orient_txt = "Wide face" if orient == "width" else "Edge face"
+
+    gap = _get(result, "gap_to_wall_mm", None)
+    gap_txt = f"{float(gap):.0f} mm" if gap is not None else "-"
+
+    T = float(_get(result, "T_C", 0.0))
+    I = float(_get(result, "I_A", 0.0))
+    P = float(_get(result, "P_gen_W", 0.0))
+    Ta = float(_get(result, "ambient_C", 0.0))
+    dT = T - Ta
+
+    html = f"""
+    <div style='font-family: sans-serif; min-width: 220px;'>
+
+        <b style='color:#58a6ff;'>Joint Result</b><br/>
+
+        <table style='border-spacing:4px; margin-top:4px;'>
+        <tr>
+            <td style='color:#8b949e;'>Orientation:</td>
+            <td>{orient_txt}</td>
+        </tr>
+        <tr>
+            <td style='color:#8b949e;'>Gap to wall:</td>
+            <td>{gap_txt}</td>
+        </tr>
+        <tr>
+            <td style='color:#8b949e;'>Temp:</td>
+            <td style='color:#d19a66; font-weight:bold;'>{T:.1f} °C</td>
+        </tr>
+        <tr>
+            <td style='color:#8b949e;'>ΔT vs air:</td>
+            <td style='font-weight:bold;'>{dT:.1f} K</td>
+        </tr>
+        <tr>
+            <td style='color:#8b949e;'>Current:</td>
+            <td style='font-weight:bold;'>{I:.1f} A</td>
+        </tr>
+        <tr>
+            <td style='color:#8b949e;'>Joint loss:</td>
+            <td style='color:#ff7b72; font-weight:bold;'>{P:.1f} W</td>
+        </tr>
+        </table>
+    </div>
+    """
     return html
 
 @dataclass
@@ -303,7 +385,15 @@ class BusLineItem(QGraphicsLineItem):
         menu = QMenu()
         act_edit = menu.addAction("Edit bus")
 
-        action = menu.exec_(event.screenPos())
+        # Map position to screen for menu.exec_
+        if hasattr(event, "screenPos"):
+            screen_pos = event.screenPos()
+        else:
+            # Fallback if the event is being passed from somewhere else or is not a QContextMenuEvent
+            from PyQt5.QtGui import QCursor
+            screen_pos = QCursor.pos()
+
+        action = menu.exec_(screen_pos)
 
         if action != act_edit:
             return
@@ -610,10 +700,83 @@ class BusLineItem(QGraphicsLineItem):
         if change == QGraphicsItem.ItemPositionChange:
             from .designer_view import snap
 
-            return QPointF(
+            # Proposed new position in parent (bus_layer) coordinates
+            new_pos = QPointF(
                 snap(value.x()),
                 snap(value.y())
             )
+
+            # --- Tier boundary constraint ---
+            constraints = get_tier_constraints(self)
+            if constraints:
+                tr, margin, tier = constraints
+                
+                # My endpoints in TIER coordinates at the proposed new position
+                p1_local = self.line().p1()
+                p2_local = self.line().p2()
+                
+                # Points in bus_layer (which is same as Tier local since bus_layer at 0,0)
+                p1_tier = new_pos + p1_local
+                p2_tier = new_pos + p2_local
+                
+                # Bounds of the line itself in Tier local
+                min_x = min(p1_tier.x(), p2_tier.x())
+                max_x = max(p1_tier.x(), p2_tier.x())
+                min_y = min(p1_tier.y(), p2_tier.y())
+                max_y = max(p1_tier.y(), p2_tier.y())
+                
+                # Valid range for line endpoints (can touch edges)
+                v_min_x = tr.left()
+                v_max_x = tr.right()
+                v_min_y = tr.top()
+                v_max_y = tr.bottom()
+                
+                # Valid range for children (must be within margin)
+                c_min_x = tr.left() + margin
+                c_max_x = tr.right() - margin
+                c_min_y = tr.top() + margin
+                c_max_y = tr.bottom() - margin
+
+                # Clamp new_pos if it would push us outside
+                dx = 0.0
+                if min_x < v_min_x:
+                    dx = v_min_x - min_x
+                elif max_x > v_max_x:
+                    dx = v_max_x - max_x
+                    
+                dy = 0.0
+                if min_y < v_min_y:
+                    dy = v_min_y - min_y
+                elif max_y > v_max_y:
+                    dy = v_max_y - max_y
+                    
+                new_pos += QPointF(dx, dy)
+
+                # Now check all children (loads, sources, joints)
+                # They are already children of 'self', so their pos() is relative to 'self'.
+                # We need to ensure new_pos + child.pos() is within [c_min, c_max].
+                for child in self.childItems():
+                    if child.type() in (BUS_LOAD_TYPE, BUS_SOURCE_TYPE, BUS_JOIN_TYPE):
+                        cp_tier = new_pos + child.pos()
+                        
+                        cdx = 0.0
+                        if cp_tier.x() < c_min_x:
+                            cdx = c_min_x - cp_tier.x()
+                        elif cp_tier.x() > c_max_x:
+                            cdx = c_max_x - cp_tier.x()
+                            
+                        cdy = 0.0
+                        if cp_tier.y() < c_min_y:
+                            cdy = c_min_y - cp_tier.y()
+                        elif cp_tier.y() > c_max_y:
+                            cdy = c_max_y - cp_tier.y()
+                            
+                        new_pos += QPointF(cdx, cdy)
+                
+                # Final snap again after clamping to be sure
+                new_pos = QPointF(snap(new_pos.x()), snap(new_pos.y()))
+            
+            return new_pos
 
         if change == QGraphicsItem.ItemPositionHasChanged:
 
@@ -650,6 +813,9 @@ class BusLineItem(QGraphicsLineItem):
             "id": self.bus_id,
             "tier_id": tier_id,
 
+            "x": self.x(),
+            "y": self.y(),
+
             "x1": line.x1(),
             "y1": line.y1(),
             "x2": line.x2(),
@@ -676,7 +842,11 @@ class BusLineItem(QGraphicsLineItem):
             spec,
         )
 
+        bus.setPos(d.get("x", 0.0), d.get("y", 0.0))
         bus.bus_id = d.get("id")
+        # Restore tier_id from dict if present
+        if "tier_id" in d:
+            bus.tier_id = d["tier_id"]
 
         # ---- restore children ----
         for child in d.get("children", []):
@@ -718,7 +888,7 @@ class BusLineItem(QGraphicsLineItem):
 
 class BusLoadItem(QGraphicsEllipseItem):
 
-    def __init__(self, center: QPointF, I_load_A: float = 0):
+    def __init__(self, center: QPointF, I_load_A: float = 0, max_terminal_temp_c: float = 105.0):
 
         r = 7
         super().__init__(-r, -r, 2*r, 2*r)   # <-- FIX
@@ -734,6 +904,7 @@ class BusLoadItem(QGraphicsEllipseItem):
         self._hover = False
 
         self.I_load_A = float(I_load_A)
+        self.max_terminal_temp_c = float(max_terminal_temp_c)
         self.disconnected = False
 
         self._label = QGraphicsSimpleTextItem(f"{self.I_load_A:.0f}A", self)
@@ -761,26 +932,50 @@ class BusLoadItem(QGraphicsEllipseItem):
         super().hoverLeaveEvent(event)
 
     def contextMenuEvent(self, event):
-        from PyQt5.QtWidgets import QMenu, QInputDialog
+        from PyQt5.QtWidgets import QMenu, QInputDialog, QFormLayout, QDialog, QDialogButtonBox, QVBoxLayout, QDoubleSpinBox
 
         menu = QMenu()
 
-        act_edit = menu.addAction("Edit load (A)")
+        act_edit = menu.addAction("Edit load...")
 
-        action = menu.exec_(event.screenPos())
+        if hasattr(event, "screenPos"):
+            screen_pos = event.screenPos()
+        else:
+            from PyQt5.QtGui import QCursor
+            screen_pos = QCursor.pos()
+
+        action = menu.exec_(screen_pos)
 
         if action == act_edit:
-            val, ok = QInputDialog.getDouble(
-                None,
-                "Edit Load",
-                "Load current (A):",
-                value=float(getattr(self, "I_load_A", 0.0)),
-                min=0.0,
-                decimals=2
-            )
+            dialog = QDialog()
+            dialog.setWindowTitle("Edit Load")
+            layout = QVBoxLayout(dialog)
+            form = QFormLayout()
 
-            if ok:
-                self.I_load_A = val
+            spin_i = QDoubleSpinBox()
+            spin_i.setRange(0, 10000)
+            spin_i.setDecimals(2)
+            spin_i.setValue(self.I_load_A)
+            spin_i.setSuffix(" A")
+            form.addRow("Load current:", spin_i)
+
+            spin_t = QDoubleSpinBox()
+            spin_t.setRange(0, 500)
+            spin_t.setDecimals(1)
+            spin_t.setValue(self.max_terminal_temp_c)
+            spin_t.setSuffix(" °C")
+            form.addRow("Max terminal temp:", spin_t)
+
+            layout.addLayout(form)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+
+            if dialog.exec_() == QDialog.Accepted:
+                self.I_load_A = spin_i.value()
+                self.max_terminal_temp_c = spin_t.value()
                 self._label.setText(f"{self.I_load_A:.0f}A")
 
                 # trigger re-solve / refresh
@@ -848,24 +1043,19 @@ class BusLoadItem(QGraphicsEllipseItem):
                 return self.pos()
 
             # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
-            # parent is BusLineItem, its parent is bus_layer (QGraphicsRectItem), its parent is TierItem
-            bus_layer = parent.parentItem()
-            if bus_layer:
-                tier = bus_layer.parentItem()
-                from heatcalc.ui.tier_item import TierItem
-                if isinstance(tier, TierItem):
-                    tr = tier.boundingRect()
-                    margin = GRID
-                    
-                    # Target point in Tier local coordinates
-                    snap_tier = tier.mapFromScene(snap_scene)
-                    
-                    # If snapping to this endpoint would place it on the edge, refuse.
-                    if (snap_tier.x() < tr.left() + margin - 0.1 or 
-                        snap_tier.x() > tr.right() - margin + 0.1 or
-                        snap_tier.y() < tr.top() + margin - 0.1 or 
-                        snap_tier.y() > tr.bottom() - margin + 0.1):
-                        return self.pos()
+            constraints = get_tier_constraints(self)
+            if constraints:
+                tr, margin, tier = constraints
+                
+                # Target point in Tier local coordinates
+                snap_tier = tier.mapFromScene(snap_scene)
+                
+                # If snapping to this endpoint would place it on the edge, refuse.
+                if (snap_tier.x() < tr.left() + margin - 0.1 or 
+                    snap_tier.x() > tr.right() - margin + 0.1 or
+                    snap_tier.y() < tr.top() + margin - 0.1 or 
+                    snap_tier.y() > tr.bottom() - margin + 0.1):
+                    return self.pos()
 
             # Check if another attachment exists at this endpoint
             # We must ignore self during the check
@@ -898,12 +1088,13 @@ class BusLoadItem(QGraphicsEllipseItem):
             "x": p.x(),
             "y": p.y(),
             "I_load_A": self.I_load_A,
+            "max_terminal_temp_c": self.max_terminal_temp_c,
         }
 
     @classmethod
     def from_dict(cls, d):
         p = QPointF(d["x"], d["y"])
-        return cls(p, d.get("I_load_A", 0.0))
+        return cls(p, d.get("I_load_A", 0.0), d.get("max_terminal_temp_c", 105.0))
 
 # =========================================================
 # JOIN
@@ -982,7 +1173,7 @@ class BusJoinItem(QGraphicsEllipseItem):
         self._hover = True
 
         if self.thermal_result:
-            self.setToolTip(format_thermal_tooltip(self.thermal_result))
+            self.setToolTip(format_joint_tooltip(self.thermal_result))
         else:
             self.setToolTip("")
 
@@ -1095,58 +1286,39 @@ class BusJoinItem(QGraphicsEllipseItem):
             s = max(0.0, min(1.0, s))
 
             # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
-            # parent is BusLineItem, its parent is bus_layer (QGraphicsRectItem), its parent is TierItem
-            bus_layer = parent.parentItem()
-            if bus_layer:
-                tier = bus_layer.parentItem()
-                from heatcalc.ui.tier_item import TierItem
-                if isinstance(tier, TierItem):
-                    # Valid range for s on this line segment
-                    s_min, s_max = 0.0, 1.0
-                    
-                    # Tier local rect
-                    tr = tier.boundingRect()
-                    margin = GRID
-                    
-                    # Bus endpoints in Tier local coordinates
-                    p1_tier = tier.mapFromItem(parent, line.p1())
-                    p2_tier = tier.mapFromItem(parent, line.p2())
-                    
-                    # Line: P(s) = p1_tier + s * (p2_tier - p1_tier)
-                    dp = p2_tier - p1_tier
-                    
-                    # For each dimension (x, y), check the 25mm boundary
-                    for val, dval, low, high in [
-                        (p1_tier.x(), dp.x(), tr.left() + margin, tr.right() - margin),
-                        (p1_tier.y(), dp.y(), tr.top() + margin, tr.bottom() - margin)
-                    ]:
-                        if abs(dval) < 1e-9:
-                            # Parallel to this edge. If it's outside, the whole line is invalid?
-                            # Usually bus lines are fully inside the tier, but let's be safe.
-                            if val < low or val > high:
-                                # This whole bus line is in the margin zone for this dimension.
-                                # Not much we can do but let it be, or reject movement.
-                                pass
-                        else:
-                            # Intersection with low boundary: val + s*dval = low  => s = (low - val) / dval
-                            s_low = (low - val) / dval
-                            # Intersection with high boundary: val + s*dval = high => s = (high - val) / dval
-                            s_high = (high - val) / dval
-                            
-                            s_start = min(s_low, s_high)
-                            s_end = max(s_low, s_high)
-                            
-                            s_min = max(s_min, s_start)
-                            s_max = min(s_max, s_end)
-
-                    if s_min > s_max:
-                        # No part of the line is in the valid zone. 
-                        # This shouldn't happen for properly placed buses.
-                        # We'll just clamp to the closest available point in the valid zone if it existed,
-                        # but since s_min > s_max, we'll just keep it at original s or middle.
-                        pass
+            constraints = get_tier_constraints(self)
+            if constraints:
+                tr, margin, tier = constraints
+                # Valid range for s on this line segment
+                s_min, s_max = 0.0, 1.0
+                
+                # Bus endpoints in Tier local coordinates
+                p1_tier = tier.mapFromItem(parent, line.p1())
+                p2_tier = tier.mapFromItem(parent, line.p2())
+                
+                # Line: P(s) = p1_tier + s * (p2_tier - p1_tier)
+                dp = p2_tier - p1_tier
+                
+                # For each dimension (x, y), check the 25mm boundary
+                for val, dval, low, high in [
+                    (p1_tier.x(), dp.x(), tr.left() + margin, tr.right() - margin),
+                    (p1_tier.y(), dp.y(), tr.top() + margin, tr.bottom() - margin)
+                ]:
+                    if abs(dval) < 1e-9:
+                        if val < low or val > high:
+                            pass
                     else:
-                        s = max(s_min, min(s_max, s))
+                        s_low = (low - val) / dval
+                        s_high = (high - val) / dval
+                        
+                        s_start = min(s_low, s_high)
+                        s_end = max(s_low, s_high)
+                        
+                        s_min = max(s_min, s_start)
+                        s_max = min(s_max, s_end)
+
+                if s_min <= s_max:
+                    s = max(s_min, min(s_max, s))
 
             proj_scene = QPointF(
                 ax + s * vx,
@@ -1314,24 +1486,19 @@ class BusSourceItem(QGraphicsEllipseItem):
                 return self.pos()
 
             # --- Edge constraint: must be >25mm (GRID) from TierItem edges ---
-            # parent is BusLineItem, its parent is bus_layer (QGraphicsRectItem), its parent is TierItem
-            bus_layer = parent.parentItem()
-            if bus_layer:
-                tier = bus_layer.parentItem()
-                from heatcalc.ui.tier_item import TierItem
-                if isinstance(tier, TierItem):
-                    tr = tier.boundingRect()
-                    margin = GRID
-                    
-                    # Target point in Tier local coordinates
-                    snap_tier = tier.mapFromScene(snap_scene)
-                    
-                    # If snapping to this endpoint would place it on the edge, refuse.
-                    if (snap_tier.x() < tr.left() + margin - 0.1 or 
-                        snap_tier.x() > tr.right() - margin + 0.1 or
-                        snap_tier.y() < tr.top() + margin - 0.1 or 
-                        snap_tier.y() > tr.bottom() - margin + 0.1):
-                        return self.pos()
+            constraints = get_tier_constraints(self)
+            if constraints:
+                tr, margin, tier = constraints
+                
+                # Target point in Tier local coordinates
+                snap_tier = tier.mapFromScene(snap_scene)
+                
+                # If snapping to this endpoint would place it on the edge, refuse.
+                if (snap_tier.x() < tr.left() + margin - 0.1 or 
+                    snap_tier.x() > tr.right() - margin + 0.1 or
+                    snap_tier.y() < tr.top() + margin - 0.1 or 
+                    snap_tier.y() > tr.bottom() - margin + 0.1):
+                    return self.pos()
 
             # Check if another attachment exists at this endpoint
             for item in self.scene().items():

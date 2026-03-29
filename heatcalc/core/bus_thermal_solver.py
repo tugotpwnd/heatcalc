@@ -72,6 +72,7 @@ class ThermalSeg:
     air_temp_C: float
     gap_to_wall_mm: float
     orientation_to_wall: str
+    convection_mode: str
 
 
 def _shared_node(a, b) -> bool:
@@ -144,6 +145,13 @@ def _build_segmented_thermal_edges(
         L = float(e.length_m)
         base_air = float(edge_air_fn(e.id))
 
+        # Infer convection mode from node coordinates
+        u_p = graph.nodes[e.u].p
+        v_p = graph.nodes[e.v].p
+        dx = abs(u_p.x() - v_p.x())
+        dy = abs(u_p.y() - v_p.y())
+        edge_conv_mode = "vertical" if dy > dx else "horizontal"
+
         # keep joints whole
         if getattr(e, "is_joint", False):
             segs.append(
@@ -163,6 +171,7 @@ def _build_segmented_thermal_edges(
                     air_temp_C=base_air,
                     gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
                     orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
+                    convection_mode=edge_conv_mode,
                 )
             )
             continue
@@ -188,6 +197,7 @@ def _build_segmented_thermal_edges(
                     air_temp_C=base_air,
                     gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
                     orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
+                    convection_mode=edge_conv_mode,
                 )
             )
             continue
@@ -226,6 +236,7 @@ def _build_segmented_thermal_edges(
                     air_temp_C=float(interface_air_by_node[e.u]),
                     gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
                     orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
+                    convection_mode=edge_conv_mode,
                 )
             )
             cursor = n_u
@@ -249,6 +260,7 @@ def _build_segmented_thermal_edges(
                     air_temp_C=base_air,
                     gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
                     orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
+                    convection_mode=edge_conv_mode,
                 )
             )
             cursor = next_node
@@ -271,6 +283,7 @@ def _build_segmented_thermal_edges(
                     air_temp_C=float(interface_air_by_node[e.v]),
                     gap_to_wall_mm=float(getattr(e, "gap_to_wall_mm", 50.0)),
                     orientation_to_wall=getattr(e, "orientation_to_wall", "width"),
+                    convection_mode=edge_conv_mode,
                 )
             )
 
@@ -472,7 +485,42 @@ def solve_thermal(
     debug: bool = False,
     max_iter: int = 40,
     tol: float = 1e-3,
-    eps_bus_self_cooling: float = 0.04,
+    # Busbar surface emissivity used for self-cooling radiation in the bus thermal solver.
+    #
+    # This controls how effectively the busbar can reject heat by thermal radiation
+    # to its surrounding enclosure/air cavity. Lower values represent bright / shiny
+    # metallic surfaces and reduce radiative cooling, resulting in a higher solved
+    # busbar temperature. Higher values represent more oxidised / dull surfaces and
+    # increase radiative cooling, resulting in a lower solved busbar temperature.
+    #
+    # Engineering intent:
+    #   - 0.05 to 0.10 : bright / shiny copper or tinned copper
+    #   - 0.20 to 0.40 : lightly to moderately oxidised copper
+    #   - >0.50        : heavily oxidised / coated surfaces
+    #
+    # A default of 0.1 is used here as a reasonable assumption for bright tinned
+    # or clean copper busbars, giving slightly less radiative cooling than the more
+    # oxidised surfaces typically assumed in handbook reference plots.
+    # -------------------------------------------------------------------------------
+    eps_bus_self_cooling: float = 0.1,
+    # -------------------------------------------------------------------------------
+    # Analytical effect of eps_bus_self_cooling:
+    #
+    # Radiation is calculated from:
+    #   Q_rad ∝ eps_rel * (T_bus^4 - T_sur^4)
+    #
+    # where eps_rel depends on both the bus emissivity and the enclosure/environment
+    # emissivity. Increasing eps_bus_self_cooling increases eps_rel, which increases
+    # radiative heat loss from the busbar.
+    #
+    # Practical effect:
+    #   - higher eps_bus_self_cooling -> higher Prad, lower solved T_bus
+    #   - lower eps_bus_self_cooling  -> lower Prad, higher solved T_bus
+    #
+    # This parameter changes the split between convection and radiation cooling.
+    # It does not change electrical I²R generation directly, but it changes the
+    # equilibrium bus temperature required for total heat loss to match Pgen.
+
 
 ):
     """
@@ -507,6 +555,22 @@ def solve_thermal(
     thermal_nodes = []
     thermal_edges = []
 
+    # -------------------------------------------------------------------------
+    # Build lookup of original edge lengths (physical conductor lengths)
+    #
+    # IMPORTANT:
+    # Thermal segments are artificial (created for solver coupling between tiers).
+    # However, natural convection depends on the *physical size of the conductor*,
+    # not the numerical segment length.
+    #
+    # Therefore, we store the original edge length so all segments belonging to
+    # the same physical busbar use a consistent convection characteristic length.
+    # -------------------------------------------------------------------------
+    edge_length_map = {
+        int(e.id): float(e.length_m)
+        for e in graph.edges.values()
+    }
+
     # --------------------------------------------------------
     # Build thermal nodes: one node per THERMAL SEGMENT
     # --------------------------------------------------------
@@ -514,15 +578,41 @@ def solve_thermal(
         width_m = seg.width_mm / 1000.0
         th_m = seg.thickness_mm / 1000.0
 
+        # -------------------------------------------------------------------------
+        # Characteristic length for convection (L_char)
+        #
+        # IMPORTANT DISTINCTION:
+        # - seg.length_m → numerical segment length (used for heat integration)
+        # - L_char_m     → physical convection length (used in heat transfer correlation)
+        #
+        # For vertical busbars:
+        #   Using seg.length_m would artificially increase convection for small
+        #   segments (e.g., interface stubs), because the correlation scales as:
+        #
+        #       W_conv ∝ 1 / L_char^0.25
+        #
+        #   This would result in non-physical "over-cooling" at segmentation points.
+        #
+        #   To fix this, we use the original full edge length (physical conductor height)
+        #   for ALL segments belonging to the same edge.
+        #
+        # For horizontal busbars:
+        #   Characteristic length is approximated as bar width (standard simplification).
+        # -------------------------------------------------------------------------
+        if seg.convection_mode == "vertical":
+            l_char_m = edge_length_map.get(seg.base_edge_id, seg.length_m)
+        else:
+            l_char_m = width_m
+
         geom = BusbarGeometry(
             name=f"seg-{seg.seg_id}",
             width_m=width_m,
             thickness_m=th_m,
-            L_char_m=width_m,
+            L_char_m=l_char_m,
             length_m=seg.length_m,
             bars_in_parallel=seg.bars_in_parallel,
             face_to_face_dim="thickness",
-            convection_mode="horizontal",
+            convection_mode=seg.convection_mode,
         )
 
         thermal_nodes.append({
@@ -807,8 +897,8 @@ def solve_thermal(
             "width_mm": nd["w"] * 1000,
             "thickness_mm": nd["t"] * 1000,
             "bars_in_parallel": nd["bars_in_parallel"],
-            "gap_to_wall_mm": getattr(nd, "gap_to_wall_mm", 50.0),
-            "orientation_to_wall": getattr(nd, "orientation_to_wall", "width"),
+            "gap_to_wall_mm": nd.get("gap_to_wall_mm", 50.0),
+            "orientation_to_wall": nd.get("orientation_to_wall", "width"),
         })
 
     final_pass = True
@@ -817,7 +907,6 @@ def solve_thermal(
         calc_terms(i, T)
 
     edge_results = _aggregate_segment_results(segment_rows)
-
     if debug:
         print("\n================ FINAL SEGMENT TEMPERATURES ================")
         for row in segment_rows:

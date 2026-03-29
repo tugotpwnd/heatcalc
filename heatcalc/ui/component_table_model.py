@@ -4,7 +4,7 @@ from typing import List, Any
 from PyQt5.QtCore import Qt, QAbstractTableModel, QVariant, QModelIndex
 from ..core.component_store import ComponentRow  # NOTE: relative import up one level
 
-HEADERS = ["Category", "Part #", "Description", "Heat (W)", "Max Temp (°C)"]  # NEW column
+HEADERS = ["Category", "Part #", "Description", "Heat (W)", "Max Temp (°C)", "Rated (A)", "Derating Start (°C)", "Function"]  # Extended
 
 class ComponentTableModel(QAbstractTableModel):
     def __init__(self, rows: List[ComponentRow]):
@@ -40,6 +40,16 @@ class ComponentTableModel(QAbstractTableModel):
             if col == 2: return getattr(row, "description", "")
             if col == 3: return f"{float(getattr(row, 'heat_w', 0.0)):.1f}"
             if col == 4: return str(int(getattr(row, "max_temp_C", 70)))
+
+            if col == 5:
+                val = getattr(row, 'rated_current_A', None)
+                return f"{float(val):.0f}" if val is not None else ""
+
+            if col == 6:
+                val = getattr(row, 'derating_temp_start_C', None)
+                return f"{float(val):.0f}" if val is not None else ""
+
+            if col == 7: return str(getattr(row, "derating_function", ""))
         if role == Qt.UserRole:
             return row
         return QVariant()

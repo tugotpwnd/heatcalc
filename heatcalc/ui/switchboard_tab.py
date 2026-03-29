@@ -141,6 +141,25 @@ class SwitchboardTab(QWidget):
         self.cb_wall.stateChanged.connect(self._recompute_all_curves)
         left_lay.addWidget(self.cb_wall)
 
+        # ---- Horizontal partitions -------------------------------------
+        self.cb_h_partitions = QCheckBox("Horizontal partitions")
+        self.sp_h_partitions = QSpinBox()
+        self.sp_h_partitions.setRange(1, 5)
+        self.sp_h_partitions.setSuffix(" tiers")
+
+        hp_row = QWidget()
+        hp_lay = QHBoxLayout(hp_row)
+        hp_lay.setContentsMargins(0, 0, 0, 0)
+        hp_lay.addWidget(self.cb_h_partitions)
+        hp_lay.addSpacing(10)
+        hp_lay.addWidget(QLabel("Count:"))
+        hp_lay.addWidget(self.sp_h_partitions)
+        hp_lay.addStretch(1)
+        left_lay.addWidget(hp_row)
+
+        self.cb_h_partitions.toggled.connect(self._apply_h_partitions)
+        self.sp_h_partitions.valueChanged.connect(self._apply_h_partitions)
+
         # ---- Global depth (project-wide) -------------------------------
 
         self.cb_same_depth = QCheckBox("Use same depth for all tiers")  # NEW
@@ -518,6 +537,7 @@ class SwitchboardTab(QWidget):
         # ----------------------------------------
         # refresh visuals
         # ----------------------------------------
+        self.view.refresh_tier_stack_visuals()
         scene.update()
 
         self._recompute_all_curves()
@@ -596,6 +616,9 @@ class SwitchboardTab(QWidget):
                 heat_each_w=ce["heat_each_w"],
                 qty=ce["qty"],
                 max_temp_C=ce.get("max_temp_C", 70),
+                rated_current_A=ce.get("rated_current_A"),
+                derating_temp_start_C=ce.get("derating_temp_start_C"),
+                derating_function=ce.get("derating_function"),
             )
 
         # --- append cables ---
@@ -645,6 +668,11 @@ class SwitchboardTab(QWidget):
         # 2. Position and collision
         w = d.get("w", GRID * 8)
         h = d.get("h", GRID * 6)
+
+        # 2b. Generate new tier_id for the copy
+        import uuid
+        new_tier_id = uuid.uuid4().hex
+        d["tier_id"] = new_tier_id
         
         # User said "pasted at the users mouse location".
         # event.scenePos() gives us that.
@@ -699,7 +727,9 @@ class SwitchboardTab(QWidget):
         for b_entry in d.get("bus_items", []):
             cls = bus_map.get(b_entry["type"])
             if cls:
-                b_item = cls.from_dict(b_entry["data"])
+                b_data = b_entry["data"].copy()
+                b_data["tier_id"] = new_tier_id # Update tier_id for the bus item
+                b_item = cls.from_dict(b_data)
                 new_tier.add_bus_item(b_item)
 
         new_tier.setSelected(True)
@@ -968,7 +998,7 @@ class SwitchboardTab(QWidget):
 
         return None
 
-    def solve_all_thermal(self):
+    def solve_all_thermal(self, apply_to_ui: bool = False):
         from heatcalc.core.bus_graph import extract_graph
         from heatcalc.core.bus_current_solver import (
             solve_currents,
@@ -998,21 +1028,36 @@ class SwitchboardTab(QWidget):
         # -----------------------------------
         graph = extract_graph(scene)
 
-        if graph.source_node is None:
-            QMessageBox.warning(self, "Solve Failed", "No source node detected in the network.")
-            return None
+        # Check for existence of any bus item
+        has_source = graph.source_node is not None
+        has_lines = len(graph.edges) > 0
+        has_loads = len(graph.loads) > 0
+        has_joins = len(graph.joins) > 0
 
-        disconnected = get_disconnected_items(graph)
-        if disconnected:
-            QMessageBox.warning(
-                self,
-                "Disconnected Nodes",
-                "Floating nodes detected! Every busline, load, and joint must be connected to the source."
-            )
-            return None
+        any_bus_items = has_source or has_lines or has_loads or has_joins
 
-        filter_graph_to_source_component(graph)
-        solve_currents(graph)
+        if any_bus_items:
+            # If any line, load or join is present, source and at least 1 load must be present
+            if has_lines or has_loads or has_joins:
+                if not has_source:
+                    QMessageBox.warning(self, "Solve Failed", "Source node is required when bus items are present.")
+                    return None
+                if not has_loads:
+                    QMessageBox.warning(self, "Solve Failed", "At least one load is required when bus items are present.")
+                    return None
+
+            # Disconnected nodes check (only if we have components)
+            disconnected = get_disconnected_items(graph)
+            if disconnected:
+                QMessageBox.warning(
+                    self,
+                    "Disconnected Nodes",
+                    "Floating nodes detected! Every busline, load, and joint must be connected to the source."
+                )
+                return None
+
+            filter_graph_to_source_component(graph)
+            solve_currents(graph)
 
         self._graph = graph
 
@@ -1028,8 +1073,13 @@ class SwitchboardTab(QWidget):
             for e in owned:
                 edge_owner_tier[e.id] = t
 
-        if not edge_owner_tier:
+        # We no longer fail if no edges found if any_bus_items is false
+        if any_bus_items and not edge_owner_tier and (has_lines or has_loads or has_joins):
             QMessageBox.warning(self, "Solve Failed", "No bus edges found in the network.")
+            return None
+
+        if not any_bus_items and not tiers:
+            # Nothing to solve
             return None
 
         # -------------------------------------------------
@@ -1038,7 +1088,7 @@ class SwitchboardTab(QWidget):
         #    -> one global copper solve
         #    -> update bus watts per tier
         # -------------------------------------------------
-        max_iter = 30
+        max_iter = 30 if any_bus_items else 1  # only 1 iter if no bus items
         tol_T = 0.05
         tol_P = 0.5
         relax = 0.5
@@ -1067,7 +1117,7 @@ class SwitchboardTab(QWidget):
                         ip_rating_n=ip_rating_n,
                     )
 
-                P_base = float(getattr(t, "total_heat_w", 0.0))
+                P_base = float(getattr(t, "static_heat_w", 0.0))
                 P_bus = float(P_bus_by_tier.get(t, 0.0))
 
                 res = calc_tier_iec60890(
@@ -1099,11 +1149,26 @@ class SwitchboardTab(QWidget):
             # -----------------------------
             # Solve copper network globally
             # -----------------------------
-            global_sol = solve_thermal(
-                graph=graph,
-                air_temp_C=air_by_edge,
-                debug=False,
-            )
+            if any_bus_items and len(graph.edges) > 0:
+                global_sol = solve_thermal(
+                    graph=graph,
+                    air_temp_C=air_by_edge,
+                    debug=False,
+                )
+            else:
+                from heatcalc.core.bus_thermal_solver import ThermalSolveResult
+                import numpy as np
+                global_sol = ThermalSolveResult(
+                    converged=True,
+                    iterations=0,
+                    air_temp_C=ambient,
+                    total_loss_W=0.0,
+                    max_T_C=ambient,
+                    min_T_C=ambient,
+                    edge_results=[],
+                    T_vector_C=np.array([])
+                )
+                last_node_temps = {}
 
             edge_result_by_id = {er.edge_id: er for er in global_sol.edge_results}
 
@@ -1125,14 +1190,14 @@ class SwitchboardTab(QWidget):
                 P_bus_new_by_tier[t] = (1.0 - relax) * old + relax * raw
 
             dT = max(
-                abs(float(tier_res[t]["T_top"]) - float(prev_T_top_by_tier.get(t, ambient)))
-                for t in tiers
-            ) if tiers else 0.0
+                (abs(float(tier_res[t]["T_top"]) - float(prev_T_top_by_tier.get(t, ambient)))
+                for t in tiers), default=0.0
+            )
 
             dP = max(
-                abs(float(P_bus_new_by_tier[t]) - float(P_bus_by_tier.get(t, 0.0)))
-                for t in tiers
-            ) if tiers else 0.0
+                (abs(float(P_bus_new_by_tier[t]) - float(P_bus_by_tier.get(t, 0.0)))
+                for t in tiers), default=0.0
+            )
 
             history.append({
                 "iter": k + 1,
@@ -1145,6 +1210,21 @@ class SwitchboardTab(QWidget):
             last_tier_res = tier_res
             last_air_by_edge = dict(air_by_edge)
             last_global_sol = global_sol
+            
+            if any_bus_items and len(graph.edges) > 0:
+                # build node temperatures from edge results
+                node_T = {}
+                from collections import defaultdict
+                n_acc = defaultdict(list)
+                for er in global_sol.edge_results:
+                    e = graph.edges[er.edge_id]
+                    n_acc[e.u].append(er.T_C)
+                    n_acc[e.v].append(er.T_C)
+                for nid, vals in n_acc.items():
+                    node_T[nid] = sum(vals) / len(vals)
+                last_node_temps = node_T
+            else:
+                last_node_temps = {}
 
             if dT < tol_T and dP < tol_P:
                 converged = True
@@ -1175,16 +1255,27 @@ class SwitchboardTab(QWidget):
             }
             final_tier_results[t] = res
 
-        return {
+        result_dict = {
             "graph": graph,
             "tiers": final_tier_results,
             "global": last_global_sol,
             "air_by_edge": last_air_by_edge,
             "edge_owner_tier": edge_owner_tier,
             "tier_edges": tier_edges,
+            "node_temps": last_node_temps,
             "solver_history": history,
             "solver_converged": converged,
         }
+
+        if apply_to_ui:
+            # Look for BusbarToolsPanel to apply results to graphics
+            if hasattr(self, "bus_panel"):
+                self.bus_panel._apply_results(result_dict)
+            else:
+                for widget in self.parent().findChildren(BusbarToolsPanel):
+                    widget._apply_results(result_dict)
+
+        return result_dict
     # ----- list ops -----
     def _remove_selected_component(self):
         it = self._selected_tier()
@@ -1240,6 +1331,9 @@ class SwitchboardTab(QWidget):
             heat_each_w=float(row.heat_w),
             qty=qty,
             max_temp_C=max_temp,  # NEW
+            rated_current_A=getattr(row, "rated_current_A", None),
+            derating_temp_start_C=getattr(row, "derating_temp_start_C", None),
+            derating_function=getattr(row, "derating_function", None),
         )
         it.update()
         self._refresh_selected_contents()
@@ -1272,7 +1366,10 @@ class SwitchboardTab(QWidget):
             part_number=pn,
             description=desc,
             heat_w=heat,
-            max_temp_C=tmax
+            max_temp_C=tmax,
+            rated_current_A=None,
+            derating_temp_start_C=None,
+            derating_function=None
         )
         try:
             append_component_to_csv(self.components_csv_path, new_row)
@@ -1347,6 +1444,14 @@ class SwitchboardTab(QWidget):
             self.cb_auto_limit.setChecked(False)
             self.cb_auto_limit.blockSignals(False)
 
+            self.cb_h_partitions.blockSignals(True)
+            self.sp_h_partitions.blockSignals(True)
+            self.cb_h_partitions.setChecked(False)
+            self.sp_h_partitions.setValue(1)
+            self.sp_h_partitions.setEnabled(False)
+            self.cb_h_partitions.blockSignals(False)
+            self.sp_h_partitions.blockSignals(False)
+
             self.lbl_effective_limit.setText("Effective limit: –")
             return
 
@@ -1400,6 +1505,16 @@ class SwitchboardTab(QWidget):
         self.cb_auto_limit.blockSignals(False)
 
         self.sp_max_temp.setEnabled(not self.cb_auto_limit.isChecked())
+
+        # -------- Horizontal partitions --------
+        self.cb_h_partitions.blockSignals(True)
+        self.sp_h_partitions.blockSignals(True)
+        self.cb_h_partitions.setChecked(it.h_partitions_enabled)
+        self.sp_h_partitions.setValue(it.h_partitions_count)
+        self.sp_h_partitions.setEnabled(it.h_partitions_enabled)
+        self.cb_h_partitions.blockSignals(False)
+        self.sp_h_partitions.blockSignals(False)
+
         self._update_effective_limit_label(it)
 
         self._refresh_selected_contents()
@@ -1517,6 +1632,15 @@ class SwitchboardTab(QWidget):
         self.sp_max_temp.setEnabled(not on)
         # Keep label in sync
         self._update_effective_limit_label(it)
+        self.tierGeometryCommitted.emit()
+
+    def _apply_h_partitions(self):
+        it = self._selected_tier()
+        if not it:
+            return
+        it.set_h_partitions_enabled(self.cb_h_partitions.isChecked())
+        it.set_h_partitions_count(self.sp_h_partitions.value())
+        self.sp_h_partitions.setEnabled(self.cb_h_partitions.isChecked())
         self.tierGeometryCommitted.emit()
 
     @staticmethod
