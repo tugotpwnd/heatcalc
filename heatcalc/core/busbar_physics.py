@@ -44,7 +44,7 @@ class BusbarThermalInputs:
     eps_bus: float = 0.4 # Varies depending on cooling / heating
     eps_env: float = 0.90
     v_mps: float = 0.0
-    S_ac: float = 1.3
+    S_ac: float = 1.2
 
 
 @dataclass(frozen=True)
@@ -120,16 +120,42 @@ def compute_busbar_physics(
     # -------------------------------------------------------------------------
     # FACE-BASED NATURAL CONVECTION (RECTANGULAR BUSBAR)
     #
-    # We treat the busbar as 4 faces:
-    #   - 2 major faces (width x length)
-    #   - 2 minor faces (thickness x length)
+    # The busbar is modelled as four distinct convecting faces:
+    #   - 2 major faces: width × length
+    #   - 2 minor faces: thickness × length
     #
-    # Each face uses its own:
+    # Rather than applying a single convection coefficient to the full perimeter,
+    # each face is treated independently with its own:
     #   - characteristic length (L)
-    #   - convection correlation (vertical / horizontal)
+    #   - convection correlation (vertical or horizontal)
     #
-    # This avoids applying a single W_conv to the full perimeter, which is
-    # physically incorrect for rectangular sections.
+    # This is important because natural convection is governed by boundary layer
+    # development, which depends on BOTH:
+    #   - the orientation of the surface (vertical vs horizontal)
+    #   - the characteristic length in the direction of buoyancy-driven flow
+    #
+    # The empirical correlation used:
+    #
+    #   W = C * (ΔT^1.25) / (L^0.25)
+    #
+    # represents heat flux (W/m²), where:
+    #   - ΔT drives buoyancy
+    #   - L controls boundary layer growth
+    #
+    # Key physical interpretation:
+    #   - Larger L → thicker boundary layer → LOWER heat transfer per m²
+    #   - Smaller L → thinner boundary layer → HIGHER heat transfer per m²
+    #
+    # Importantly:
+    #   - L does NOT represent surface size (area handles that)
+    #   - L represents the distance over which the thermal boundary layer develops
+    #
+    # Therefore:
+    #   - Vertical surfaces → L = vertical height of the surface
+    #   - Horizontal surfaces → L = characteristic horizontal dimension
+    #
+    # This distinction is critical to avoid artificially increasing convection
+    # when segmenting busbars or using incorrect geometric dimensions.
     # -------------------------------------------------------------------------
 
     theta = max(T_bus_C - T_air_C, 0.0)
@@ -137,39 +163,75 @@ def compute_busbar_physics(
     # Dimensions
     w = geom.width_m
     t = geom.thickness_m
-
-    # Convert to mm for Copper Handbook correlations
-    L_major_mm = w * 1000.0
-    L_minor_mm = t * 1000.0
+    L_char = getattr(geom, "L_char_m", None) or geom.length_m
 
     # Areas per metre length
-    A_major = 2.0 * w  # two large faces
-    A_minor = 2.0 * t  # two thin edges
+    # (Area determines total heat transfer once W is known)
+    A_major = 2.0 * w  # two wide faces
+    A_minor = 2.0 * t  # two thin faces
 
-    # -----------------------------
-    # Major faces (usually dominant)
-    # -----------------------------
     if geom.convection_mode == "vertical":
+        # ---------------------------------------------------------------------
+        # VERTICAL BUSBAR
+        #
+        # All faces extend along the vertical axis, meaning buoyant airflow
+        # rises along the full height of each face.
+        #
+        # Therefore:
+        #   - Boundary layer develops over full busbar height
+        #   - Characteristic length MUST be the full bar height
+        #
+        # This is critical when segmentation is used, as using segment length
+        # would artificially increase convection (shorter L → higher W).
+        # ---------------------------------------------------------------------
+
+        L_major_mm = L_char * 1000.0
+        L_minor_mm = L_char * 1000.0
+
         W_major = NATURAL_CONV_VERTICAL * (theta ** 1.25) / (L_major_mm ** 0.25)
+        W_minor = NATURAL_CONV_VERTICAL * (theta ** 1.25) / (L_minor_mm ** 0.25)
+
     else:
-        W_major = NATURAL_CONV_HORIZONTAL * (theta ** 1.25) / (L_major_mm ** 0.25)
+        # ---------------------------------------------------------------------
+        # HORIZONTAL BUSBAR (TALL SIDE UP ASSUMPTION)
+        #
+        # Orientation:
+        #   - Wide faces are vertical surfaces
+        #   - Thin faces are horizontal surfaces (top and bottom)
+        #
+        # Major faces (vertical):
+        #   - Air rises along face height
+        #   - Characteristic length = vertical face dimension (w)
+        #
+        # Minor faces (horizontal):
+        #   - Heat transfer occurs via upward buoyant plume
+        #   - Characteristic length = horizontal face width (t)
+        #
+        # This separation captures the reduced effectiveness of horizontal
+        # surfaces compared to vertical ones.
+        # ---------------------------------------------------------------------
+
+        L_major_mm = w * 1000.0
+        L_minor_mm = t * 1000.0
+
+        W_major = NATURAL_CONV_VERTICAL * (theta ** 1.25) / (L_major_mm ** 0.25)
+        W_minor = NATURAL_CONV_HORIZONTAL * (theta ** 1.25) / (L_minor_mm ** 0.25)
+
+    # -------------------------------------------------------------------------
+    # Total convection
+    #
+    # Heat transfer from each face is:
+    #   P = W * Area
+    #
+    # Total convection is the sum of contributions from all faces and all
+    # parallel bars.
+    # -------------------------------------------------------------------------
 
     P_major = N * W_major * A_major
-
-    # -----------------------------
-    # Minor faces (less important)
-    # -----------------------------
-    # These are usually less effective; treat as horizontal surfaces by default
-    W_minor = NATURAL_CONV_HORIZONTAL * (theta ** 1.25) / (L_minor_mm ** 0.25)
-
     P_minor = N * W_minor * A_minor
 
-    # -----------------------------
-    # Total convection
-    # -----------------------------
     P_conv_total = P_major + P_minor
     A_conv_total = N * (A_major + A_minor)
-    W_conv_eff = P_conv_total / max(A_conv_total, 1e-12)
 
     eps_rel = relative_emissivity(therm.eps_bus, therm.eps_env)
     T_K = T_bus_C + 273.15
@@ -207,6 +269,7 @@ def compute_busbar_physics(
 
         f_W_per_m=float(f),
     )
+    debug=True
     if debug:
         print(
             f"[busbar_physics] {geom.name} | "
@@ -217,5 +280,53 @@ def compute_busbar_physics(
             f"Prad={state.P_rad_W_per_m:.6f} W/m  "
             f"f={state.f_W_per_m:.6f} W/m"
         )
+
+        if debug:
+            print("\n" + "=" * 60)
+            print("[BUSBAR CONVECTION DEBUG]")
+            print(f"Geom: {geom.name}")
+            print(f"Mode: {geom.convection_mode}")
+            print(f"Bars in parallel: {N}")
+            print("-" * 60)
+
+            print(f"Dimensions:")
+            print(f"  width (w):        {w * 1000:.1f} mm")
+            print(f"  thickness (t):    {t * 1000:.1f} mm")
+            print(f"  L_char:           {L_char:.3f} m")
+
+            print("-" * 60)
+
+            print(f"Temperatures:")
+            print(f"  T_bus:            {T_bus_C:.2f} °C")
+            print(f"  T_air:            {T_air_C:.2f} °C")
+            print(f"  theta:            {theta:.2f} K")
+
+            print("-" * 60)
+
+            print(f"Characteristic Lengths:")
+            print(f"  L_major:          {L_major_mm:.1f} mm")
+            print(f"  L_minor:          {L_minor_mm:.1f} mm")
+
+            print("-" * 60)
+
+            print(f"Areas (per metre):")
+            print(f"  A_major:          {A_major:.4f} m²/m")
+            print(f"  A_minor:          {A_minor:.4f} m²/m")
+            print(f"  A_total:          {(A_major + A_minor):.4f} m²/m")
+
+            print("-" * 60)
+
+            print(f"Convection Coefficients:")
+            print(f"  W_major:          {W_major:.2f} W/m²")
+            print(f"  W_minor:          {W_minor:.2f} W/m²")
+
+            print("-" * 60)
+
+            print(f"Heat Flow (per metre):")
+            print(f"  P_major:          {P_major:.2f} W/m")
+            print(f"  P_minor:          {P_minor:.2f} W/m")
+            print(f"  P_conv_total:     {P_conv_total:.2f} W/m")
+
+            print("=" * 60 + "\n")
 
     return state

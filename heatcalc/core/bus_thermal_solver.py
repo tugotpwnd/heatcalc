@@ -721,7 +721,7 @@ def solve_thermal(
         eps_bus=eps_bus_self_cooling,
         eps_env=0.9,
         v_mps=0.0,
-        S_ac=1.0,
+        S_ac=1.2,
     )
 
     # explicit local ambient only — no neighbour air smearing

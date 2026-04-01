@@ -346,7 +346,7 @@ class BusbarSpec:
     Number of parallel conductors sharing the phase current.
     """
 
-    S_ac: float = 1.3
+    S_ac: float = 1.2
     """
     AC resistance correction factor.
     Accounts for skin/proximity effects if required.
