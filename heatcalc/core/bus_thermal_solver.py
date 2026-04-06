@@ -406,10 +406,17 @@ def joint_contact_area(width_m, thickness_m, joint_spec):
 
     if joint_type == "bolted_overlap":
         overlap = float(joint_spec.overlap_m)
+
+        this_w_m = float(width_m)
+        other_w_mm = getattr(joint_spec, "other_bar_width_mm", None)
+        other_w_m = float(other_w_mm) / 1000.0 if other_w_mm is not None else this_w_m
+
+        eff_w_m = min(this_w_m, other_w_m)
+
         bolt_d = float(joint_spec.bolt_dia_mm) / 1000.0
         bolt_area = math.pi * (bolt_d * 0.5) ** 2
         hole_area = int(joint_spec.bolt_count) * bolt_area
-        overlap_area = float(width_m) * overlap
+        overlap_area = eff_w_m * overlap
 
         A_contact = (overlap_area - hole_area) * float(joint_spec.csa_factor)
         return max(A_contact, overlap_area * 0.05)
@@ -444,6 +451,10 @@ def joint_R20_ohm(nd, debug=False) -> float:
     joint_type = getattr(js, "joint_type", "bolted_overlap")
     n1 = max(1, int(nd.get("bars_in_parallel", 1)))
 
+    other_w_mm = getattr(js, "other_bar_width_mm", None)
+    other_t_mm = getattr(js, "other_bar_thickness_mm", None)
+    other_n = max(1, int(getattr(js, "other_bar_count", 1) or 1))
+
     if joint_type == "bolted_overlap":
         R_single = bolted_overlap_joint_resistance(
             width_m=nd["w"],
@@ -453,16 +464,16 @@ def joint_R20_ohm(nd, debug=False) -> float:
             bolt_dia_mm=js.bolt_dia_mm,
             torque_Nm=js.torque_Nm,
             nut_factor=js.nut_factor,
-            e_streamline=js.e_streamline,
-            debug=False,
+            # Force actual overlap-ratio evaluation for bolted joints
+            e_streamline=None,
+            other_bar_width_m=(float(other_w_mm) / 1000.0) if other_w_mm is not None else None,
+            other_bar_thickness_m=(float(other_t_mm) / 1000.0) if other_t_mm is not None else None,
+            debug=debug,
         )
+        # Preserve existing parallel-path convention on the bolted path
         return R_single / n1
 
     elif joint_type == "clamped_edge":
-        other_w_mm = getattr(js, "other_bar_width_mm", None)
-        other_t_mm = getattr(js, "other_bar_thickness_mm", None)
-        other_n = max(1, int(getattr(js, "other_bar_count", 1) or 1))
-
         if other_w_mm is None or other_t_mm is None:
             raise ValueError(
                 "Clamped joint requires other_bar_width_mm and other_bar_thickness_mm on joint_spec."
@@ -478,7 +489,7 @@ def joint_R20_ohm(nd, debug=False) -> float:
             nut_factor=js.nut_factor,
             bolt_count=js.bolt_count,
             e_streamline=js.e_streamline,
-            debug=False,
+            debug=debug,
         )
         return R_single / (n1 * other_n)
 
@@ -542,7 +553,7 @@ def solve_thermal(
 
     cross_link_debug = []
     physics_debug = False
-    joint_debug = False
+    joint_debug = True
 
     def edge_air(edge_id):
         if isinstance(air_temp_C, dict):

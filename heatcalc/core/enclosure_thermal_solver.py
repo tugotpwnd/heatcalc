@@ -728,15 +728,16 @@ def estimate_enclosure_surface_temps_with_hotspot(
 
     area_ratio = bus_face_area_m2 / patch_area_m2
 
-    print("\n[GEOMETRY]")
-    print(f"projected_face_width = {projected_face_width_m:.4f} m")
-    print(f"bar_depth_to_wall    = {bar_depth_to_wall_m:.4f} m")
-    print(f"total_bars           = {total_bars}")
-    print(f"bus_face_area        = {bus_face_area_m2:.6f} m²")
-    print(f"cluster_width        = {cluster_width_m:.6f} m")
-    print(f"patch_width          = {patch_width_m:.6f} m")
-    print(f"patch_area           = {patch_area_m2:.6f} m²")
-    print(f"area_ratio           = {area_ratio:.4f}")
+    if debug:
+        print("\n[GEOMETRY]")
+        print(f"projected_face_width = {projected_face_width_m:.4f} m")
+        print(f"bar_depth_to_wall    = {bar_depth_to_wall_m:.4f} m")
+        print(f"total_bars           = {total_bars}")
+        print(f"bus_face_area        = {bus_face_area_m2:.6f} m²")
+        print(f"cluster_width        = {cluster_width_m:.6f} m")
+        print(f"patch_width          = {patch_width_m:.6f} m")
+        print(f"patch_area           = {patch_area_m2:.6f} m²")
+        print(f"area_ratio           = {area_ratio:.4f}")
 
 
     # -------------------------------------------------

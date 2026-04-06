@@ -3,6 +3,8 @@ from typing import Dict, List, Optional
 from PyQt5.QtCore import QPointF
 import math
 
+from win32comext.shell.demos.servers.shell_view import debug
+
 from heatcalc.core.models import BusbarJointSpec
 from heatcalc.ui.bus_items import BusLineItem, BusLoadItem, BusJoinItem
 from heatcalc.ui.bus_items import BUS_SOURCE_TYPE
@@ -114,83 +116,183 @@ def _point_at_distance(a: QPointF, b: QPointF, x_m: float, total_len_m: float) -
         a.y() + r * (b.y() - a.y()),
     )
 
+def _edge_shares_joint(edge: Edge, joint_edge: Edge) -> bool:
+    return (
+        edge.u == joint_edge.u or
+        edge.u == joint_edge.v or
+        edge.v == joint_edge.u or
+        edge.v == joint_edge.v
+    )
 
-def _infer_joint_edge_geometry(edges: Dict[int, Edge]) -> None:
+
+def _shared_joint_endpoints(edge: Edge, joint_edge: Edge) -> list[int]:
+    out = []
+    if edge.u == joint_edge.u or edge.v == joint_edge.u:
+        out.append(joint_edge.u)
+    if edge.u == joint_edge.v or edge.v == joint_edge.v:
+        out.append(joint_edge.v)
+    return out
+
+
+def _geom_tuple(edge: Edge) -> tuple[float, float, int]:
+    return (
+        float(edge.width_mm),
+        float(edge.thickness_mm),
+        int(edge.bars_in_parallel),
+    )
+
+def _infer_joint_edge_geometry(edges: Dict[int, Edge], debug: bool = False) -> None:
     """
-    For each joint edge:
+    Resolve joint host-bar and other-bar geometry.
 
-    1. Determine the bus geometry the joint lives on
-       (smallest width/thickness of neighbouring bus segments)
+    Design intent
+    -------------
+    - The explicit joint edge already inherits the geometry of the bus edge that
+      was split to create it. That is the HOST bar and should be preserved.
+    - The OTHER bar should be any non-joint bus edge connected to the joint that
+      does not belong to that same host bus item.
+    - If no foreign bus is found, mirror the host geometry.
 
-    2. Determine the geometry of the *other* bus entering the joint
-       (used for clamped-edge joints).
+    This is much more reliable than:
+      - taking min(neighbour geometry)
+      - picking the 2nd unique geometry by dictionary order
     """
 
     for ej in edges.values():
-
         if not ej.is_joint:
             continue
 
-        neighbours = []
+        js = ej.joint_spec
 
-        for e in edges.values():
+        neighbours = [
+            e for e in edges.values()
+            if e.id != ej.id
+            and not e.is_joint
+            and _edge_shares_joint(e, ej)
+        ]
 
-            if e.id == ej.id:
-                continue
+        # -------------------------------------------------
+        # HOST geometry = geometry of the bus edge that was
+        # split to create this explicit joint edge.
+        # -------------------------------------------------
+        host_w = getattr(js, "host_bar_width_mm", None) if js is not None else None
+        host_t = getattr(js, "host_bar_thickness_mm", None) if js is not None else None
+        host_n = getattr(js, "host_bar_count", None) if js is not None else None
 
-            if e.is_joint:
-                continue
+        if host_w is None:
+            host_w = ej.width_mm or 100.0
+        if host_t is None:
+            host_t = ej.thickness_mm or 10.0
+        if host_n is None:
+            host_n = ej.bars_in_parallel or 1
 
-            shared = (
-                e.u == ej.u or e.u == ej.v or
-                e.v == ej.u or e.v == ej.v
+        ej.width_mm = float(host_w)
+        ej.thickness_mm = float(host_t)
+        ej.bars_in_parallel = max(1, int(host_n))
+
+        host_ui_item_id = getattr(js, "_host_ui_item_id", None) if js is not None else None
+
+        host_neighbours = []
+        other_candidates = []
+
+        for e in neighbours:
+            same_host = False
+
+            # Best discriminator: same original BusLineItem
+            if host_ui_item_id is not None and getattr(e, "ui_item", None) is not None:
+                same_host = (id(e.ui_item) == host_ui_item_id)
+
+            # Fallback if ui identity is unavailable
+            elif _geom_tuple(e) == _geom_tuple(ej):
+                same_host = True
+
+            if same_host:
+                host_neighbours.append(e)
+            else:
+                other_candidates.append(e)
+
+        # -------------------------------------------------
+        # Select OTHER bar
+        # -------------------------------------------------
+        if other_candidates:
+            # Prefer the candidate attached at the joint endpoint that has the
+            # strongest non-host presence. This helps midpoint/end-point cases.
+            endpoint_other_counts = {
+                ej.u: 0,
+                ej.v: 0,
+            }
+
+            for e in other_candidates:
+                for n in _shared_joint_endpoints(e, ej):
+                    endpoint_other_counts[n] += 1
+
+            def _sort_key(edge: Edge):
+                shared_nodes = _shared_joint_endpoints(edge, ej)
+                endpoint_score = 0
+                if shared_nodes:
+                    endpoint_score = max(endpoint_other_counts.get(n, 0) for n in shared_nodes)
+                # Prefer stronger endpoint match first, then shorter edge, then id
+                return (-endpoint_score, float(edge.length_m), int(edge.id))
+
+            other = sorted(other_candidates, key=_sort_key)[0]
+            other_w = float(other.width_mm)
+            other_t = float(other.thickness_mm)
+            other_n = max(1, int(other.bars_in_parallel))
+        else:
+            # No foreign bar found -> mirror host geometry
+            other = None
+            other_w = float(ej.width_mm)
+            other_t = float(ej.thickness_mm)
+            other_n = max(1, int(ej.bars_in_parallel))
+
+        if js is not None:
+            # persist resolved geometry on the spec for downstream solvers
+            js.host_bar_width_mm = float(ej.width_mm)
+            js.host_bar_thickness_mm = float(ej.thickness_mm)
+            js.host_bar_count = int(ej.bars_in_parallel)
+
+            js.other_bar_width_mm = float(other_w)
+            js.other_bar_thickness_mm = float(other_t)
+            js.other_bar_count = int(other_n)
+
+        if debug:
+            print("\n[JOINT GEOMETRY DEBUG]")
+            print(f"joint_edge_id          = {ej.id}")
+            print(f"joint_nodes            = ({ej.u}, {ej.v})")
+            print(f"host_geom_mm           = ({ej.width_mm:.3f}, {ej.thickness_mm:.3f}, {ej.bars_in_parallel})")
+            print(f"host_ui_item_id        = {host_ui_item_id}")
+
+            print("neighbours:")
+            for e in neighbours:
+                shared = _shared_joint_endpoints(e, ej)
+                print(
+                    f"  edge={e.id} | shared_nodes={shared} | "
+                    f"geom=({e.width_mm:.3f}, {e.thickness_mm:.3f}, {e.bars_in_parallel}) | "
+                    f"ui_item_id={id(e.ui_item) if getattr(e, 'ui_item', None) is not None else None}"
+                )
+
+            print("host_neighbours:")
+            for e in host_neighbours:
+                print(
+                    f"  edge={e.id} | geom=({e.width_mm:.3f}, {e.thickness_mm:.3f}, {e.bars_in_parallel})"
+                )
+
+            print("other_candidates:")
+            for e in other_candidates:
+                shared = _shared_joint_endpoints(e, ej)
+                print(
+                    f"  edge={e.id} | shared_nodes={shared} | "
+                    f"geom=({e.width_mm:.3f}, {e.thickness_mm:.3f}, {e.bars_in_parallel})"
+                )
+
+            print(
+                f"resolved_other_geom_mm = ({other_w:.3f}, {other_t:.3f}, {other_n})"
+            )
+            print(
+                f"selected_other_edge_id = {other.id if other is not None else None}"
             )
 
-            if shared:
-                neighbours.append(e)
-
-        if not neighbours:
-            # fallback
-            ej.width_mm = ej.width_mm or 100.0
-            ej.thickness_mm = ej.thickness_mm or 10.0
-            ej.bars_in_parallel = max(1, ej.bars_in_parallel)
-            continue
-
-        # -------------------------------------------------
-        # Primary bus (the one the joint lies on)
-        # -------------------------------------------------
-
-        ej.width_mm = min(e.width_mm for e in neighbours)
-        ej.thickness_mm = min(e.thickness_mm for e in neighbours)
-        ej.bars_in_parallel = max(1, min(e.bars_in_parallel for e in neighbours))
-
-        # -------------------------------------------------
-        # Determine the "other bar" geometry
-        # -------------------------------------------------
-
-        if ej.joint_spec is not None:
-
-            # find neighbours grouped by geometry
-            unique_geoms = {}
-            for e in neighbours:
-                key = (e.width_mm, e.thickness_mm, e.bars_in_parallel)
-                unique_geoms[key] = e
-
-            if len(unique_geoms) >= 2:
-                # TRUE junction between different buses
-                (w2, t2, n2), other = list(unique_geoms.items())[1]
-
-            else:
-                # Same bus both sides → mirror
-                w2 = ej.width_mm
-                t2 = ej.thickness_mm
-                n2 = ej.bars_in_parallel
-
-            ej.joint_spec.other_bar_width_mm = w2
-            ej.joint_spec.other_bar_thickness_mm = t2
-            ej.joint_spec.other_bar_count = n2
-
-def extract_graph(scene, px_to_m=0.001):
+def extract_graph(scene, px_to_m=0.001, debug=False):
 
     nodes = {}
     edges = {}
@@ -462,6 +564,36 @@ def extract_graph(scene, px_to_m=0.001):
                 spec = BusbarJointSpec(**vars(item.spec))
                 spec.x_m = x_m
 
+                parent_bus = item.parentItem()
+
+                if isinstance(parent_bus, BusLineItem):
+                    # ---- TRUE HOST (from UI ownership) ----
+                    spec._host_ui_item_id = id(parent_bus)
+                    spec.host_bar_width_mm = float(parent_bus.spec.width_mm)
+                    spec.host_bar_thickness_mm = float(parent_bus.spec.thickness_mm)
+                    spec.host_bar_count = int(parent_bus.spec.bars_in_parallel)
+
+                    if debug:
+                        print("\n[JOIN HOST RESOLUTION]")
+                        print(f"JOIN item id        = {id(item)}")
+                        print(f"PARENT BUS id       = {id(parent_bus)}")
+                        print(f"PARENT WIDTH mm     = {parent_bus.spec.width_mm}")
+                        print(f"PARENT THICKNESS mm = {parent_bus.spec.thickness_mm}")
+
+                else:
+                    # ---- FALLBACK (shouldn't happen, but shouldn't crash) ----
+                    spec._host_ui_item_id = id(best_edge.ui_item) if best_edge.ui_item else None
+
+                    spec.host_bar_width_mm = float(best_edge.width_mm)
+                    spec.host_bar_thickness_mm = float(best_edge.thickness_mm)
+                    spec.host_bar_count = int(best_edge.bars_in_parallel)
+
+                    if debug:
+                        print("\n[JOIN HOST FALLBACK]")
+                        print("There was an error resolving host bus for join")
+
+                spec._host_edge_id_before_joint_split = int(best_edge.id)
+
                 joins.append(
                     Join(
                         edge_id=best_edge.id,
@@ -566,9 +698,9 @@ def extract_graph(scene, px_to_m=0.001):
                 length_m=joint_len,
                 spec=j.spec,
                 tier=e.tier,
-                width_mm=e.width_mm,
-                thickness_mm=e.thickness_mm,
-                bars_in_parallel=e.bars_in_parallel,
+                width_mm=float(getattr(j.spec, "host_bar_width_mm", e.width_mm)),
+                thickness_mm=float(getattr(j.spec, "host_bar_thickness_mm", e.thickness_mm)),
+                bars_in_parallel=max(1, int(getattr(j.spec, "host_bar_count", e.bars_in_parallel))),
                 face_to_face_dim=e.face_to_face_dim,
                 is_joint=True,
                 joint_spec=j.spec,
@@ -607,7 +739,7 @@ def extract_graph(scene, px_to_m=0.001):
     edges = new_edges
 
     # refine explicit joint geometry from connected bus edges
-    _infer_joint_edge_geometry(edges)
+    _infer_joint_edge_geometry(edges, debug=False)
 
     return Graph(
         nodes=nodes,
