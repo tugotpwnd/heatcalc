@@ -1,6 +1,7 @@
 from __future__ import annotations
 import math
 from dataclasses import dataclass
+from typing import Literal
 
 SIGMA = 5.670374419e-8
 
@@ -620,9 +621,9 @@ def estimate_enclosure_surface_temps_with_hotspot(
     bars_per_phase: int = 1,
     gap_to_wall_mm: float = 50.0,
     orientation_to_wall: str = "width",
+    face_to_face_dim: Literal["width", "thickness"] = "thickness",
 
     # Cluster assumptions
-    phase_pitch_m: float = 0.075,   # centre-to-centre spacing between phases
     patch_spread_factor: float = 1.0,
 
     # Surface properties
@@ -664,7 +665,7 @@ def estimate_enclosure_surface_temps_with_hotspot(
         print("\n[ENCLOSURE HOTSPOT INPUT]")
         print(f"T_bus={T_bus_C:.2f}C, T_air={T_air_in_C:.2f}C, T_amb={T_amb_C:.2f}C")
         print(f"L={bus_length_m:.3f} m, bar_w={bar_width_m:.4f} m, bar_t={bar_thickness_m:.4f} m")
-        print(f"bars_per_phase={bars_per_phase}, gap={gap_to_wall_mm:.1f} mm, orient={orientation_to_wall}")
+        print(f"bars_per_phase={bars_per_phase}, gap={gap_to_wall_mm:.1f} mm, orient={orientation_to_wall}, parallel={face_to_face_dim}")
 
     # -------------------------------------------------
     # 1) Top-side wall surface (using T_top instead of mean air)
@@ -689,7 +690,10 @@ def estimate_enclosure_surface_temps_with_hotspot(
     # -------------------------------------------------
     phase_count = 3
     bars_per_phase = max(1, int(bars_per_phase))
-    total_bars = phase_count * bars_per_phase
+    if face_to_face_dim == "thickness":
+        total_bars = phase_count * bars_per_phase
+    else:
+        total_bars = bars_per_phase
 
     if orientation_to_wall == "width":
         projected_face_width_m = float(bar_width_m)
@@ -704,11 +708,18 @@ def estimate_enclosure_surface_temps_with_hotspot(
         1e-9,
     )
 
-    # Physical span of the 3-phase cluster across the wall
-    # For now, parallel bars within a phase are assumed stacked behind / close packed
+    inter_phase_gap_m = 0.050  # 50 mm clear spacing between phase groups
+
+    if face_to_face_dim == "thickness":
+        phase_width_m = bars_per_phase * projected_face_width_m
+    else:
+        phase_width_m = projected_face_width_m
+
+    phase_pitch_m = phase_width_m + inter_phase_gap_m
+
     cluster_width_m = max(
-        (phase_count - 1) * float(phase_pitch_m) + projected_face_width_m,
-        projected_face_width_m,
+        (phase_count - 1) * phase_pitch_m + phase_width_m,
+        phase_width_m,
     )
 
     # Hotspot patch on wall: based on physical cluster span, not source area
@@ -717,16 +728,15 @@ def estimate_enclosure_surface_temps_with_hotspot(
 
     area_ratio = bus_face_area_m2 / patch_area_m2
 
-    if debug:
-        print("\n[GEOMETRY]")
-        print(f"projected_face_width = {projected_face_width_m:.4f} m")
-        print(f"bar_depth_to_wall    = {bar_depth_to_wall_m:.4f} m")
-        print(f"total_bars           = {total_bars}")
-        print(f"bus_face_area        = {bus_face_area_m2:.6f} m²")
-        print(f"cluster_width        = {cluster_width_m:.6f} m")
-        print(f"patch_width          = {patch_width_m:.6f} m")
-        print(f"patch_area           = {patch_area_m2:.6f} m²")
-        print(f"area_ratio           = {area_ratio:.4f}")
+    print("\n[GEOMETRY]")
+    print(f"projected_face_width = {projected_face_width_m:.4f} m")
+    print(f"bar_depth_to_wall    = {bar_depth_to_wall_m:.4f} m")
+    print(f"total_bars           = {total_bars}")
+    print(f"bus_face_area        = {bus_face_area_m2:.6f} m²")
+    print(f"cluster_width        = {cluster_width_m:.6f} m")
+    print(f"patch_width          = {patch_width_m:.6f} m")
+    print(f"patch_area           = {patch_area_m2:.6f} m²")
+    print(f"area_ratio           = {area_ratio:.4f}")
 
 
     # -------------------------------------------------

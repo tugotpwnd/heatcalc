@@ -245,6 +245,7 @@ class BusSpecUI:
     thickness_mm: float = 10.0
     bars_in_parallel: int = 1
     phases: int = 3
+    face_to_face_dim: Literal["width", "thickness"] = "thickness"
     gap_to_wall_mm: float = 50.0
     orientation_to_wall: Literal["width", "thickness"] = "width"
 
@@ -426,14 +427,22 @@ class BusLineItem(QGraphicsLineItem):
         cb_orient = QComboBox()
         cb_orient.addItems(["Wide face to wall", "Edge face to wall"])
 
+        cb_face = QComboBox()
+        # Type 2 is thickness to thickness, Type 1 is width to width
+        cb_face.addItems(["Type 2", "Type 1"])
+
         current_orient = getattr(self.spec, "orientation_to_wall", "width")
         cb_orient.setCurrentIndex(0 if current_orient == "width" else 1)
+
+        current_face = getattr(self.spec, "face_to_face_dim", "thickness")
+        cb_face.setCurrentIndex(0 if current_face == "thickness" else 1)
 
         layout.addRow("Width (mm)", sp_w)
         layout.addRow("Thickness (mm)", sp_t)
         layout.addRow("Bars", sp_n)
         layout.addRow("Gap to wall (mm)", sp_gap)
         layout.addRow("Orientation", cb_orient)
+        layout.addRow("Bus installation type", cb_face)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         layout.addRow(btns)
@@ -448,6 +457,9 @@ class BusLineItem(QGraphicsLineItem):
             self.spec.gap_to_wall_mm = sp_gap.value()
             self.spec.orientation_to_wall = (
                 "width" if cb_orient.currentIndex() == 0 else "thickness"
+            )
+            self.spec.face_to_face_dim = (
+                "thickness" if cb_face.currentIndex() == 0 else "width"
             )
 
             self.update()
@@ -825,6 +837,7 @@ class BusLineItem(QGraphicsLineItem):
                 "width_mm": self.spec.width_mm,
                 "thickness_mm": self.spec.thickness_mm,
                 "bars_in_parallel": self.spec.bars_in_parallel,
+                "face_to_face_dim": self.spec.face_to_face_dim,
                 "phases": self.spec.phases,
             },
 

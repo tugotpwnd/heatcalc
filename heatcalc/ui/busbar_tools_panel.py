@@ -71,7 +71,7 @@ class BusbarToolsPanel(QWidget):
         self.orient_group = QButtonGroup(self)
         self.orient_group.setExclusive(True)
 
-        def _make_orient_btn(idx: int, label: str, icon_name: str):
+        def _make_orient_btn(group, idx: int, label: str, icon_name: str):
             b = QToolButton()
             b.setCheckable(True)
             b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
@@ -91,16 +91,37 @@ class BusbarToolsPanel(QWidget):
             b.setIconSize(QtCore.QSize(72, 48))
             b.setText(label)
 
-            self.orient_group.addButton(b, idx)
-            orient_layout.addWidget(b)
-
+            group.addButton(b, idx)
             return b
 
-        self.btn_face_width = _make_orient_btn(0, "Broad", "cable_install_type1.png")
-        self.btn_face_thickness = _make_orient_btn(1, "Edge", "cable_install_type2.png")
+        self.btn_face_width = _make_orient_btn(self.orient_group, 0, "Broad", "cable_install_type1.png")
+        self.btn_face_thickness = _make_orient_btn(self.orient_group, 1, "Edge", "cable_install_type2.png")
+
+        orient_layout.addWidget(self.btn_face_width)
+        orient_layout.addWidget(self.btn_face_thickness)
 
         self.btn_face_width.setChecked(True)
         form_bus.addRow(orient_box)
+
+        # -------------------------------------------------
+        # FACE TO FACE (Parallel Bars)
+        # -------------------------------------------------
+
+        face_box = QGroupBox("Bus installation type")
+        face_layout = QtWidgets.QHBoxLayout(face_box)
+
+        self.face_to_face_group = QButtonGroup(self)
+        self.face_to_face_group.setExclusive(True)
+
+        self.btn_face_type1 = _make_orient_btn(self.face_to_face_group, 0, "Type 1", "cable_install_type1.png")
+        self.btn_face_type2 = _make_orient_btn(self.face_to_face_group, 1, "Type 2", "cable_install_type2.png")
+
+        face_layout.addWidget(self.btn_face_type1)
+        face_layout.addWidget(self.btn_face_type2)
+
+        self.btn_face_type1.setChecked(True)
+        form_bus.addRow(face_box)
+
         gb_bus.setLayout(form_bus)
         layout.addWidget(gb_bus)
 
@@ -256,6 +277,7 @@ class BusbarToolsPanel(QWidget):
         self.bars.valueChanged.connect(self.update_spec)
         self.gap_to_wall.valueChanged.connect(self.update_spec)
         self.orient_group.buttonClicked.connect(self.update_spec)
+        self.face_to_face_group.buttonClicked.connect(self.update_spec)
 
         # joint spec bindings
         self.inst_group.buttonClicked.connect(self._on_installation_type_changed)
@@ -288,6 +310,9 @@ class BusbarToolsPanel(QWidget):
         orientation: Literal["width", "thickness"] = (
             "width" if self.orient_group.checkedId() == 0 else "thickness"
         )
+        face_to_face: Literal["width", "thickness"] = (
+            "width" if self.face_to_face_group.checkedId() == 0 else "thickness"
+        )
 
         spec = BusSpecUI(
             width_mm=self.width.value(),
@@ -295,6 +320,7 @@ class BusbarToolsPanel(QWidget):
             bars_in_parallel=self.bars.value(),
             gap_to_wall_mm=self.gap_to_wall.value(),
             orientation_to_wall=orientation,
+            face_to_face_dim=face_to_face,
         )
 
         self.view.set_default_bus_spec(spec)

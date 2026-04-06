@@ -285,6 +285,7 @@ def evaluate_tier_compliance(
             orientation = getattr(edge_obj, "orientation_to_wall", "width")
             gap_to_wall_mm = float(getattr(edge_obj, "gap_to_wall_mm", 50.0))
             bars = int(getattr(edge_obj, "bars_in_parallel", 1))
+            face_to_face = getattr(edge_obj, "face_to_face_dim", "thickness")
             face_height_m = float(getattr(tier, "height_mm", 2000.0)) / 1000.0
 
             # Infer orientation for hotspot convection mode
@@ -304,6 +305,7 @@ def evaluate_tier_compliance(
                 bars_per_phase=bars,
                 gap_to_wall_mm=gap_to_wall_mm,
                 orientation_to_wall=orientation,
+                face_to_face_dim=face_to_face,
                 enclosure_depth_m=depth_m,
                 face_height_m=face_height_m,
                 # Emissivity of the busbar surface for direct radiation exchange to the nearby

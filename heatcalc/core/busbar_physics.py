@@ -269,7 +269,6 @@ def compute_busbar_physics(
 
         f_W_per_m=float(f),
     )
-    debug=True
     if debug:
         print(
             f"[busbar_physics] {geom.name} | "

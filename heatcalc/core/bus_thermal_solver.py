@@ -65,6 +65,7 @@ class ThermalSeg:
     width_mm: float
     thickness_mm: float
     bars_in_parallel: int
+    face_to_face_dim: str
     tier: object | None
     is_joint: bool
     joint_spec: object | None
@@ -164,6 +165,7 @@ def _build_segmented_thermal_edges(
                     width_mm=float(e.width_mm),
                     thickness_mm=float(e.thickness_mm),
                     bars_in_parallel=int(e.bars_in_parallel),
+                    face_to_face_dim=getattr(e, "face_to_face_dim", "thickness"),
                     tier=getattr(e, "tier", None),
                     is_joint=bool(e.is_joint),
                     joint_spec=getattr(e, "joint_spec", None),
@@ -190,6 +192,7 @@ def _build_segmented_thermal_edges(
                     width_mm=float(e.width_mm),
                     thickness_mm=float(e.thickness_mm),
                     bars_in_parallel=int(e.bars_in_parallel),
+                    face_to_face_dim=getattr(e, "face_to_face_dim", "thickness"),
                     tier=getattr(e, "tier", None),
                     is_joint=bool(e.is_joint),
                     joint_spec=getattr(e, "joint_spec", None),
@@ -229,6 +232,7 @@ def _build_segmented_thermal_edges(
                     width_mm=float(e.width_mm),
                     thickness_mm=float(e.thickness_mm),
                     bars_in_parallel=int(e.bars_in_parallel),
+                    face_to_face_dim=getattr(e, "face_to_face_dim", "thickness"),
                     tier=getattr(e, "tier", None),
                     is_joint=False,
                     joint_spec=getattr(e, "joint_spec", None),
@@ -253,6 +257,7 @@ def _build_segmented_thermal_edges(
                     width_mm=float(e.width_mm),
                     thickness_mm=float(e.thickness_mm),
                     bars_in_parallel=int(e.bars_in_parallel),
+                    face_to_face_dim=getattr(e, "face_to_face_dim", "thickness"),
                     tier=getattr(e, "tier", None),
                     is_joint=False,
                     joint_spec=getattr(e, "joint_spec", None),
@@ -276,6 +281,7 @@ def _build_segmented_thermal_edges(
                     width_mm=float(e.width_mm),
                     thickness_mm=float(e.thickness_mm),
                     bars_in_parallel=int(e.bars_in_parallel),
+                    face_to_face_dim=getattr(e, "face_to_face_dim", "thickness"),
                     tier=getattr(e, "tier", None),
                     is_joint=False,
                     joint_spec=getattr(e, "joint_spec", None),
@@ -611,7 +617,7 @@ def solve_thermal(
             L_char_m=l_char_m,
             length_m=seg.length_m,
             bars_in_parallel=seg.bars_in_parallel,
-            face_to_face_dim="thickness",
+            face_to_face_dim=seg.face_to_face_dim,
             convection_mode=seg.convection_mode,
         )
 

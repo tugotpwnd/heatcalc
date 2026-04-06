@@ -70,38 +70,38 @@ def effective_radiating_area_per_m(
     width_m: float,
     thickness_m: float,
     bars_in_parallel: int,
-    face_to_face_dim: FaceToFaceDim,
+    face_to_face_dim: str,   # <-- KEEP THIS (no new param)
 ) -> tuple[float, float, float]:
-    """
-    Returns (As_raw, As_eff, blockage_fraction).
+    w = width_m
+    t = thickness_m
 
-    This is a simplified "average shielding" model:
-    - As_raw is the full external surface area.
-    - As_eff reduces radiation area when multiple bars are face-to-face.
+    # Raw surface area per metre (single bar)
+    A_raw = 2.0 * (w + t)
 
-    Important:
-    - Convection area is NOT reduced here (your previous model used full area for convection),
-      only radiation is reduced (consistent with your earlier intent).
-    """
-    As_raw = surface_area_per_m(width_m, thickness_m)
+    # --- TYPE 1: minor faces adjacent ---
+    if face_to_face_dim == "thickness":
 
-    if bars_in_parallel <= 1:
-        return As_raw, As_raw, 0.0
+        if bars_in_parallel <= 1:
+            # Centre phase → both minor faces blocked
+            A_eff = 2.0 * w
 
-    # The "blocked face dimension" is the dimension forming the face-to-face spacing
-    d = width_m if face_to_face_dim == "width" else thickness_m
+        else:
+            # Worst-case bar → 2 minor + 1 major blocked
+            A_eff = w
 
-    # Your previous model: A_blocked_avg = 2*d*(1 - 1/N)
-    A_blocked_avg = 2.0 * d * (1.0 - 1.0 / float(bars_in_parallel))
+    # --- TYPE 2: major faces adjacent ---
+    elif face_to_face_dim == "width":
 
-    As_eff = max(As_raw - A_blocked_avg, 0.0)
+        # Worst-case always → both major faces blocked
+        A_eff = 2.0 * t
 
-    blockage = 0.0
-    if As_raw > 0:
-        blockage = max(0.0, min(1.0, 1.0 - (As_eff / As_raw)))
+    else:
+        raise ValueError("face_to_face_dim must be 'width' or 'thickness'")
 
-    return As_raw, As_eff, blockage
+    # Blockage fraction
+    blockage = 1.0 - (A_eff / A_raw) if A_raw > 0 else 0.0
 
+    return A_raw, A_eff, blockage
 
 from dataclasses import dataclass
 from typing import List
