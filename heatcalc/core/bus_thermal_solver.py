@@ -424,20 +424,23 @@ def joint_contact_area(width_m, thickness_m, joint_spec):
     elif joint_type == "clamped_edge":
         other_w_mm = getattr(joint_spec, "other_bar_width_mm", None)
         other_t_mm = getattr(joint_spec, "other_bar_thickness_mm", None)
+        other_n = max(1, int(getattr(joint_spec, "other_bar_count", 1) or 1))
+        this_n = max(1, int(getattr(joint_spec, "bars_in_parallel", 1) or 1))
 
         if other_w_mm is None or other_t_mm is None:
             raise ValueError(
                 "Clamped joint requires other_bar_width_mm and other_bar_thickness_mm on joint_spec."
             )
 
-        this_w_mm = float(width_m) * 1000.0
         this_t_mm = float(thickness_m) * 1000.0
 
         # edge-face patch = thickness × thickness
         a_mm = min(this_t_mm, float(other_t_mm))
         l_mm = max(this_t_mm, float(other_t_mm))
 
-        A_contact = (a_mm * l_mm) * 1e-6  # mm² -> m²
+        # Effective thermal contact area for parallel bars
+        n_interfaces = this_n * other_n
+        A_contact = (a_mm * l_mm * n_interfaces) * 1e-6  # mm² -> m²
         return max(A_contact, 1e-9)
 
     else:
@@ -468,10 +471,12 @@ def joint_R20_ohm(nd, debug=False) -> float:
             e_streamline=None,
             other_bar_width_m=(float(other_w_mm) / 1000.0) if other_w_mm is not None else None,
             other_bar_thickness_m=(float(other_t_mm) / 1000.0) if other_t_mm is not None else None,
+            bar1_parallel_count=n1,
+            bar2_parallel_count=other_n,
             debug=debug,
         )
-        # Preserve existing parallel-path convention on the bolted path
-        return R_single / n1
+        # The resistance is already calculated for the parallel set
+        return R_single
 
     elif joint_type == "clamped_edge":
         if other_w_mm is None or other_t_mm is None:
@@ -488,10 +493,13 @@ def joint_R20_ohm(nd, debug=False) -> float:
             clamp_bolt_dia_mm=js.bolt_dia_mm,
             nut_factor=js.nut_factor,
             bolt_count=js.bolt_count,
-            e_streamline=js.e_streamline,
+            bar1_parallel_count=n1,
+            bar2_parallel_count=other_n,
+            e_streamline=None,
             debug=debug,
         )
-        return R_single / (n1 * other_n)
+        # The resistance is already calculated for the parallel set
+        return R_single
 
     else:
         raise ValueError(f"Unsupported joint_type: {joint_type}")

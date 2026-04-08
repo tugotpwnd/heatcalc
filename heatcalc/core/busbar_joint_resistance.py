@@ -31,17 +31,19 @@ def bolted_overlap_joint_resistance(
     e_streamline: float | None = None,
     other_bar_width_m: float | None = None,
     other_bar_thickness_m: float | None = None,
+    bar1_parallel_count: int = 1,
+    bar2_parallel_count: int = 1,
     debug: bool = False,
 ) -> float:
     """
     Calculate total electrical resistance of a bolted copper overlap joint.
 
     Host bar:
-        width_m, thickness_m
+        width_m, thickness_m, bar1_parallel_count
 
     Other joined bar:
-        other_bar_width_m, other_bar_thickness_m
-        If omitted, falls back to the host-bar geometry.
+        other_bar_width_m, other_bar_thickness_m, bar2_parallel_count
+        If omitted, falls back to the host-bar geometry (except counts).
 
     Streamline resistance is based on the overlap-ratio curvefit:
         x = l / b_eff
@@ -64,16 +66,21 @@ def bolted_overlap_joint_resistance(
     w2_m = float(other_bar_width_m) if other_bar_width_m is not None else w1_m
     t2_m = float(other_bar_thickness_m) if other_bar_thickness_m is not None else t1_m
 
+    n1 = int(bar1_parallel_count)
+    n2 = int(bar2_parallel_count)
+
     l_m = float(overlap_m)
     d_m = float(bolt_dia_mm) / 1000.0
-    n = int(bolt_count)
+    n_bolts = int(bolt_count)
 
     if min(w1_m, t1_m, w2_m, t2_m, l_m, d_m) <= 0:
         raise ValueError("Invalid bolted joint geometry supplied.")
-    if n <= 0:
+    if n_bolts <= 0:
         raise ValueError("bolt_count must be >= 1.")
     if nut_factor <= 0:
         raise ValueError("nut_factor must be > 0.")
+    if n1 <= 0 or n2 <= 0:
+        raise ValueError("parallel bar counts must be >= 1.")
 
     # Effective dimensions for unequal bars
     a_eff_m = min(w1_m, w2_m)   # effective overlap width
@@ -82,7 +89,7 @@ def bolted_overlap_joint_resistance(
     # Number of bolt columns across width
     # - 1 bolt → 1 column
     # - 2+ bolts → max 2 columns (assumption: bolt patterns are always 2-wide)
-    columns = min(n, 2)
+    columns = min(n_bolts, 2)
     net_width_m = a_eff_m - columns * d_m
 
     if net_width_m <= 1e-12:
@@ -104,18 +111,27 @@ def bolted_overlap_joint_resistance(
     else:
         e_used = float(e_streamline)
 
+    # Rs for a single contact interface
     Rs = (e_used * RHO_CU_OHM_M * l_m) / (net_width_m * b_eff_m)
+
+    # Number of contact interfaces
+    # For n1 and n2 bars in parallel, number of interfaces is min(n1, n2)
+    n_interfaces = min(n1, n2)
+
+    # Total streamline resistance for n_interfaces in parallel
+    Rs_total = Rs / n_interfaces
 
     # -----------------------------
     # 2) Bolt preload
     # -----------------------------
     F_per_bolt_N = torque_Nm / (nut_factor * d_m)
-    F_total_N = F_per_bolt_N * n
+    F_total_N = F_per_bolt_N * n_bolts
 
     # -----------------------------
     # 3) Pressure in N/mm²
     # -----------------------------
-    A_overlap_mm2 = a_eff_mm * l_mm
+    # Contact area is (a_eff * l) * number of interfaces
+    A_overlap_mm2 = a_eff_mm * l_mm * n_interfaces
     P_N_per_mm2 = F_total_N / A_overlap_mm2
 
     # -----------------------------
@@ -128,7 +144,7 @@ def bolted_overlap_joint_resistance(
 
     # -----------------------------
     # 5) Contact resistance
-    #    Ri = Y / (a * l)
+    #    Ri = Y / (a * l * n_interfaces)
     # -----------------------------
     Ri_uohm = Y_uohm / A_overlap_mm2
     Ri = Ri_uohm * 1e-6
@@ -137,26 +153,29 @@ def bolted_overlap_joint_resistance(
         print("\n[BOLTED JOINT DEBUG]")
         print(f"w1_mm            = {w1_m * 1000.0:.3f}")
         print(f"t1_mm            = {t1_m * 1000.0:.3f}")
+        print(f"n1               = {n1}")
         print(f"w2_mm            = {w2_m * 1000.0:.3f}")
         print(f"t2_mm            = {t2_m * 1000.0:.3f}")
+        print(f"n2               = {n2}")
         print(f"a_eff_mm         = {a_eff_mm:.3f}")
         print(f"b_eff_mm         = {b_eff_mm:.3f}")
         print(f"l_mm             = {l_mm:.3f}")
         print(f"d_mm             = {d_mm:.3f}")
-        print(f"bolt_count       = {n}")
+        print(f"bolt_count       = {n_bolts}")
         print(f"overlap_ratio    = {overlap_ratio:.6f}")
         print(f"e_used           = {e_used:.6f}")
         print(f"net_width_mm     = {net_width_m * 1000.0:.3f}")
         print(f"F_total_N        = {F_total_N:.3f}")
+        print(f"n_interfaces     = {n_interfaces}")
         print(f"A_overlap_mm2    = {A_overlap_mm2:.3f}")
         print(f"P_N_per_mm2      = {P_N_per_mm2:.6f}")
         print(f"Y_uohm           = {Y_uohm:.6f}")
         print(f"Ri_uohm          = {Ri_uohm:.6f}")
-        print(f"Rs_ohm           = {Rs:.6e}")
+        print(f"Rs_ohm           = {Rs_total:.6e}")
         print(f"Ri_ohm           = {Ri:.6e}")
-        print(f"R_total_ohm      = {(Rs + Ri):.6e}")
+        print(f"R_total_ohm      = {(Rs_total + Ri):.6e}")
 
-    return Rs + Ri
+    return Rs_total + Ri
 RHO_CU_OHM_M = 1.724e-8  # Ω·m
 
 
@@ -169,6 +188,8 @@ def clamped_edge_joint_resistance(
     clamp_bolt_dia_mm: float,
     nut_factor: float = 0.20,
     bolt_count: int = 1,
+    bar1_parallel_count: int = 1,
+    bar2_parallel_count: int = 1,
     e_streamline: float | None = None,
     debug: bool = False,
 ) -> float:
@@ -199,6 +220,9 @@ def clamped_edge_joint_resistance(
     w2_m = float(bar2_width_m)
     t2_m = float(bar2_thickness_m)
 
+    n1 = int(bar1_parallel_count)
+    n2 = int(bar2_parallel_count)
+
     if min(w1_m, t1_m, w2_m, t2_m) <= 0:
         raise ValueError("Invalid bar geometry supplied.")
 
@@ -211,6 +235,9 @@ def clamped_edge_joint_resistance(
 
     if nut_factor <= 0:
         raise ValueError("nut_factor must be > 0.")
+
+    if n1 <= 0 or n2 <= 0:
+        raise ValueError("parallel bar counts must be >= 1.")
 
     # convert to mm
     w1_mm = w1_m * 1000.0
@@ -251,7 +278,9 @@ def clamped_edge_joint_resistance(
     # -----------------------------
     # 3) Pressure in N/mm²
     # -----------------------------
-    A_pressure_mm2 = a_mm * b_mm
+    # Contact area is (a * l) * number of interfaces
+    n_interfaces = n1 * n2
+    A_pressure_mm2 = a_mm * l_mm * n_interfaces
     P_N_per_mm2 = F_total_N / A_pressure_mm2
 
     # -----------------------------
@@ -266,15 +295,17 @@ def clamped_edge_joint_resistance(
     # 5) Contact resistance
     # Ri = Y / (contact area)
     # -----------------------------
-    Ri_uohm = Y_uohm / (a_mm * b_mm)
+    Ri_uohm = Y_uohm / A_pressure_mm2
     Ri = Ri_uohm * 1e-6
 
     if debug:
         print("\n[CLAMPED JOINT DEBUG]")
         print(f"bar1_width_mm       = {w1_mm:.3f}")
         print(f"bar1_thickness_mm   = {t1_mm:.3f}")
+        print(f"n1                  = {n1}")
         print(f"bar2_width_mm       = {w2_mm:.3f}")
         print(f"bar2_thickness_mm   = {t2_mm:.3f}")
+        print(f"n2                  = {n2}")
         print(f"a_mm                = {a_mm:.3f}")
         print(f"l_mm                = {l_mm:.3f}")
         print(f"b_mm                = {b_mm:.3f}")
@@ -286,6 +317,7 @@ def clamped_edge_joint_resistance(
         print(f"nut_factor          = {nut_factor:.3f}")
         print(f"F_per_bolt_N        = {F_per_bolt_N:.3f}")
         print(f"F_total_N           = {F_total_N:.3f}")
+        print(f"n_interfaces        = {n_interfaces}")
         print(f"A_pressure_mm2      = {A_pressure_mm2:.3f}")
         print(f"P_N_per_mm2         = {P_N_per_mm2:.6f}")
         print(f"Y_uohm              = {Y_uohm:.6f}")
