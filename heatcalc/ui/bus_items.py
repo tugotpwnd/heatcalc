@@ -451,6 +451,9 @@ class BusLineItem(QGraphicsLineItem):
         btns.rejected.connect(dlg.reject)
 
         if dlg.exec_():
+            from copy import deepcopy
+            self.spec = deepcopy(self.spec)
+
             self.spec.width_mm = sp_w.value()
             self.spec.thickness_mm = sp_t.value()
             self.spec.bars_in_parallel = sp_n.value()

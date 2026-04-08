@@ -748,7 +748,8 @@ class DesignerView(QGraphicsView):
                     commit_bus = True
 
             if commit_bus:
-                line = BusLineItem(p0, p1, spec=self._bus_spec)
+                from copy import deepcopy
+                line = BusLineItem(p0, p1, spec=deepcopy(self._bus_spec))
                 tier.add_bus_item(line)
 
             # ALWAYS clean up preview state

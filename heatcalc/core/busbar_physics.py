@@ -44,7 +44,7 @@ class BusbarThermalInputs:
     eps_bus: float = 0.4 # Varies depending on cooling / heating
     eps_env: float = 0.90
     v_mps: float = 0.0
-    S_ac: float = 1.2
+    S_ac: float = 1.1
 
 
 @dataclass(frozen=True)

@@ -291,7 +291,7 @@ class BusbarJointSpec:
     other_bar_thickness_mm: float | None = None
     other_bar_count: int | None = None
 
-    joint_type: Literal["bolted_overlap", "clamped_edge"] = "bolted_overlap"
+    joint_type: Literal["bolted_overlap", "clamped_edge", "sandwich_joint"] = "bolted_overlap"
     nut_factor: float = 0.20
     e_streamline: float = 0.5
 
@@ -346,7 +346,7 @@ class BusbarSpec:
     Number of parallel conductors sharing the phase current.
     """
 
-    S_ac: float = 1.2
+    S_ac: float = 1.1
     """
     AC resistance correction factor.
     Accounts for skin/proximity effects if required.

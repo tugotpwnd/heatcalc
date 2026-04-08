@@ -9,7 +9,11 @@ from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
 
 from heatcalc.core.busbar_geometry import BusbarGeometry
-from heatcalc.core.busbar_joint_resistance import bolted_overlap_joint_resistance, clamped_edge_joint_resistance
+from heatcalc.core.busbar_joint_resistance import (
+    bolted_overlap_joint_resistance,
+    clamped_edge_joint_resistance,
+    sandwich_joint_resistance,
+)
 from heatcalc.core.busbar_physics import (
     compute_busbar_physics,
     resistance_20C_per_m,
@@ -443,6 +447,23 @@ def joint_contact_area(width_m, thickness_m, joint_spec):
         A_contact = (a_mm * l_mm * n_interfaces) * 1e-6  # mm² -> m²
         return max(A_contact, 1e-9)
 
+    elif joint_type == "sandwich_joint":
+        other_w_mm = getattr(joint_spec, "other_bar_width_mm", None)
+        other_t_mm = getattr(joint_spec, "other_bar_thickness_mm", None)
+        other_n = max(1, int(getattr(joint_spec, "other_bar_count", 1) or 1))
+        this_n = max(1, int(getattr(joint_spec, "bars_in_parallel", 1) or 1))
+
+        this_t_mm = float(thickness_m) * 1000.0
+        other_t_mm_val = float(other_t_mm) if other_t_mm is not None else this_t_mm
+
+        # Sandwich joint thermal contact area - using similar logic to clamped for now
+        a_mm = min(this_t_mm, other_t_mm_val)
+        l_mm = max(this_t_mm, other_t_mm_val)
+
+        n_interfaces = this_n * other_n
+        A_contact = (a_mm * l_mm * n_interfaces) * 1e-6  # mm² -> m²
+        return max(A_contact, 1e-9)
+
     else:
         raise ValueError(f"Unsupported joint_type: {joint_type}")
 
@@ -489,6 +510,24 @@ def joint_R20_ohm(nd, debug=False) -> float:
             bar1_thickness_m=nd["t"],
             bar2_width_m=float(other_w_mm) / 1000.0,
             bar2_thickness_m=float(other_t_mm) / 1000.0,
+            torque_Nm=js.torque_Nm,
+            clamp_bolt_dia_mm=js.bolt_dia_mm,
+            nut_factor=js.nut_factor,
+            bolt_count=js.bolt_count,
+            bar1_parallel_count=n1,
+            bar2_parallel_count=other_n,
+            e_streamline=None,
+            debug=debug,
+        )
+        # The resistance is already calculated for the parallel set
+        return R_single
+
+    elif joint_type == "sandwich_joint":
+        R_single = sandwich_joint_resistance(
+            bar1_width_m=nd["w"],
+            bar1_thickness_m=nd["t"],
+            bar2_width_m=(float(other_w_mm) / 1000.0),
+            bar2_thickness_m=(float(other_t_mm) / 1000.0),
             torque_Nm=js.torque_Nm,
             clamp_bolt_dia_mm=js.bolt_dia_mm,
             nut_factor=js.nut_factor,
@@ -560,8 +599,8 @@ def solve_thermal(
     """
 
     cross_link_debug = []
-    physics_debug = False
-    joint_debug = True
+    physics_debug = True
+    joint_debug = False
 
     def edge_air(edge_id):
         if isinstance(air_temp_C, dict):
@@ -746,7 +785,7 @@ def solve_thermal(
         eps_bus=eps_bus_self_cooling,
         eps_env=0.9,
         v_mps=0.0,
-        S_ac=1.2,
+        S_ac=1.1,
     )
 
     # explicit local ambient only — no neighbour air smearing

@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout,
     QPushButton, QSpinBox, QButtonGroup,
     QDoubleSpinBox, QComboBox, QGroupBox,
-    QToolButton, QTableWidget
+    QToolButton, QTableWidget, QLabel
 )
 from .collapsible_group_box import CollapsibleGroupBox
 from .bus_items import BusSpecUI, BusLineItem, BusJoinItem
@@ -14,6 +14,74 @@ from ..core.models import BusbarJointSpec
 from ..utils.resources import get_resource_path
 from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
 from PyQt5.QtCore import Qt
+
+
+class HoverImageLabel(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setScaledContents(True)
+        self.setStyleSheet("border: 2px solid #555; background-color: white;")
+        self.hide()
+
+    def show_at_cursor(self, pixmap, scale_factor=1):
+        if pixmap.isNull():
+            return
+        
+        # Scale the pixmap
+        new_size = pixmap.size() * scale_factor
+        scaled_pixmap = pixmap.scaled(new_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.setPixmap(scaled_pixmap)
+        self.adjustSize()
+
+        # Position near cursor, but to the left to satisfy user request
+        # Subtract the label's width and a small offset to appear to the left
+        cursor_pos = QtGui.QCursor.pos()
+        self.move(cursor_pos.x() - self.width() - 20, cursor_pos.y() + 20)
+        self.show()
+
+
+class HoverImageButton(QToolButton):
+    def __init__(self, icon_path, parent=None):
+        super().__init__(parent)
+        self.icon_path = icon_path
+        self._hover_label = None
+        self._timer = QtCore.QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(500)  # 0.5 sec delay
+        self._timer.timeout.connect(self._show_hover)
+
+    def _show_hover(self):
+        if not self.icon_path:
+            return
+        if not self._hover_label:
+            self._hover_label = HoverImageLabel()
+        
+        pixmap = QtGui.QPixmap(self.icon_path)
+        self._hover_label.show_at_cursor(pixmap)
+
+    def enterEvent(self, event):
+        if self.icon_path:
+            self._timer.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._timer.stop()
+        if self._hover_label:
+            self._hover_label.hide()
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # Update position if mouse moves within the button (keep it to the left)
+        if self._hover_label and self._hover_label.isVisible():
+            cursor_pos = QtGui.QCursor.pos()
+            self._hover_label.move(cursor_pos.x() - self._hover_label.width() - 20, cursor_pos.y() + 20)
+        super().mouseMoveEvent(event)
+
+    def hideEvent(self, event):
+        # Ensure label is hidden if the button itself is hidden (e.g. tab switch)
+        if self._hover_label:
+            self._hover_label.hide()
+        super().hideEvent(event)
 
 
 class BusbarToolsPanel(QWidget):
@@ -72,11 +140,11 @@ class BusbarToolsPanel(QWidget):
         self.orient_group.setExclusive(True)
 
         def _make_orient_btn(group, idx: int, label: str, icon_name: str):
-            b = QToolButton()
+            icon_path = str(get_resource_path(f"heatcalc/assets/{icon_name}"))
+            b = HoverImageButton(icon_path)
             b.setCheckable(True)
             b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
 
-            icon_path = str(get_resource_path(f"heatcalc/assets/{icon_name}"))
             icon = QtGui.QIcon(icon_path)
 
             if icon.isNull():
@@ -88,14 +156,14 @@ class BusbarToolsPanel(QWidget):
                 icon = QtGui.QIcon(pm)
 
             b.setIcon(icon)
-            b.setIconSize(QtCore.QSize(72, 48))
+            b.setIconSize(QtCore.QSize(75, 75))
             b.setText(label)
 
             group.addButton(b, idx)
             return b
 
-        self.btn_face_width = _make_orient_btn(self.orient_group, 0, "Broad", "cable_install_type1.png")
-        self.btn_face_thickness = _make_orient_btn(self.orient_group, 1, "Edge", "cable_install_type2.png")
+        self.btn_face_width = _make_orient_btn(self.orient_group, 0, "Broad", "Broad_face_to_wall.png")
+        self.btn_face_thickness = _make_orient_btn(self.orient_group, 1, "Edge", "Narrow_face_to_wall.png")
 
         orient_layout.addWidget(self.btn_face_width)
         orient_layout.addWidget(self.btn_face_thickness)
@@ -107,14 +175,14 @@ class BusbarToolsPanel(QWidget):
         # FACE TO FACE (Parallel Bars)
         # -------------------------------------------------
 
-        face_box = QGroupBox("Bus installation type")
+        face_box = QGroupBox("Parallel Bar Arrangement")
         face_layout = QtWidgets.QHBoxLayout(face_box)
 
         self.face_to_face_group = QButtonGroup(self)
         self.face_to_face_group.setExclusive(True)
 
-        self.btn_face_type1 = _make_orient_btn(self.face_to_face_group, 0, "Type 1", "cable_install_type1.png")
-        self.btn_face_type2 = _make_orient_btn(self.face_to_face_group, 1, "Type 2", "cable_install_type2.png")
+        self.btn_face_type1 = _make_orient_btn(self.face_to_face_group, 0, "Type 1", "Type_1_Parallel.png")
+        self.btn_face_type2 = _make_orient_btn(self.face_to_face_group, 1, "Type 2", "Type_2_Parallel.png")
 
         face_layout.addWidget(self.btn_face_type1)
         face_layout.addWidget(self.btn_face_type2)
@@ -140,10 +208,10 @@ class BusbarToolsPanel(QWidget):
         self.inst_group.setExclusive(True)
 
         def _make_inst_btn(idx: int, label: str, icon_name: str):
-            b = QToolButton()
+            icon_path = str(get_resource_path(f"heatcalc/assets/{icon_name}"))
+            b = HoverImageButton(icon_path)
             b.setCheckable(True)
             b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-            icon_path = str(get_resource_path(f"heatcalc/assets/{icon_name}"))
             icon = QtGui.QIcon(icon_path)
             if icon.isNull():
                 pm = QtGui.QPixmap(64, 40)
@@ -159,13 +227,13 @@ class BusbarToolsPanel(QWidget):
             inst_lay.addWidget(b)
             return b
 
-        self.btn_inst1 = _make_inst_btn(0, "Type 1", "cable_install_type1.png")
-        self.btn_inst2 = _make_inst_btn(1, "Type 2", "cable_install_type2.png")
-        self.btn_inst3 = _make_inst_btn(2, "Type 3", "cable_install_type3.png")
+        self.btn_inst1 = _make_inst_btn(0, "Type 1", "Joint_Type_1_BoltedOverlap.png")
+        self.btn_inst2 = _make_inst_btn(1, "Type 2", "Joint_Type_2_Clamped.png")
+        self.btn_inst3 = _make_inst_btn(2, "Sandwich", "Joint_Type_3_Sandwich.png")
         self.btn_inst1.setChecked(True)
 
         self.joint_type = QComboBox()
-        self.joint_type.addItems(["bolted_overlap", "clamped_edge"])
+        self.joint_type.addItems(["bolted_overlap", "clamped_edge", "sandwich_joint"])
         # Hide the actual joint_type combo box as we now use installation_type
         self.joint_type.setVisible(False)
 
@@ -337,8 +405,9 @@ class BusbarToolsPanel(QWidget):
             self.joint_type.setCurrentText("bolted_overlap")
         elif idx == 1:  # Type 2
             self.joint_type.setCurrentText("clamped_edge")
-        else:  # Type 3
-            # Keep existing or set to a placeholder if models were updated
+        elif idx == 2:  # Type 3
+            self.joint_type.setCurrentText("sandwich_joint")
+        else:
             pass
 
         self._update_joint_fields_visibility(idx)
@@ -349,19 +418,19 @@ class BusbarToolsPanel(QWidget):
 
         is_type1 = (type_idx == 0)
         is_type2 = (type_idx == 1)
-        is_placeholder = (type_idx == 2)
+        is_type3 = (type_idx == 2)
 
         # Type 1 (Bolted Overlap): All options available.
         # Selecting Type 1, should be effectively bolted overlap, and all of the options should be available.
         # Type 2 (Clamped Edge): Only required inputs are Torque or pertinent values.
-        # Type 3 (Placeholder): make all unavailable.
+        # Type 3 (Sandwich): Same inputs as Type 2 (bolt count, dia, torque, nut factor, h contact). No overlap.
 
         self.overlap_m.setEnabled(is_type1)
-        self.bolt_count.setEnabled(is_type1 or is_type2)
-        self.bolt_dia.setEnabled(is_type1 or is_type2)
-        self.torque.setEnabled(is_type1 or is_type2)
-        self.nut_factor.setEnabled(is_type1 or is_type2)
-        self.h_contact.setEnabled(is_type1 or is_type2)
+        self.bolt_count.setEnabled(is_type1 or is_type2 or is_type3)
+        self.bolt_dia.setEnabled(is_type1 or is_type2 or is_type3)
+        self.torque.setEnabled(is_type1 or is_type2 or is_type3)
+        self.nut_factor.setEnabled(is_type1 or is_type2 or is_type3)
+        self.h_contact.setEnabled(is_type1 or is_type2 or is_type3)
 
         # Grey out/disable labels as well for clarity if needed,
         # but QFormLayout's row labels are harder to access individually.

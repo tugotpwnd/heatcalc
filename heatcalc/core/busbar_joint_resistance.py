@@ -15,8 +15,7 @@ def streamline_resistance_ratio_from_overlap_ratio(overlap_ratio: float) -> floa
     Returns the streamline resistance ratio e.
     """
     x = max(float(overlap_ratio), 1e-9)
-    return 0.547904 + (5.587766 - 0.547904) / (
-        1.0 + (x / 0.4058952) ** 2.200232
+    return 0.547904 + (5.587766 - 0.547904)/(1.0 + (x / 0.4058952) ** 2.200232
     )
 
 
@@ -135,13 +134,27 @@ def bolted_overlap_joint_resistance(
     P_N_per_mm2 = F_total_N / A_overlap_mm2
 
     # -----------------------------
-    # 4) Y from empirical plot
-    #    Y is in micro-ohms
+    # 4) Y from Figure 69 fit (polynomial)
+    #    Y is in micro-ohms per 1 mm²
     # -----------------------------
-    Y_uohm = 376.0758 + (6084.809 - 376.0758) / (
-        1.0 + (P_N_per_mm2 / 9.943826) ** 2.103775
+
+    # Clamp pressure to valid domain
+    P_used = min(P_N_per_mm2, 60.0)
+
+    x = P_used
+
+    # Polynomial fit
+    Y_fit = (
+            7890.141
+            - 716.6075 * x
+            + 31.08879 * x ** 2
+            - 0.7183196 * x ** 3
+            + 0.008589617 * x ** 4
+            - 0.00004151038 * x ** 5
     )
 
+    # Enforce physical bounds from figure
+    Y_uohm = max(600.0, min(Y_fit, 6000.0))
     # -----------------------------
     # 5) Contact resistance
     #    Ri = Y / (a * l * n_interfaces)
@@ -176,6 +189,42 @@ def bolted_overlap_joint_resistance(
         print(f"R_total_ohm      = {(Rs_total + Ri):.6e}")
 
     return Rs_total + Ri
+
+
+def sandwich_joint_resistance(
+    bar1_width_m: float,
+    bar1_thickness_m: float,
+    bar2_width_m: float,
+    bar2_thickness_m: float,
+    torque_Nm: float,
+    clamp_bolt_dia_mm: float,
+    nut_factor: float = 0.20,
+    bolt_count: int = 1,
+    bar1_parallel_count: int = 1,
+    bar2_parallel_count: int = 1,
+    e_streamline: float | None = None,
+    debug: bool = False,
+) -> float:
+    """
+    Calculate total electrical resistance of a sandwich copper busbar joint.
+    Placeholder implementation for determining its resistance.
+    """
+    # For now, return a placeholder resistance (e.g., similar to clamped_edge but maybe different)
+    # This will be implemented by the user later.
+    return clamped_edge_joint_resistance(
+        bar1_width_m=bar1_width_m,
+        bar1_thickness_m=bar1_thickness_m,
+        bar2_width_m=bar2_width_m,
+        bar2_thickness_m=bar2_thickness_m,
+        torque_Nm=torque_Nm,
+        clamp_bolt_dia_mm=clamp_bolt_dia_mm,
+        nut_factor=nut_factor,
+        bolt_count=bolt_count,
+        bar1_parallel_count=bar1_parallel_count,
+        bar2_parallel_count=bar2_parallel_count,
+        e_streamline=e_streamline,
+        debug=debug,
+    )
 RHO_CU_OHM_M = 1.724e-8  # Ω·m
 
 
@@ -284,13 +333,27 @@ def clamped_edge_joint_resistance(
     P_N_per_mm2 = F_total_N / A_pressure_mm2
 
     # -----------------------------
-    # 4) Y from Figure 69 fit
-    # Y is in micro-ohms
+    # 4) Y from Figure 69 fit (polynomial)
+    #    Y is in micro-ohms per 1 mm²
     # -----------------------------
-    Y_uohm = 0.570367 + (6033974.0 - 0.570367) / (
-        1.0 + (P_N_per_mm2 / 0.0001665935) ** 1.895038
+
+    # Clamp pressure to valid domain
+    P_used = min(P_N_per_mm2, 60.0)
+
+    x = P_used
+
+    # Polynomial fit
+    Y_fit = (
+            7890.141
+            - 716.6075 * x
+            + 31.08879 * x ** 2
+            - 0.7183196 * x ** 3
+            + 0.008589617 * x ** 4
+            - 0.00004151038 * x ** 5
     )
 
+    # Enforce physical bounds from figure
+    Y_uohm = max(600.0, min(Y_fit, 6000.0))
     # -----------------------------
     # 5) Contact resistance
     # Ri = Y / (contact area)
