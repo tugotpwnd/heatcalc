@@ -1400,10 +1400,10 @@ def component_derating_table(tier: TierRow, th: TierThermal) -> Table | Paragrap
     header = ["Component", "Rated (A)", "Internal Temp (°C)", "Derated Output (A)"]
     rows = [header]
 
-    T_top = th.T_top
+    T_eval = th.max_C
 
     for c in tier.components:
-        derated = evaluate_derating(c, T_top)
+        derated = evaluate_derating(c, T_eval)
         if derated is None:
             continue
 
@@ -1412,7 +1412,7 @@ def component_derating_table(tier: TierRow, th: TierThermal) -> Table | Paragrap
         rows.append([
             str(c.description),
             f"{float(c.rated_current_A):.1f}",
-            f"{T_top:.1f}",
+            f"{T_eval:.1f}",
             f"{derated:.1f}",
         ])
 
@@ -1472,7 +1472,7 @@ def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, c
     from heatcalc.core.compliance_61439 import evaluate_derating
 
     for c in tier.components:
-        c.derated_current_A = evaluate_derating(c, th.T_top)
+        c.derated_current_A = evaluate_derating(c, th.max_C)
 
     if has_buses and comp is not None and getattr(comp, "terminal_rows", None):
         flow.append(Paragraph(
@@ -1801,8 +1801,10 @@ def export_simple_report(
 
             has_buses = bool(tier.buses) if tier else False
             has_components = bool(tier.components) if tier else False
+            has_cables = bool(tier.cables) if tier else False
+            has_joints = bool(getattr(tier, "joints", [])) if tier else False
 
-            if tier and not has_buses and not has_components:
+            if tier and not any([has_buses, has_components, has_cables, has_joints]):
                 flow.append(Spacer(1, 10))
                 flow.append(Paragraph(
                     "No heat-generating equipment or current-carrying conductors are present within this tier. "

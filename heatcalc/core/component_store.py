@@ -75,76 +75,171 @@ def resolve_components_csv() -> Path:
 
     # fallback to repo copy
     return Path(__file__).resolve().parents[1] / "data" / "components.csv"
+import csv
+import io
+from pathlib import Path
+from typing import List, Optional
 
-def load_component_catalog(csv_path: Path) -> List[ComponentRow]:
+
+class ComponentCatalogError(Exception):
+    """User-friendly error for component CSV issues."""
+    pass
+
+
+def _safe_float(value: str, field_name: str, row_idx: int) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        return float(value.replace(",", ""))
+    except Exception:
+        raise ComponentCatalogError(
+            f"Invalid numeric value in column '{field_name}' at row {row_idx}: '{value}'"
+        )
+
+
+def _decode_csv_bytes(csv_path: Path) -> tuple[str, str]:
+    """
+    Read CSV as bytes, then decode robustly.
+    Returns: (decoded_text, encoding_used)
+
+    Strategy:
+      1. utf-8-sig
+      2. utf-8
+      3. cp1252 fallback (common Excel export)
+    """
+    raw = csv_path.read_bytes()
+
+    # UTF-8 with BOM
+    try:
+        return raw.decode("utf-8-sig"), "utf-8-sig"
+    except UnicodeDecodeError:
+        pass
+
+    # Plain UTF-8
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError as e_utf8:
+        # Work out approximate row for debug / user message
+        bad_pos = e_utf8.start
+        bad_row = raw[:bad_pos].count(b"\n") + 1
+        bad_byte = raw[bad_pos]
+
+        # Try Excel/Windows fallback
+        try:
+            text = raw.decode("cp1252")
+            print(
+                f"[WARN] Component CSV '{csv_path.name}' is not valid UTF-8. "
+                f"Used cp1252 fallback instead. "
+                f"First invalid UTF-8 byte at row {bad_row}, byte 0x{bad_byte:02X}."
+            )
+            return text, "cp1252"
+        except Exception:
+            raise ComponentCatalogError(
+                f"Couldn't load {csv_path.name}.\n\n"
+                f"The file is not valid UTF-8. First invalid character was found at row {bad_row} "
+                f"(byte 0x{bad_byte:02X}).\n\n"
+                f"This is usually caused by Excel smart quotes or other special characters.\n"
+                f"Fix: re-save the file as 'CSV UTF-8 (Comma delimited)' in Excel."
+            ) from e_utf8
+
+
+def load_component_catalog(csv_path: Path) -> List["ComponentRow"]:
     if not csv_path.exists():
         return []
 
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        sample = f.read(2048)
-        f.seek(0)
+    try:
+        text, encoding_used = _decode_csv_bytes(csv_path)
+
+        # Use StringIO so csv module reads already-decoded text
+        f = io.StringIO(text)
+
+        # sniff dialect safely
         try:
+            sample = f.read(2048)
+            f.seek(0)
             dialect = csv.Sniffer().sniff(sample)
         except Exception:
+            f.seek(0)
             dialect = csv.excel
 
         reader = csv.DictReader(f, dialect=dialect)
+
         if not reader.fieldnames:
-            return []
+            raise ComponentCatalogError(
+                f"Component CSV '{csv_path.name}' has no headers."
+            )
 
         header_map = _map_headers(reader.fieldnames)
         rows: List[ComponentRow] = []
-        for rec in reader:
-            cat  = _norm(rec.get(header_map["category"] or "", ""))
-            pn   = _norm(rec.get(header_map["part_number"] or "", ""))
-            desc = _norm(rec.get(header_map["description"] or "", ""))
-            heat_raw = _norm(rec.get(header_map["heat_w"] or "", ""))
-            max_raw  = _norm(rec.get(header_map["max_temp_C"] or "", ""))
-            rated_current_raw = _norm(rec.get(header_map["rated_current_A"] or "", ""))
-            derating_temp_raw = _norm(rec.get(header_map["derating_temp_start_C"] or "", ""))
-            derating_func_raw = _norm(rec.get(header_map["derating_function"] or "", ""))
 
+        for idx, rec in enumerate(reader, start=2):  # header is row 1
             try:
-                heat = float(heat_raw.replace(",", "")) if heat_raw else 0.0
-            except Exception:
-                heat = 0.0
+                cat  = _norm(rec.get(header_map["category"] or "", ""))
+                pn   = _norm(rec.get(header_map["part_number"] or "", ""))
+                desc = _norm(rec.get(header_map["description"] or "", ""))
 
-            try:
-                cleaned = max_raw.replace("°", "").replace("C", "").replace("c", "").strip()
-                max_temp = int(float(cleaned)) if cleaned else 70
-            except Exception:
-                max_temp = 70
+                heat_raw = _norm(rec.get(header_map["heat_w"] or "", ""))
+                max_raw  = _norm(rec.get(header_map["max_temp_C"] or "", ""))
 
-            rated_current = None
-            try:
-                if rated_current_raw:
-                    rated_current = float(rated_current_raw.replace(",", ""))
-            except Exception:
-                pass
+                rated_current_raw = _norm(rec.get(header_map["rated_current_A"] or "", ""))
+                derating_temp_raw = _norm(rec.get(header_map["derating_temp_start_C"] or "", ""))
+                derating_func_raw = _norm(rec.get(header_map["derating_function"] or "", ""))
 
-            derating_temp = None
-            try:
-                if derating_temp_raw:
-                    derating_temp = float(derating_temp_raw.replace(",", ""))
-            except Exception:
-                pass
+                if not (cat or pn or desc):
+                    continue
 
-            derating_func = derating_func_raw if derating_func_raw else None
+                heat = _safe_float(heat_raw, "heat_w", idx) or 0.0
 
-            if not (cat or pn or desc):
-                continue
+                try:
+                    cleaned = (
+                        max_raw.replace("°", "")
+                               .replace("C", "")
+                               .replace("c", "")
+                               .strip()
+                    )
+                    max_temp = int(float(cleaned)) if cleaned else 70
+                except Exception:
+                    raise ComponentCatalogError(
+                        f"Invalid max_temp_C at row {idx}: '{max_raw}'"
+                    )
 
-            rows.append(ComponentRow(
-                category=cat,
-                part_number=pn,
-                description=desc,
-                heat_w=heat,
-                max_temp_C=max_temp,
-                rated_current_A=rated_current,
-                derating_temp_start_C=derating_temp,
-                derating_function=derating_func,
-            ))
+                rated_current = _safe_float(rated_current_raw, "rated_current_A", idx)
+                derating_temp = _safe_float(derating_temp_raw, "derating_temp_start_C", idx)
+
+                derating_func = derating_func_raw if derating_func_raw else None
+
+                rows.append(ComponentRow(
+                    category=cat,
+                    part_number=pn,
+                    description=desc,
+                    heat_w=heat,
+                    max_temp_C=max_temp,
+                    rated_current_A=rated_current,
+                    derating_temp_start_C=derating_temp,
+                    derating_function=derating_func,
+                ))
+
+            except ComponentCatalogError:
+                raise
+            except Exception as e:
+                raise ComponentCatalogError(
+                    f"Error parsing row {idx} in '{csv_path.name}': {str(e)}"
+                ) from e
+
+        if encoding_used.lower() == "cp1252":
+            print(
+                f"[WARN] Component catalogue '{csv_path.name}' loaded using cp1252 fallback. "
+                f"Recommend re-saving as UTF-8."
+            )
+
         return rows
+
+    except ComponentCatalogError:
+        raise
+    except Exception as e:
+        raise ComponentCatalogError(
+            f"Failed to load component CSV '{csv_path.name}'. Unexpected error: {str(e)}"
+        ) from e
 
 def _ensure_csv_with_header(csv_path: Path) -> None:
     if not csv_path.exists():

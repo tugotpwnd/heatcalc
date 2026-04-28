@@ -73,6 +73,323 @@ class BusbarPhysicsState:
 
     f_W_per_m: float
 
+@dataclass(frozen=True)
+class JointSelfCoolingState:
+    name: str
+    joint_type: str
+
+    # Dimensions for side 1
+    width1_m: float
+    thickness1_m: float
+    count1: int
+    convection_mode1: str
+    L_char1_m: float
+
+    # Dimensions for side 2
+    width2_m: float
+    thickness2_m: float
+    count2: int
+    convection_mode2: str
+    L_char2_m: float
+
+    A_raw_m2: float
+    A_buried_single_side_m2: float
+    A_exposed_m2: float
+
+    W_conv_eff_W_m2: float
+    P_conv_W: float
+
+    eps_rel: float
+    W_rad_W_m2: float
+    P_rad_W: float
+
+def _face_fluxes_natural_convection(
+    *,
+    width_m: float,
+    thickness_m: float,
+    L_char_m: float,
+    convection_mode: str,
+    theta_K: float,
+) -> tuple[float, float]:
+    """
+    Return face heat fluxes (W/m²) for:
+        - major faces
+        - minor faces
+
+    This mirrors the same convection logic used in compute_busbar_physics(),
+    but without any bar-count or per-metre assumptions.
+    """
+    w = max(float(width_m), 1e-12)
+    t = max(float(thickness_m), 1e-12)
+    Lc = max(float(L_char_m), 1e-12)
+
+    if convection_mode == "vertical":
+        L_major_mm = Lc * 1000.0
+        L_minor_mm = Lc * 1000.0
+
+        W_major = NATURAL_CONV_VERTICAL * (theta_K ** 1.25) / (L_major_mm ** 0.25)
+        W_minor = NATURAL_CONV_VERTICAL * (theta_K ** 1.25) / (L_minor_mm ** 0.25)
+
+    else:
+        # Horizontal busbar:
+        # - major faces treated as vertical side faces
+        # - minor faces treated as horizontal top/bottom faces
+        L_major_mm = w * 1000.0
+        L_minor_mm = t * 1000.0
+
+        W_major = NATURAL_CONV_VERTICAL * (theta_K ** 1.25) / (L_major_mm ** 0.25)
+        W_minor = NATURAL_CONV_HORIZONTAL * (theta_K ** 1.25) / (L_minor_mm ** 0.25)
+
+    return float(W_major), float(W_minor)
+
+
+def _surface_area_split_for_length(
+    *,
+    width_m: float,
+    thickness_m: float,
+    length_m: float,
+    count: int = 1,
+) -> tuple[float, float, float]:
+    """
+    External surface areas over a finite local length:
+        A_major = two wide faces
+        A_minor = two thin faces
+    """
+    n = max(1, int(count))
+    L = max(float(length_m), 0.0)
+    w = max(float(width_m), 0.0)
+    t = max(float(thickness_m), 0.0)
+
+    A_major = 2.0 * w * L * n
+    A_minor = 2.0 * t * L * n
+    return float(A_major), float(A_minor), float(A_major + A_minor)
+
+
+def _joint_buried_contact_area_single_side(
+    *,
+    joint_type: str,
+    width1_m: float,
+    thickness1_m: float,
+    width2_m: float,
+    thickness2_m: float,
+    length_m: float,
+    n_interfaces: int,
+) -> float:
+    """
+    Physical buried contact area on ONE side of the joint across all interfaces.
+
+    This is the area to subtract once from side A and once from side B, i.e.
+    total exposed-area reduction = 2 * A_buried_single_side.
+    """
+    jt = (joint_type or "bolted_overlap").strip().lower()
+    n_int = max(1, int(n_interfaces))
+
+    w1 = max(float(width1_m), 0.0)
+    t1 = max(float(thickness1_m), 0.0)
+    w2 = max(float(width2_m), 0.0)
+    t2 = max(float(thickness2_m), 0.0)
+    L = max(float(length_m), 0.0)
+
+    if jt == "bolted_overlap":
+        # Face-to-face overlap over the local joint length
+        A_single = min(w1, w2) * L
+
+    elif jt == "sandwich_joint":
+        # Treat sandwich as face-to-face buried area over the local joint length
+        a = min(w1, w2)
+        l = min(t1, t2)
+        A_single = a * l
+
+    elif jt == "clamped_edge":
+        # Local edge/face patch using the same characteristic contact form
+        # currently used for the clamped thermal contact model
+        a = min(t1, t2)
+        l = max(t1, t2)
+        A_single = a * l
+
+    else:
+        raise ValueError(f"Unsupported joint_type: {joint_type}")
+
+    return float(A_single * n_int)
+
+
+def compute_joint_self_cooling(
+    *,
+    joint_type: str,
+    width1_m: float,
+    thickness1_m: float,
+    count1: int,
+    width2_m: float,
+    thickness2_m: float,
+    count2: int,
+    length_m: float,
+    T_bus_C: float,
+    T_air_C: float,
+    eps_bus: float,
+    eps_env: float,
+    convection_mode1: str,
+    convection_mode2: str,
+    L_char1_m: float,
+    L_char2_m: float,
+    name: str = "joint",
+    debug: bool = False,
+) -> JointSelfCoolingState:
+    """
+    Joint self-cooling model with SIDE-SPECIFIC convection behaviour.
+
+    Interpretation
+    --------------
+    The joint consists of two participating bar sets:
+        side 1 = host-side bar set
+        side 2 = other-side bar set
+
+    Each side may have its own:
+        - convection orientation (vertical / horizontal)
+        - convection characteristic length
+
+    Method
+    ------
+    1) Compute the normal external surface area of each participating bar set
+       over the local joint length.
+    2) Subtract the buried contact area from both mating sides:
+           A_exposed = A_raw_total - 2 * A_contact_single_side
+    3) Compute raw convection on each side using that side's own convection mode
+       and characteristic length.
+    4) Collapse to an effective convection flux over the raw total area.
+    5) Apply that effective flux to the reduced exposed area.
+    6) Apply radiation using the same exposed area.
+
+    Notes
+    -----
+    - length_m is the LOCAL JOINT LENGTH used for exposed-area evaluation.
+    - L_char1_m / L_char2_m are the SIDE-SPECIFIC convection characteristic
+      lengths used in the natural convection correlations.
+    """
+
+    n1 = max(1, int(count1))
+    n2 = max(1, int(count2))
+    L = max(float(length_m), 1e-12)
+
+    theta = max(float(T_bus_C) - float(T_air_C), 0.0)
+
+    # ------------------------------------------------------------------
+    # Raw external surface areas over the local joint region
+    # ------------------------------------------------------------------
+    A1_major, A1_minor, A1_total = _surface_area_split_for_length(
+        width_m=width1_m,
+        thickness_m=thickness1_m,
+        length_m=L,
+        count=n1,
+    )
+
+    A2_major, A2_minor, A2_total = _surface_area_split_for_length(
+        width_m=width2_m,
+        thickness_m=thickness2_m,
+        length_m=L,
+        count=n2,
+    )
+
+    A_raw_total = A1_total + A2_total
+
+    # ------------------------------------------------------------------
+    # Buried contact area
+    # ------------------------------------------------------------------
+    jt = (joint_type or "bolted_overlap").strip().lower()
+
+    if jt == "bolted_overlap":
+        n_interfaces = min(n1, n2)
+    elif jt in ("clamped_edge", "sandwich_joint"):
+        n_interfaces = n1 * n2
+    else:
+        raise ValueError(f"Unsupported joint_type: {joint_type}")
+
+    A_buried_single_side = _joint_buried_contact_area_single_side(
+        joint_type=jt,
+        width1_m=width1_m,
+        thickness1_m=thickness1_m,
+        width2_m=width2_m,
+        thickness2_m=thickness2_m,
+        length_m=L,
+        n_interfaces=n_interfaces,
+    )
+
+    # remove buried area from BOTH mating sides
+    A_exposed_total = max(A_raw_total - 2.0 * A_buried_single_side, 1e-12)
+
+    # ------------------------------------------------------------------
+    # Raw convection behaviour under "normal" separate-bar conditions
+    # ------------------------------------------------------------------
+    W1_major, W1_minor = _face_fluxes_natural_convection(
+        width_m=width1_m,
+        thickness_m=thickness1_m,
+        L_char_m=L_char1_m,
+        convection_mode=convection_mode1,
+        theta_K=theta,
+    )
+
+    W2_major, W2_minor = _face_fluxes_natural_convection(
+        width_m=width2_m,
+        thickness_m=thickness2_m,
+        L_char_m=L_char2_m,
+        convection_mode=convection_mode2,
+        theta_K=theta,
+    )
+
+    P1_conv_raw = W1_major * A1_major + W1_minor * A1_minor
+    P2_conv_raw = W2_major * A2_major + W2_minor * A2_minor
+    P_conv_raw_total = P1_conv_raw + P2_conv_raw
+
+    # Effective raw convection flux over the total raw area
+    W_conv_eff = P_conv_raw_total / max(A_raw_total, 1e-12)
+
+    # Apply the same mean flux to the reduced exposed area
+    P_conv = W_conv_eff * A_exposed_total
+
+    # ------------------------------------------------------------------
+    # Radiation using the same exposed area
+    # ------------------------------------------------------------------
+    eps_rel = relative_emissivity(eps_bus, eps_env)
+    T_K = float(T_bus_C) + 273.15
+    Ta_K = float(T_air_C) + 273.15
+
+    W_rad = SIGMA * eps_rel * max(T_K**4 - Ta_K**4, 0.0)
+    P_rad = W_rad * A_exposed_total
+
+    state = JointSelfCoolingState(
+        name=str(name),
+        joint_type=jt,
+        width1_m=float(width1_m),
+        thickness1_m=float(thickness1_m),
+        count1=int(n1),
+        convection_mode1=str(convection_mode1),
+        L_char1_m=float(L_char1_m),
+        width2_m=float(width2_m),
+        thickness2_m=float(thickness2_m),
+        count2=int(n2),
+        convection_mode2=str(convection_mode2),
+        L_char2_m=float(L_char2_m),
+        A_raw_m2=float(A_raw_total),
+        A_buried_single_side_m2=float(A_buried_single_side),
+        A_exposed_m2=float(A_exposed_total),
+        W_conv_eff_W_m2=float(W_conv_eff),
+        P_conv_W=float(P_conv),
+        eps_rel=float(eps_rel),
+        W_rad_W_m2=float(W_rad),
+        P_rad_W=float(P_rad),
+    )
+
+    if debug:
+        print(
+            f"[joint_self_cooling] {state.name} | type={state.joint_type} | dT={theta:.2f}K\n"
+            f"  Side1: {state.count1}x({state.width1_m*1000:.1f}x{state.thickness1_m*1000:.1f}mm) | "
+            f"mode={state.convection_mode1} | Lchar={state.L_char1_m:.3f}m\n"
+            f"  Side2: {state.count2}x({state.width2_m*1000:.1f}x{state.thickness2_m*1000:.1f}mm) | "
+            f"mode={state.convection_mode2} | Lchar={state.L_char2_m:.3f}m\n"
+            f"  Areas: Araw={state.A_raw_m2:.6f} m² | Aburied(1side)={state.A_buried_single_side_m2:.6f} m² | Aexp={state.A_exposed_m2:.6f} m²\n"
+            f"  Heat: Wconv_eff={state.W_conv_eff_W_m2:.3f} W/m² | Pconv={state.P_conv_W:.4f} W | Prad={state.P_rad_W:.4f} W"
+        )
+
+    return state
 
 def compute_busbar_physics(
     *,

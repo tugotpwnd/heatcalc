@@ -8,7 +8,7 @@ import numpy as np
 from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
 
-from heatcalc.core.busbar_geometry import BusbarGeometry
+from heatcalc.core.busbar_geometry import BusbarGeometry, axial_conductance
 from heatcalc.core.busbar_joint_resistance import (
     bolted_overlap_joint_resistance,
     clamped_edge_joint_resistance,
@@ -19,7 +19,7 @@ from heatcalc.core.busbar_physics import (
     resistance_20C_per_m,
     resistance_T_per_m,
     BusbarThermalInputs,
-    ALPHA_CU,
+    ALPHA_CU, compute_joint_self_cooling,
 )
 
 K_CU = 400.0
@@ -55,6 +55,7 @@ class ThermalSolveResult:
     min_T_C: float
     edge_results: list[ThermalEdgeResult]
     T_vector_C: np.ndarray
+    segment_rows: list[dict] | None = None
 
 from typing import Any
 
@@ -81,6 +82,8 @@ class ThermalSeg:
 
 
 def _shared_node(a, b) -> bool:
+    if hasattr(a, "_shared_node"):
+        return a._shared_node(b)
     return (
         a.u == b.u or
         a.u == b.v or
@@ -90,21 +93,11 @@ def _shared_node(a, b) -> bool:
 
 
 def _axial_conductance(seg_a: ThermalSeg, seg_b: ThermalSeg) -> float:
-    """
-    Finite axial copper conductance between two continuous copper segments
-    sharing a node. This replaces the old G=1e12 shortcut.
-    """
-    A_a = (float(seg_a.width_mm) / 1000.0) * (float(seg_a.thickness_mm) / 1000.0)
-    A_b = (float(seg_b.width_mm) / 1000.0) * (float(seg_b.thickness_mm) / 1000.0)
-
-    La = max(float(seg_a.length_m), 1e-6)
-    Lb = max(float(seg_b.length_m), 1e-6)
-
-    R_a = 0.5 * La / (K_CU * max(A_a, 1e-12))
-    R_b = 0.5 * Lb / (K_CU * max(A_b, 1e-12))
-    R_total = R_a + R_b
-
-    return 1.0 / max(R_total, 1e-12)
+    return axial_conductance(
+        seg_a.width_mm, seg_a.thickness_mm, seg_a.length_m,
+        seg_b.width_mm, seg_b.thickness_mm, seg_b.length_m,
+        K_CU
+    )
 
 
 def _build_segmented_thermal_edges(
@@ -359,51 +352,60 @@ def joint_contact_area(width_m, thickness_m, joint_spec):
     # Thermal contact area model for busbar joints
     # ---------------------------------------------------------------------------
     #
-    # This function estimates the *thermal contact area* between two busbar
-    # segments for the purpose of computing thermal conduction across a joint.
+    # This function returns the effective *thermal contact area* used to conduct
+    # heat between an explicit joint thermal segment and the adjoining busbar
+    # thermal segments.
     #
-    # Important distinction:
+    # IMPORTANT:
+    # Electrical and thermal parallel-path behaviour are intentionally treated
+    # differently.
     #
-    # Electrical and thermal behaviour of parallel busbars are handled differently.
+    # Electrical resistance:
+    #   The joint-resistance functions already account for multiple parallel
+    #   current paths through the joint interface(s). The returned electrical
+    #   resistance is therefore an equivalent resistance for the full connected
+    #   parallel set.
     #
-    # Electrical:
-    #   Parallel bars create multiple current paths through the joint interface.
-    #   The electrical equivalent resistance therefore reduces as:
+    # Thermal conduction:
+    #   Here we are modelling the *physical area available for heat transfer*
+    #   across the joint interfaces. Where multiple bars physically contact
+    #   multiple bars (for example N1 parallel bars clamped to N2 parallel bars),
+    #   the total conductive contact area increases with the number of real
+    #   interfaces.
     #
-    #       R_eq = R_single / (N1 * N2)
+    #   Therefore, for joint types where each bar on one side physically mates
+    #   with each bar on the other side, the thermal contact area is multiplied by:
     #
-    #   where N1 and N2 are the number of parallel bars on each side.
+    #       n_interfaces = N1 * N2
     #
-    # Thermal:
-    #   The thermal model in this solver represents each bus segment as a
-    #   *single lumped thermal node*, even if multiple bars exist in parallel.
-    #   Because of this lumped representation, multiplying the thermal contact
-    #   area by the number of bar interfaces would artificially increase the
-    #   thermal conductance between nodes and effectively double-count heat flow.
+    #   This is appropriate for clamped-edge and sandwich-style joints where the
+    #   parallel bar sets form multiple real conduction paths through contact.
     #
-    #   Therefore:
-    #       - Electrical resistance is reduced for parallel bar interfaces
-    #       - Thermal contact area is **not multiplied by bar count**
+    # The returned area is used only in the thermal link conductance:
     #
-    #   The contact area returned here represents the physical interface area
-    #   of a single joint region between the two connected bus segments.
+    #       G = 1 / (R_cu + R_contact)
+    #
+    # where:
+    #
+    #       R_cu      = L_char / (k_cu * A_contact)
+    #       R_contact = 1 / (h_contact * A_contact)
     #
     # Joint types handled:
     #
     #   bolted_overlap:
-    #       Contact area is based on the overlap area minus bolt holes,
-    #       scaled by the CSA reduction factor.
+    #       Contact area is based on effective overlap area, reduced by bolt-hole
+    #       area and optionally scaled by csa_factor.
     #
     #   clamped_edge:
-    #       Edge-to-edge contact between bars. The effective patch is taken as
-    #       thickness × thickness of the contacting bars.
+    #       Contact patch is approximated as a thickness-based edge/face region:
+    #           a = min(t1, t2)
+    #           l = max(t1, t2)
+    #       and multiplied by N1 * N2 interfaces.
     #
-    # The returned area is used only to compute thermal conductance:
-    #
-    #       G = 1 / (R_cu + R_contact)
-    #
-    # where R_contact = 1 / (h_contact * A_contact).
-    #
+    #   sandwich_joint:
+    #       Thermal contact area is currently approximated using the same
+    #       thickness-based contact form as the clamped case, again multiplied by
+    #       N1 * N2 interfaces.
     # ---------------------------------------------------------------------------
 
     joint_type = getattr(joint_spec, "joint_type", "bolted_overlap")
@@ -448,6 +450,7 @@ def joint_contact_area(width_m, thickness_m, joint_spec):
         return max(A_contact, 1e-9)
 
     elif joint_type == "sandwich_joint":
+        this_w_mm = float(width_m) * 1000.0
         other_w_mm = getattr(joint_spec, "other_bar_width_mm", None)
         other_t_mm = getattr(joint_spec, "other_bar_thickness_mm", None)
         other_n = max(1, int(getattr(joint_spec, "other_bar_count", 1) or 1))
@@ -457,8 +460,8 @@ def joint_contact_area(width_m, thickness_m, joint_spec):
         other_t_mm_val = float(other_t_mm) if other_t_mm is not None else this_t_mm
 
         # Sandwich joint thermal contact area - using similar logic to clamped for now
-        a_mm = min(this_t_mm, other_t_mm_val)
-        l_mm = max(this_t_mm, other_t_mm_val)
+        a_mm = min(this_w_mm, other_w_mm)
+        l_mm = min(this_t_mm, other_t_mm_val)
 
         n_interfaces = this_n * other_n
         A_contact = (a_mm * l_mm * n_interfaces) * 1e-6  # mm² -> m²
@@ -599,8 +602,9 @@ def solve_thermal(
     """
 
     cross_link_debug = []
-    physics_debug = True
+    physics_debug = False
     joint_debug = False
+    joint_cooling_debug = True
 
     def edge_air(edge_id):
         if isinstance(air_temp_C, dict):
@@ -631,7 +635,11 @@ def solve_thermal(
     # the same physical busbar use a consistent convection characteristic length.
     # -------------------------------------------------------------------------
     edge_length_map = {
-        int(e.id): float(e.length_m)
+        int(e.id): float(
+            getattr(e, "physical_run_length_m", None)
+            if getattr(e, "physical_run_length_m", None) not in (None, 0.0)
+            else e.length_m
+        )
         for e in graph.edges.values()
     }
 
@@ -728,7 +736,26 @@ def solve_thermal(
             ia = seg_map[sa.seg_id]
             ib = seg_map[sb.seg_id]
 
-            # Jointed connection: retain contact-based model
+            # Jointed connection:
+            # If either segment is an explicit joint element, do not use the normal axial
+            # copper conductance model. Instead, represent the thermal path between the
+            # joined elements as a series combination of:
+            #
+            #   1) copper spreading/constriction resistance through the local contact zone
+            #   2) thermal contact resistance across the mating interface
+            #
+            # so that:
+            #
+            #       G_joint = 1 / (R_cu + R_contact)
+            #
+            # with:
+            #
+            #       R_cu      = L_char / (K_CU * A_contact)
+            #       R_contact = 1 / (h_contact * A_contact)
+            #
+            # The contact area A_contact is joint-type dependent and may scale with the
+            # number of physical bar-to-bar interfaces for parallel bar sets.
+
             if thermal_nodes[ia]["is_joint"] or thermal_nodes[ib]["is_joint"]:
                 if thermal_nodes[ia]["is_joint"]:
                     A_contact = joint_contact_area(
@@ -794,28 +821,261 @@ def solve_thermal(
     T_floor = node_air.copy()
     T = T_floor + 20.0
 
+    def _joint_side_edges(base_edge_id: int, joint_spec, host_geom_mm, other_geom_mm):
+        return graph.get_joint_side_edges(base_edge_id)
+
+    def _side_vertical_run_below_from_joint(side_edges, joint_edge):
+        runs = []
+        for e in side_edges:
+            for shared_node in e.shared_endpoints(joint_edge):
+                run = graph.get_downward_vertical_run_from_node(
+                    current_node_id=shared_node,
+                    visited_edge_ids={joint_edge.id},
+                )
+                if run > 0.0:
+                    runs.append(run)
+        return float(max(runs)) if runs else None
+
+    def _infer_side_convection_from_edges(
+        edges,
+        *,
+        default_mode: str,
+        default_width_m: float,
+        default_lchar_m: float,
+        joint_cooling_debug: bool = False,
+    ):
+        """
+        Infer a side-specific convection mode and characteristic length from the
+        actual adjoining graph edges on that side of the joint.
+
+        Vertical side:
+            use the MEAN adjacent vertical run length.
+            - bottom/end joint -> available run above/below
+            - midpoint joint   -> average of upper/lower adjacent runs
+
+        Horizontal side:
+            use bar width, consistent with the existing horizontal bar model.
+        """
+        if not edges:
+            mode = str(default_mode)
+            if mode == "horizontal":
+                return mode, max(float(default_width_m), 1e-12)
+            return mode, max(float(default_lchar_m), 1e-12)
+
+        vert_lengths = []
+        horiz_lengths = []
+        horiz_widths = []
+
+        for e in edges:
+            mode_e = graph.get_edge_convection_mode(e)
+            if mode_e == "vertical":
+                vert_lengths.append(float(e.length_m))
+            else:
+                horiz_lengths.append(float(e.length_m))
+                horiz_widths.append(float(e.width_mm) / 1000.0)
+
+        # Choose dominant orientation on this side by total attached run length
+        sum_vert = sum(vert_lengths)
+        sum_horiz = sum(horiz_lengths)
+
+        if sum_vert >= sum_horiz and len(vert_lengths) > 0:
+            mode = "vertical"
+            # midpoint joint on a continuous run naturally tends toward half-height
+            l_char = sum(vert_lengths) / len(vert_lengths)
+            if joint_cooling_debug:
+                 print(f"    - Dominant mode: vertical (avg of {len(vert_lengths)} edges: {l_char:.4f}m)")
+        else:
+            mode = "horizontal"
+            l_char = (
+                sum(horiz_widths) / len(horiz_widths)
+                if len(horiz_widths) > 0 else
+                float(default_width_m)
+            )
+            if joint_cooling_debug:
+                 print(f"    - Dominant mode: horizontal (lchar={l_char:.4f}m)")
+
+        return mode, max(float(l_char), 1e-12)
+
+    def _infer_side_convection_for_joint(
+        side_edges,
+        joint_edge,
+        *,
+        default_mode: str,
+        default_width_m: float,
+        default_lchar_m: float,
+        side_name: str = "unknown",
+    ):
+        """
+        Joint-side convection inference.
+        """
+        if joint_cooling_debug:
+            print(f"  Inference for side {side_name}:")
+
+        run_below = _side_vertical_run_below_from_joint(side_edges, joint_edge)
+        if joint_cooling_debug and run_below is not None:
+             print(f"    - Found vertical run below joint: {run_below:.4f}m")
+
+        if run_below is not None and run_below > 0.0:
+            return "vertical", max(float(run_below), 1e-12)
+
+        return _infer_side_convection_from_edges(
+            side_edges,
+            default_mode=default_mode,
+            default_width_m=default_width_m,
+            default_lchar_m=default_lchar_m,
+        )
+
+    def joint_cooling_state(nd, Ti: float, Tai: float):
+        js = nd["joint_spec"]
+        if js is None:
+            raise ValueError("Joint edge missing joint_spec for self-cooling model.")
+
+        other_w_mm = getattr(js, "other_bar_width_mm", None)
+        other_t_mm = getattr(js, "other_bar_thickness_mm", None)
+        other_n = max(1, int(getattr(js, "other_bar_count", 1) or 1))
+
+        w2 = (float(other_w_mm) / 1000.0) if other_w_mm is not None else nd["w"]
+        t2 = (float(other_t_mm) / 1000.0) if other_t_mm is not None else nd["t"]
+
+        host_geom_mm = (
+            float(nd["w"]) * 1000.0,
+            float(nd["t"]) * 1000.0,
+            max(1, int(nd.get("bars_in_parallel", 1))),
+        )
+
+        other_geom_mm = None
+        if other_w_mm is not None and other_t_mm is not None:
+            other_geom_mm = (
+                float(other_w_mm),
+                float(other_t_mm),
+                other_n,
+            )
+
+        ej = graph.edges[int(nd["base_edge_id"])]
+
+        host_edges, other_edges = _joint_side_edges(
+            base_edge_id=int(nd["base_edge_id"]),
+            joint_spec=js,
+            host_geom_mm=host_geom_mm,
+            other_geom_mm=other_geom_mm,
+        )
+
+        # ---------------------------------------------------------
+        # Host-side convection metadata
+        #
+        # Final rule:
+        #   If this side is connected to any vertical bus run below the joint,
+        #   the characteristic length is the TOTAL contiguous vertical run
+        #   below the joint, stopping at any horizontal turn.
+        # ---------------------------------------------------------
+        mode1, lchar1 = _infer_side_convection_for_joint(
+            host_edges,
+            ej,
+            default_mode=nd["geom"].convection_mode,
+            default_width_m=nd["w"],
+            default_lchar_m=nd["geom"].L_char_m,
+            side_name="host",
+        )
+
+        # ---------------------------------------------------------
+        # Other-side convection metadata
+        #
+        # Same rule applies here as well. If the other connected side also
+        # sits on a vertical bus run below the joint, use that full downward
+        # contiguous vertical run. Otherwise fall back sensibly.
+        # ---------------------------------------------------------
+        mode2, lchar2 = _infer_side_convection_for_joint(
+            other_edges,
+            ej,
+            default_mode=mode1,
+            default_width_m=w2,
+            default_lchar_m=lchar1 if mode1 == "vertical" else w2,
+            side_name="other",
+        )
+
+        if joint_cooling_debug:
+            print(f"[joint_cooling_state] {f'seg-{nd['seg_id']}'}")
+            print(f"  T_joint={Ti:.2f} C | T_air={Tai:.2f} C | dT={Ti - Tai:.2f} K")
+            print(f"  Side1 (host): mode={mode1}, Lchar={lchar1:.4f}m")
+            print(f"  Side2 (other): mode={mode2}, Lchar={lchar2:.4f}m")
+
+        return compute_joint_self_cooling(
+            joint_type=getattr(js, "joint_type", "bolted_overlap"),
+            width1_m=nd["w"],
+            thickness1_m=nd["t"],
+            count1=max(1, int(nd.get("bars_in_parallel", 1))),
+            width2_m=w2,
+            thickness2_m=t2,
+            count2=other_n,
+            length_m=nd["L"],  # local joint length for exposed-area evaluation
+            T_bus_C=Ti,
+            T_air_C=Tai,
+            eps_bus=therm.eps_bus,
+            eps_env=therm.eps_env,
+            convection_mode1=mode1,
+            convection_mode2=mode2,
+            L_char1_m=lchar1,
+            L_char2_m=lchar2,
+            name=f"seg-{nd['seg_id']}",
+            debug=joint_cooling_debug,
+        )
+
     def calc_terms(i: int, Tvec: np.ndarray):
         nd = thermal_nodes[i]
         Ti = float(Tvec[i])
         Tai = float(node_air[i])
 
-        st = compute_busbar_physics(
-            geom=nd["geom"],
-            therm=therm,
-            T_bus_C=Ti,
-            T_air_C=Tai,
-            I_override_A=nd["I"],
-            debug=physics_debug,
-        )
+        if nd["is_joint"]:
+            cool = joint_cooling_state(nd, Ti, Tai)
+            st = cool
+            P_conv = cool.P_conv_W
+            P_rad = cool.P_rad_W
 
-        P_conv = st.P_conv_W_per_m * nd["L"]
-        P_rad = st.P_rad_W_per_m * nd["L"]
+            if joint_cooling_debug:
+                print(f"[joint_thermal_loss] {f'seg-{nd['seg_id']}'}")
+                print(f"  P_conv={P_conv:.4f} W | P_rad={P_rad:.4f} W | P_total_loss={P_conv + P_rad:.4f} W")
+        else:
+            st = compute_busbar_physics(
+                geom=nd["geom"],
+                therm=therm,
+                T_bus_C=Ti,
+                T_air_C=Tai,
+                I_override_A=nd["I"],
+                debug=physics_debug,
+            )
+            P_conv = st.P_conv_W_per_m * nd["L"]
+            P_rad = st.P_rad_W_per_m * nd["L"]
+
         P_out = P_conv + P_rad
 
+        # Explicit joint heat generation:
+        # The joint replaces the equivalent straight bus section over this local
+        # region. Its Joule heating is therefore based on the solved joint resistance
+        # itself, not on an added straight-bus resistance term.
+        #
+        #       P_gen_joint = I^2 * R_joint(T)
+        #
+        # where R_joint(T) is the temperature-adjusted equivalent resistance of the
+        # full joint, including any parallel-bar interface effects already embedded in
+        # the joint-resistance function.
         if nd["is_joint"]:
             R20 = joint_R20_ohm(nd, debug=joint_debug)
             RT = R20 * (1.0 + ALPHA_CU * (Ti - 20.0))
             P_gen = (nd["I"] ** 2) * RT
+
+            if joint_cooling_debug:
+                # Comparison with equivalent straight bus section
+                R20_bus = resistance_20C_per_m(nd["w"], nd["t"])
+                n_bars = max(1, int(nd.get("bars_in_parallel", 1)))
+                R20_bus_total = (R20_bus * nd["L"] * therm.S_ac) / n_bars
+                RT_bus = R20_bus_total * (1.0 + ALPHA_CU * (Ti - 20.0))
+                P_gen_bus = (nd["I"] ** 2) * RT_bus
+
+                print(f"[joint_heat_gen] {f'seg-{nd['seg_id']}'} (edge {nd['base_edge_id']})")
+                print(f"  T_joint={Ti:.2f} C | I={nd['I']:.1f} A")
+                print(f"  Resistance (20C): Joint={R20:.4e} Ω | Bus_equiv={R20_bus_total:.4e} Ω | Ratio={R20/max(R20_bus_total, 1e-18):.2f}")
+                print(f"  Resistance (T):   Joint={RT:.4e} Ω  | Bus_equiv={RT_bus:.4e} Ω  | Ratio={RT/max(RT_bus, 1e-18):.2f}")
+                print(f"  Heat Gen:         Joint={P_gen:.4f} W  | Bus_equiv={P_gen_bus:.4f} W  | Extra={P_gen - P_gen_bus:.4f} W")
         else:
             R20 = resistance_20C_per_m(nd["w"], nd["t"])
             RT = resistance_T_per_m(R20, Ti)
@@ -842,6 +1102,10 @@ def solve_thermal(
                 })
 
         residual = P_gen - P_out + P_cond
+        
+        if joint_debug and nd["is_joint"]:
+             print(f"  P_net={residual:.6f} W (gen={P_gen:.4f}, out={P_out:.4f}, cond={P_cond:.4f})")
+
         return st, P_gen, P_conv, P_rad, P_cond, residual
 
     def residual(Tvec: np.ndarray) -> np.ndarray:
@@ -861,6 +1125,14 @@ def solve_thermal(
 
     def dPout_dT_fd(i: int, nd, Ti: float, h: float = 0.05) -> float:
         Tai = float(node_air[i])
+
+        if nd["is_joint"]:
+            cool0 = joint_cooling_state(nd, Ti, Tai)
+            cool1 = joint_cooling_state(nd, Ti + h, Tai)
+
+            P0 = cool0.P_conv_W + cool0.P_rad_W
+            P1 = cool1.P_conv_W + cool1.P_rad_W
+            return (P1 - P0) / h
 
         st0 = compute_busbar_physics(
             geom=nd["geom"],

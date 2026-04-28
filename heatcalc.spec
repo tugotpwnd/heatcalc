@@ -18,7 +18,6 @@ datas = []
 datas += [
     ("heatcalc/data/*.csv", "heatcalc/data"),
     ("heatcalc/data/*.png", "heatcalc/data"),
-    ("heatcalc/data/*.gif", "heatcalc/data"),
 ]
 
 # ---- Assets (icons, PDFs, images) ----
@@ -67,7 +66,6 @@ a = Analysis(
         # Trim optional stuff you don't use at startup
         "tkinter",
         "pytest",
-        "unittest",
         "numpy.tests",
         "PIL.tests",
     ],

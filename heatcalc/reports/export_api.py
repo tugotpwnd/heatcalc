@@ -207,6 +207,7 @@ def build_tier_compliance_results(
         tier = next(t for t in tiers if str(getattr(t, "name")) == th.tag)
         tier_res = {
             "T_top": th.T_top,
+            "limit_C": th.max_C,
         }
 
         comp = evaluate_tier_compliance(

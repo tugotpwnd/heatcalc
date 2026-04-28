@@ -20,7 +20,6 @@ from ..utils.qt import signals
 from .project_meta_widget import ProjectMetaWidget
 from .switchboard_tab import SwitchboardTab
 from .curvefit_tab import CurveFitTab
-from .temp_rise_tab import TempRiseTab
 from .toast_message import ToastMessage
 from .tier_select_dialog import select_tiers_for_report
 from .louvre_definition_tab import LouvreDefinitionTab
@@ -82,16 +81,6 @@ class MainWindow(QMainWindow):
         self.switchboard_tab.tierContentsChanged.connect(
             self._project_changed
         )
-
-        # ---------------------------------------------------------------------------------------------------
-
-        # Temperature rise (per-tier) – manual calculate
-        self.temp_tab = TempRiseTab(
-            self.switchboard_tab.scene,
-            self.project,
-            parent=self
-        )
-        self.tabs.addTab(self.temp_tab, "Temperature rise")
 
         # ---------------------------------------------------------------------------------------------------
         # Louvre tab
@@ -326,12 +315,6 @@ class MainWindow(QMainWindow):
                 self.tabs.removeTab(idx)
             self.curvefit_tab.setParent(None)
 
-        if self.temp_tab:
-            idx = self.tabs.indexOf(self.temp_tab)
-            if idx != -1:
-                self.tabs.removeTab(idx)
-            self.temp_tab.setParent(None)
-
         if getattr(self, "louvre_tab", None):
             idx = self.tabs.indexOf(self.louvre_tab)
             if idx != -1:
@@ -357,14 +340,6 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self.tabs.insertTab(2, self.curvefit_tab, "Curve fitting")
-
-        # ---- Recreate Temperature Rise -------------------------------------
-        self.temp_tab = TempRiseTab(
-            self.switchboard_tab.scene,
-            self.project,
-            parent=self
-        )
-        self.tabs.insertTab(3, self.temp_tab, "Temperature rise")
 
         # ---- Recreate Louvre -------------------------------------
         self.louvre_tab = LouvreDefinitionTab(

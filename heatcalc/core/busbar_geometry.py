@@ -218,3 +218,26 @@ def build_busbar_segments(bus: BusbarSpec, breakpoints: List[float] | None = Non
             seg.extra_R20_ohm_per_m += R_per_m
 
     return segments
+def axial_conductance(
+    width_a_mm: float,
+    thickness_a_mm: float,
+    length_a_m: float,
+    width_b_mm: float,
+    thickness_b_mm: float,
+    length_b_m: float,
+    k_cu: float = 400.0,
+) -> float:
+    """
+    Finite axial copper conductance between two continuous copper segments.
+    """
+    A_a = (float(width_a_mm) / 1000.0) * (float(thickness_a_mm) / 1000.0)
+    A_b = (float(width_b_mm) / 1000.0) * (float(thickness_b_mm) / 1000.0)
+
+    La = max(float(length_a_m), 1e-6)
+    Lb = max(float(length_b_m), 1e-6)
+
+    R_a = 0.5 * La / (k_cu * max(A_a, 1e-12))
+    R_b = 0.5 * Lb / (k_cu * max(A_b, 1e-12))
+    R_total = R_a + R_b
+
+    return 1.0 / max(R_total, 1e-12)

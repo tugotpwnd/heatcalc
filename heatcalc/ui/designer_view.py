@@ -311,9 +311,10 @@ class DesignerView(QGraphicsView):
         
         # If we found a bus item, let it handle its own context menu
         if target_item:
-            # Ensure the bus item handles the context menu event
-            # Use the event directly
-            target_item.contextMenuEvent(event)
+            # Let the scene/view dispatch the event to the graphics item correctly
+            # Note: We must map the event to the scene coordinates if we were to manual call it, 
+            # but super().contextMenuEvent(event) in QGraphicsView handles mapping and dispatching to items.
+            super().contextMenuEvent(event)
             return
 
         # 1. Update active tier based on right-click location if no bus item found
@@ -872,11 +873,14 @@ class DesignerView(QGraphicsView):
                 self.scene().addItem(marker)
                 self._solver_overlay_items.append(marker)
 
+
     def apply_thermal_results(self, graph_obj, graph_result, Tmin=None, Tmax=None):
+
+        edge_rows = list(graph_result.get("edges", []))
 
         temps = [
             float(e.get("T_C", 0.0))
-            for e in graph_result.get("edges", [])
+            for e in edge_rows
         ]
 
         local_Tmin = min(temps) if temps else 40.0
@@ -890,16 +894,25 @@ class DesignerView(QGraphicsView):
         if hasattr(self, "legend"):
             self.legend.set_temperature_range(Tmin, Tmax)
 
-        # clear previous segment results
+        # clear previous segment results / UI caches
         for e in graph_obj.edges.values():
             if e.ui_item and hasattr(e.ui_item, "thermal_results"):
                 e.ui_item.thermal_results.clear()
+            if e.ui_item is not None:
+                e.ui_item._thermal_segments = []
 
-        line_segments = {}
+        air_payload = graph_result.get("T_air_C", 40.0)
+        if isinstance(air_payload, dict):
+            try:
+                ambient_C = float(sum(float(v) for v in air_payload.values()) / max(len(air_payload), 1))
+            except Exception:
+                ambient_C = 40.0
+        else:
+            ambient_C = float(air_payload)
 
-        ambient_C = float(graph_result.get("T_air_C", 40.0))
+        line_samples = {}
 
-        for e in graph_result.get("edges", []):
+        for e in edge_rows:
 
             edge_id = e.get("edge_id")
             edge_obj = graph_obj.edges.get(edge_id)
@@ -909,24 +922,18 @@ class DesignerView(QGraphicsView):
 
             # --- inject missing physics + geometry ---
             e["ambient_C"] = ambient_C
-
-            # 👇 THIS is what your tooltip needs
             e["gap_to_wall_mm"] = float(
                 getattr(edge_obj, "gap_to_wall_mm", 50.0)
             )
-
             e["orientation_to_wall"] = str(
                 getattr(edge_obj, "orientation_to_wall", "width")
             )
-
             e["P_gen_W"] = float(e.get("P_gen_W", 0.0))
 
             T = float(e.get("T_C", 0.0))
-
             color = temperature_to_color(T, Tmin, Tmax)
 
             if edge_obj.ui_item is not None:
-
                 line = edge_obj.ui_item
 
                 if not hasattr(line, "thermal_results"):
@@ -935,9 +942,7 @@ class DesignerView(QGraphicsView):
                 line.thermal_results.append(e)
                 e["ui_item"] = line
 
-                line_segments.setdefault(line, []).append(
-                    (edge_obj, color, T)
-                )
+                line_samples.setdefault(line, []).append((edge_obj, T))
 
             if edge_obj.ui_join_item is not None:
                 join = edge_obj.ui_join_item
@@ -948,41 +953,43 @@ class DesignerView(QGraphicsView):
                 join.setPen(QPen(color.darker(150), 2))
                 join.update()
 
-        # ---------- APPLY GRADIENTS ----------
-
-        for line, entries in line_segments.items():
+        # ---------- APPLY CONTINUOUS FIELDS ----------
+        for line, entries in line_samples.items():
 
             line_geom = line.line()
-
             p0 = line.mapToScene(line_geom.p1())
             p1 = line.mapToScene(line_geom.p2())
 
-            # --- build spatially correct positions ---
-            positions = []
+            samples_by_key = {}
 
-            for edge_obj, _, T in entries:
+            for edge_obj, T in entries:
                 u_node = graph_obj.nodes[edge_obj.u].p
                 v_node = graph_obj.nodes[edge_obj.v].p
 
-                mid = QPointF(
-                    (u_node.x() + v_node.x()) * 0.5,
-                    (u_node.y() + v_node.y()) * 0.5,
-                )
+                su, _ = project_point_to_segment(u_node, p0, p1)
+                sv, _ = project_point_to_segment(v_node, p0, p1)
 
-                s, _ = project_point_to_segment(mid, p0, p1)
-                positions.append((s, T))
+                for s in (su, sv):
+                    s = max(0.0, min(1.0, float(s)))
+                    key = round(s, 6)
+                    samples_by_key.setdefault(key, []).append(float(T))
 
-            # ensure clamped and sorted
-            segs = sorted(positions, key=lambda x: x[0])
+            segs = sorted(
+                (float(k), sum(vals) / len(vals))
+                for k, vals in samples_by_key.items()
+            )
 
-            # store FULL segment field for UI usage
+            if len(segs) == 1:
+                # Force both ends so hover interpolation remains intuitive.
+                only_T = segs[0][1]
+                segs = [(0.0, only_T), (1.0, only_T)]
+
+            # store full segment field for UI usage
             line._thermal_segments = segs
 
-            # --- find hottest ---
             hottest_T = max(T for _, T in segs) if segs else 0.0
             hottest_color = temperature_to_color(hottest_T, Tmin, Tmax)
 
-            # --- apply ---
             line._Tmin = Tmin
             line._Tmax = Tmax
 
@@ -990,8 +997,9 @@ class DesignerView(QGraphicsView):
 
             line.temperature_C = hottest_T
             line.update_glow(hottest_color)
-
             line.update()
+
+
 
 
     def find_nearest_bus_endpoint(self, p, tol_px=15):

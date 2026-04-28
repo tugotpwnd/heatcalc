@@ -1,9 +1,10 @@
+from __future__ import annotations
+
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from PyQt5.QtCore import QPointF
 import math
-
-from win32comext.shell.demos.servers.shell_view import debug
 
 from heatcalc.core.models import BusbarJointSpec
 from heatcalc.ui.bus_items import BusLineItem, BusLoadItem, BusJoinItem
@@ -48,6 +49,46 @@ class Edge:
     ui_item: object | None = None       # BusLineItem for bus edges
     ui_join_item: object | None = None  # BusJoinItem for explicit joint edges
 
+    # ---- physical-run metadata ----
+    physical_run_id: int | None = None
+    physical_run_length_m: float | None = None
+    physical_run_s0_m: float | None = None
+    physical_run_s1_m: float | None = None
+
+    @property
+    def geom_tuple(self) -> tuple[float, float, int]:
+        return (
+            float(self.width_mm),
+            float(self.thickness_mm),
+            int(self.bars_in_parallel),
+        )
+
+    def geom_distance_to(self, other_geom_tuple: tuple[float, float, int] | None) -> float:
+        if other_geom_tuple is None:
+            return float("inf")
+        return (
+            abs(float(self.width_mm) - float(other_geom_tuple[0]))
+            + abs(float(self.thickness_mm) - float(other_geom_tuple[1]))
+            + 1000.0 * abs(int(self.bars_in_parallel) - int(other_geom_tuple[2]))
+        )
+
+    def _shared_node(self, other: "Edge") -> bool:
+        return (
+            self.u == other.u or
+            self.u == other.v or
+            self.v == other.u or
+            self.v == other.v
+        )
+
+    def shared_endpoints(self, other: "Edge") -> List[int]:
+        out = []
+        if self.u == other.u or self.v == other.u:
+            out.append(other.u)
+        if self.u == other.v or self.v == other.v:
+            out.append(other.v)
+        return out
+
+
 @dataclass
 class Load:
     node: int
@@ -75,6 +116,142 @@ class Graph:
     # edges that share a node but belong to different tiers
     # used to inject copper conduction between tiers
     cross_tier_links: List[tuple[int, int]] = None
+
+    def get_edge_convection_mode(self, edge: Edge) -> str:
+        u_p = self.nodes[edge.u].p
+        v_p = self.nodes[edge.v].p
+        dx = abs(u_p.x() - v_p.x())
+        dy = abs(u_p.y() - v_p.y())
+        return "vertical" if dy > dx else "horizontal"
+
+    def get_joint_side_edges(self, joint_edge_id: int):
+        """
+        Classify non-joint graph edges incident to the explicit joint edge into:
+            - host side candidates
+            - other side candidates
+        """
+        ej = self.edges[int(joint_edge_id)]
+        joint_spec = ej.joint_spec
+        host_geom_mm = None
+        other_geom_mm = None
+
+        if joint_spec:
+            host_geom_mm = (
+                float(getattr(joint_spec, "host_width_mm", 0.0)),
+                float(getattr(joint_spec, "host_thickness_mm", 0.0)),
+                int(getattr(joint_spec, "host_bars", 1))
+            )
+            other_geom_mm = (
+                float(getattr(joint_spec, "other_width_mm", 0.0)),
+                float(getattr(joint_spec, "other_thickness_mm", 0.0)),
+                int(getattr(joint_spec, "other_bars", 1))
+            )
+
+        incident = [
+            e for e in self.edges.values()
+            if e.id != ej.id
+            and not e.is_joint
+            and e._shared_node(ej)
+        ]
+
+        host_ui_item_id = getattr(joint_spec, "_host_ui_item_id", None)
+
+        host_edges = []
+        other_edges = []
+        unknown_edges = []
+
+        for e in incident:
+            same_host = False
+            same_other = False
+
+            if host_ui_item_id is not None and e.ui_item is not None:
+                same_host = (id(e.ui_item) == host_ui_item_id)
+
+            eg = e.geom_tuple
+
+            if host_geom_mm is not None and eg == host_geom_mm:
+                same_host = True if not same_other else same_host
+
+            if other_geom_mm is not None and eg == other_geom_mm:
+                same_other = True if not same_host else same_other
+
+            if same_host and not same_other:
+                host_edges.append(e)
+            elif same_other and not same_host:
+                other_edges.append(e)
+            else:
+                unknown_edges.append(e)
+
+        if host_ui_item_id is not None:
+            other_edges.extend(unknown_edges)
+            unknown_edges = []
+
+        for e in unknown_edges:
+            d_host = e.geom_distance_to(host_geom_mm)
+            d_other = e.geom_distance_to(other_geom_mm)
+
+            if d_host < d_other:
+                host_edges.append(e)
+            elif d_other < d_host:
+                other_edges.append(e)
+            else:
+                if not host_edges:
+                    host_edges.append(e)
+                elif not other_edges:
+                    other_edges.append(e)
+                else:
+                    shared_nodes = e.shared_endpoints(ej)
+                    if len(shared_nodes) == 1:
+                        host_edges.append(e)
+                    else:
+                        host_edges.append(e) # final fallback
+
+        return host_edges, other_edges
+
+    def get_edge_lower_upper_nodes(self, edge: Edge) -> tuple[int, int]:
+        u_p = self.nodes[edge.u].p
+        v_p = self.nodes[edge.v].p
+        if u_p.y() > v_p.y(): # Screen Y: higher value is lower position
+            return edge.u, edge.v
+        else:
+            return edge.v, edge.u
+
+    def get_downward_vertical_run_from_node(self, current_node_id: int, visited_edge_ids=None) -> float:
+        """
+        Return the longest contiguous VERTICAL run below current_node by walking
+        downward through the graph.
+        """
+        if visited_edge_ids is None:
+            visited_edge_ids = set()
+
+        best_run = 0.0
+
+        incident = [
+            e for e in self.edges.values()
+            if (e.u == current_node_id or e.v == current_node_id)
+            and e.id not in visited_edge_ids
+        ]
+
+        for e in incident:
+            if self.get_edge_convection_mode(e) != "vertical":
+                continue
+
+            lower_node, upper_node = self.get_edge_lower_upper_nodes(e)
+
+            if current_node_id != upper_node:
+                continue
+
+            visited_now = set(visited_edge_ids)
+            visited_now.add(e.id)
+
+            next_node = lower_node
+            tail = self.get_downward_vertical_run_from_node(next_node, visited_now)
+            run = float(e.length_m) + tail
+
+            if run > best_run:
+                best_run = run
+
+        return float(best_run)
 
 
 def _dist(a: QPointF, b: QPointF):
@@ -115,6 +292,152 @@ def _point_at_distance(a: QPointF, b: QPointF, x_m: float, total_len_m: float) -
         a.x() + r * (b.x() - a.x()),
         a.y() + r * (b.y() - a.y()),
     )
+
+
+
+def _edge_direction_unit(nodes: Dict[int, Node], edge: Edge) -> tuple[float, float]:
+    a = nodes[edge.u].p
+    b = nodes[edge.v].p
+    dx = b.x() - a.x()
+    dy = b.y() - a.y()
+    L = math.hypot(dx, dy)
+    if L <= 1e-12:
+        return 0.0, 0.0
+    return dx / L, dy / L
+
+
+def _edges_are_collinear_at_node(
+    nodes: Dict[int, Node],
+    e1: Edge,
+    e2: Edge,
+    node_id: int,
+    angle_tol_deg: float = 3.0,
+) -> bool:
+    if node_id not in (e1.u, e1.v) or node_id not in (e2.u, e2.v):
+        return False
+
+    p_node = nodes[node_id].p
+    p1_other = nodes[e1.v if e1.u == node_id else e1.u].p
+    p2_other = nodes[e2.v if e2.u == node_id else e2.u].p
+
+    v1x = p1_other.x() - p_node.x()
+    v1y = p1_other.y() - p_node.y()
+    v2x = p2_other.x() - p_node.x()
+    v2y = p2_other.y() - p_node.y()
+
+    L1 = math.hypot(v1x, v1y)
+    L2 = math.hypot(v2x, v2y)
+    if L1 <= 1e-12 or L2 <= 1e-12:
+        return False
+
+    dot = (v1x * v2x + v1y * v2y) / (L1 * L2)
+    dot = max(-1.0, min(1.0, dot))
+    angle_deg = math.degrees(math.acos(dot))
+    return abs(angle_deg - 180.0) <= angle_tol_deg
+
+
+def _assign_physical_runs(nodes: Dict[int, Node], edges: Dict[int, Edge]) -> None:
+    non_joint_edges = [e for e in edges.values() if not e.is_joint]
+    if not non_joint_edges:
+        return
+
+    parent = {e.id: e.id for e in non_joint_edges}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra = find(a)
+        rb = find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    node_to_non_joint = defaultdict(list)
+    for e in non_joint_edges:
+        node_to_non_joint[e.u].append(e)
+        node_to_non_joint[e.v].append(e)
+
+    for node_id, incident in node_to_non_joint.items():
+        if len(incident) != 2:
+            continue
+        e1, e2 = incident
+        if e1.tier is not e2.tier:
+            continue
+        if e1.geom_tuple != e2.geom_tuple:
+            continue
+        if not _edges_are_collinear_at_node(nodes, e1, e2, node_id):
+            continue
+        union(e1.id, e2.id)
+
+    groups = defaultdict(list)
+    for e in non_joint_edges:
+        groups[find(e.id)].append(e)
+
+    next_run_id = 0
+    for _, comp_edges in groups.items():
+        comp_ids = {e.id for e in comp_edges}
+        adjacency = defaultdict(list)
+        for e in comp_edges:
+            adjacency[e.u].append(e)
+            adjacency[e.v].append(e)
+
+        endpoints = [
+            nid for nid, inc in adjacency.items()
+            if len([e for e in inc if e.id in comp_ids]) == 1
+        ]
+
+        if len(comp_edges) == 1:
+            e = comp_edges[0]
+            e.physical_run_id = next_run_id
+            e.physical_run_length_m = float(e.length_m)
+            e.physical_run_s0_m = 0.0
+            e.physical_run_s1_m = float(e.length_m)
+            next_run_id += 1
+            continue
+
+        if len(endpoints) != 2:
+            for e in comp_edges:
+                e.physical_run_id = next_run_id
+                e.physical_run_length_m = float(e.length_m)
+                e.physical_run_s0_m = 0.0
+                e.physical_run_s1_m = float(e.length_m)
+                next_run_id += 1
+            continue
+
+        current_node = endpoints[0]
+        prev_edge_id = None
+        s_cursor = 0.0
+        visited = set()
+
+        while True:
+            candidates = [e for e in adjacency[current_node] if e.id in comp_ids and e.id not in visited]
+            if not candidates:
+                break
+            edge = candidates[0] if prev_edge_id is None else next((e for e in candidates if e.id != prev_edge_id), candidates[0])
+            visited.add(edge.id)
+            edge.physical_run_id = next_run_id
+            edge.physical_run_length_m = None
+
+            if edge.u == current_node:
+                edge.physical_run_s0_m = float(s_cursor)
+                edge.physical_run_s1_m = float(s_cursor + edge.length_m)
+                current_node = edge.v
+            else:
+                edge.physical_run_s0_m = float(s_cursor + edge.length_m)
+                edge.physical_run_s1_m = float(s_cursor)
+                current_node = edge.u
+
+            s_cursor += float(edge.length_m)
+            prev_edge_id = edge.id
+
+        total_len = float(s_cursor)
+        for e in comp_edges:
+            e.physical_run_length_m = total_len
+
+        next_run_id += 1
 
 def _edge_shares_joint(edge: Edge, joint_edge: Edge) -> bool:
     return (
@@ -304,11 +627,10 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
 
     bus_lines = [i for i in scene.items() if isinstance(i, BusLineItem)]
 
-    node_lookup = {}
     NODE_SNAP_TOL = 0.5  # pixels
+    MAX_EDGE_LEN_M = 0.050  # thermal/UI discretisation target
 
     def get_node(p, ui_item=None):
-
         # search for existing node within tolerance
         for nid, node in nodes.items():
             if _dist(node.p, p) <= NODE_SNAP_TOL:
@@ -330,11 +652,9 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
     # -------------------------------------------------
     # Collect raw segments
     # -------------------------------------------------
-
     segments = []
 
     for bl in bus_lines:
-
         line = bl.line()
 
         a = bl.mapToScene(line.p1())
@@ -362,34 +682,26 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
     # -------------------------------------------------
     # Detect endpoint-on-segment intersections
     # -------------------------------------------------
-
     split_points_by_segment = {}
 
     for i, sa in enumerate(segments):
-
         for j, sb in enumerate(segments):
-
             if i == j:
                 continue
 
             for p in [sa["a"], sa["b"]]:
-
                 if _point_on_segment(p, sb["a"], sb["b"]):
-
                     # ignore if already an endpoint
                     if _dist(p, sb["a"]) < 0.5 or _dist(p, sb["b"]) < 0.5:
                         continue
-
                     split_points_by_segment.setdefault(j, []).append(p)
 
     # -------------------------------------------------
     # Split segments at ALL intersection points
     # -------------------------------------------------
-
     new_segments = []
 
     for idx, seg in enumerate(segments):
-
         split_pts = split_points_by_segment.get(idx)
 
         if not split_pts:
@@ -417,7 +729,6 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
         for p in split_pts:
             t = ((p.x() - ax) * dx + (p.y() - ay) * dy) / L2
             t = max(0.0, min(1.0, t))
-
             t_points.append((t, p))
 
         # deduplicate using rounded t
@@ -430,7 +741,6 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
         chain = [a] + [p for _, p in ordered] + [b]
 
         for p0, p1 in zip(chain[:-1], chain[1:]):
-
             if _dist(p0, p1) <= 1e-9:
                 continue
 
@@ -443,12 +753,50 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
             })
 
     segments = new_segments
+
+    # -------------------------------------------------
+    # Add nominal thermal discretisation along every bus
+    # -------------------------------------------------
+    discretised_segments = []
+
+    for seg in segments:
+        a = seg["a"]
+        b = seg["b"]
+
+        L_px = _dist(a, b)
+        L_m = L_px * px_to_m
+
+        if L_m <= MAX_EDGE_LEN_M + 1e-12:
+            discretised_segments.append(seg)
+            continue
+
+        n_parts = max(1, int(math.ceil(L_m / MAX_EDGE_LEN_M)))
+        chain = [
+            QPointF(
+                a.x() + (k / n_parts) * (b.x() - a.x()),
+                a.y() + (k / n_parts) * (b.y() - a.y()),
+            )
+            for k in range(n_parts + 1)
+        ]
+
+        for p0, p1 in zip(chain[:-1], chain[1:]):
+            if _dist(p0, p1) <= 1e-9:
+                continue
+
+            discretised_segments.append({
+                "a": p0,
+                "b": p1,
+                "spec": seg["spec"],
+                "tier": seg["tier"],
+                "ui_item": seg["ui_item"],
+            })
+
+    segments = discretised_segments
+
     # -------------------------------------------------
     # Build nodes and edges
     # -------------------------------------------------
-
     for seg in segments:
-
         a = seg["a"]
         b = seg["b"]
 
@@ -480,18 +828,13 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
     # -------------------------------------------------
     # Source
     # -------------------------------------------------
-
     source_node = None
     source_ui_item = None
 
     for item in scene.items():
-
         if item.type() == BUS_SOURCE_TYPE:
-
             p = item.center()
-
             best = min(nodes.values(), key=lambda n: _dist(p, n.p))
-
             source_node = best.id
             source_ui_item = item
             if item not in best.ui_items:
@@ -500,15 +843,10 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
     # -------------------------------------------------
     # Loads
     # -------------------------------------------------
-
     for item in scene.items():
-
         if isinstance(item, BusLoadItem):
-
             p = item.center()
-
             best = min(nodes.values(), key=lambda n: _dist(p, n.p))
-
             loads.append(Load(best.id, item.I_load_A, ui_item=item))
             if item not in best.ui_items:
                 best.ui_items.append(item)
@@ -516,11 +854,8 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
     # -------------------------------------------------
     # Joins (placed along edges)
     # -------------------------------------------------
-
     for item in scene.items():
-
         if isinstance(item, BusJoinItem):
-
             p = item.center()
 
             best_edge = None
@@ -528,7 +863,6 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
             best_dist = 1e9
 
             for e in edges.values():
-
                 a = nodes[e.u].p
                 b = nodes[e.v].p
 
@@ -594,6 +928,17 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
 
                 spec._host_edge_id_before_joint_split = int(best_edge.id)
 
+                # Persist host-edge metadata needed later for joint convection modelling.
+                # x_m is measured along the ORIGINAL host edge, from edge.u toward edge.v.
+                spec.host_edge_total_length_m = float(best_edge.length_m)
+                spec.host_joint_center_x_m = float(x_m)
+
+                # These are filled more precisely after the explicit joint interval [x0, x1]
+                # is created during edge splitting.
+                spec.joint_x0_m = None
+                spec.joint_x1_m = None
+                spec.host_vertical_run_below_m = None
+
                 joins.append(
                     Join(
                         edge_id=best_edge.id,
@@ -602,6 +947,7 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
                         ui_item=item,
                     )
                 )
+
     # -------------------------------------------------
     # Split edges where joins occur, and insert explicit joint edges
     # -------------------------------------------------
@@ -609,7 +955,6 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
     new_edge_id = 0
 
     for e in edges.values():
-
         edge_joins = [j for j in joins if j.edge_id == e.id]
 
         if not edge_joins:
@@ -627,7 +972,6 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
         prev_x = 0.0
 
         for j in edge_joins:
-
             overlap_m = max(float(j.spec.overlap_m), 1e-6)
 
             # proposed joint interval
@@ -653,10 +997,24 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
                 if x1 <= x0:
                     continue
 
+            host_is_vertical = abs(b_pt.y() - a_pt.y()) > abs(b_pt.x() - a_pt.x())
+
+            j.spec.host_edge_total_length_m = float(e.length_m)
+            j.spec.joint_x0_m = float(x0)
+            j.spec.joint_x1_m = float(x1)
+
+            if host_is_vertical:
+                if a_pt.y() > b_pt.y():
+                    run_below_m = x0
+                else:
+                    run_below_m = e.length_m - x1
+                j.spec.host_vertical_run_below_m = float(max(run_below_m, 1e-12))
+            else:
+                j.spec.host_vertical_run_below_m = None
+
             # ---- pre-joint bus segment ----
             pre_len = x0 - prev_x
             if pre_len > 1e-9:
-                p0 = _point_at_distance(a_pt, b_pt, prev_x, e.length_m)
                 p1 = _point_at_distance(a_pt, b_pt, x0, e.length_m)
 
                 n0 = start_node
@@ -673,6 +1031,8 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
                     thickness_mm=e.thickness_mm,
                     bars_in_parallel=e.bars_in_parallel,
                     face_to_face_dim=e.face_to_face_dim,
+                    gap_to_wall_mm=e.gap_to_wall_mm,
+                    orientation_to_wall=e.orientation_to_wall,
                     is_joint=False,
                     joint_spec=None,
                     ui_item=e.ui_item,
@@ -682,7 +1042,6 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
                 new_edge_id += 1
 
             # ---- explicit joint edge ----
-            pj0 = _point_at_distance(a_pt, b_pt, x0, e.length_m)
             pj1 = _point_at_distance(a_pt, b_pt, x1, e.length_m)
 
             nj0 = start_node
@@ -702,6 +1061,8 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
                 thickness_mm=float(getattr(j.spec, "host_bar_thickness_mm", e.thickness_mm)),
                 bars_in_parallel=max(1, int(getattr(j.spec, "host_bar_count", e.bars_in_parallel))),
                 face_to_face_dim=e.face_to_face_dim,
+                gap_to_wall_mm=e.gap_to_wall_mm,
+                orientation_to_wall=e.orientation_to_wall,
                 is_joint=True,
                 joint_spec=j.spec,
                 ui_item=None,
@@ -729,6 +1090,8 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
                 thickness_mm=e.thickness_mm,
                 bars_in_parallel=e.bars_in_parallel,
                 face_to_face_dim=e.face_to_face_dim,
+                gap_to_wall_mm=e.gap_to_wall_mm,
+                orientation_to_wall=e.orientation_to_wall,
                 is_joint=False,
                 joint_spec=None,
                 ui_item=e.ui_item,
@@ -740,6 +1103,9 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
 
     # refine explicit joint geometry from connected bus edges
     _infer_joint_edge_geometry(edges, debug=False)
+
+    # annotate contiguous physical copper runs for thermal characteristic length
+    _assign_physical_runs(nodes, edges)
 
     return Graph(
         nodes=nodes,

@@ -143,6 +143,8 @@ def bolted_overlap_joint_resistance(
 
     x = P_used
 
+    #todo: i think this polynomial is very expensive
+
     # Polynomial fit
     Y_fit = (
             7890.141
@@ -190,7 +192,6 @@ def bolted_overlap_joint_resistance(
 
     return Rs_total + Ri
 
-
 def sandwich_joint_resistance(
     bar1_width_m: float,
     bar1_thickness_m: float,
@@ -206,27 +207,133 @@ def sandwich_joint_resistance(
     debug: bool = False,
 ) -> float:
     """
-    Calculate total electrical resistance of a sandwich copper busbar joint.
-    Placeholder implementation for determining its resistance.
-    """
-    # For now, return a placeholder resistance (e.g., similar to clamped_edge but maybe different)
-    # This will be implemented by the user later.
-    return clamped_edge_joint_resistance(
-        bar1_width_m=bar1_width_m,
-        bar1_thickness_m=bar1_thickness_m,
-        bar2_width_m=bar2_width_m,
-        bar2_thickness_m=bar2_thickness_m,
-        torque_Nm=torque_Nm,
-        clamp_bolt_dia_mm=clamp_bolt_dia_mm,
-        nut_factor=nut_factor,
-        bolt_count=bolt_count,
-        bar1_parallel_count=bar1_parallel_count,
-        bar2_parallel_count=bar2_parallel_count,
-        e_streamline=e_streamline,
-        debug=debug,
-    )
-RHO_CU_OHM_M = 1.724e-8  # Ω·m
+    Sandwich (overlap) joint using SAME formulation as clamped,
+    but with different geometric definitions:
 
+        a = smallest width
+        l = overlap length
+        b = largest width
+    """
+
+    # -----------------------------
+    # Geometry
+    # -----------------------------
+    w1_m = float(bar1_width_m)
+    t1_m = float(bar1_thickness_m)
+    w2_m = float(bar2_width_m)
+    t2_m = float(bar2_thickness_m)
+
+    n1 = int(bar1_parallel_count)
+    n2 = int(bar2_parallel_count)
+
+    if min(w1_m, t1_m, w2_m, t2_m) <= 0:
+        raise ValueError("Invalid bar geometry supplied.")
+
+    d_m = float(clamp_bolt_dia_mm) / 1000.0
+    if d_m <= 0:
+        raise ValueError("Clamp bolt diameter must be > 0.")
+
+    if bolt_count <= 0:
+        raise ValueError("bolt_count must be >= 1.")
+
+    if nut_factor <= 0:
+        raise ValueError("nut_factor must be > 0.")
+
+    if n1 <= 0 or n2 <= 0:
+        raise ValueError("parallel bar counts must be >= 1.")
+
+    # convert to mm
+    w1_mm = w1_m * 1000.0
+    w2_mm = w2_m * 1000.0
+    t1_mm = t1_m * 1000.0
+    t2_mm = t2_m * 1000.0
+
+    # -----------------------------
+    # Sandwich-joint characteristic geometry (ONLY CHANGE)
+    # -----------------------------
+    a_mm = min(w1_mm, w2_mm)           # smallest width
+    l_mm = min(t1_mm, t2_mm)           # overlap smallest width length
+    b_mm = max(w1_mm, w2_mm)           # largest width
+
+    a_m = a_mm / 1000.0
+    l_m = l_mm / 1000.0
+    b_m = b_mm / 1000.0
+
+    # Number of electrically parallel interfaces
+    n_interfaces = n1 * n2
+
+    # -----------------------------
+    # 1) Streamline resistance (IDENTICAL)
+    # -----------------------------
+    streamline_ratio = l_mm / max(b_mm, 1e-12)
+
+    if e_streamline is None:
+        e_used = streamline_resistance_ratio_from_overlap_ratio(streamline_ratio)
+    else:
+        e_used = float(e_streamline)
+
+    # Single-interface streamline resistance
+    Rs_single = (e_used * RHO_CU_OHM_M * l_m) / (a_m * b_m)
+
+    # Equivalent streamline resistance for full parallel joint
+    Rs_total = Rs_single / n_interfaces
+
+    # -----------------------------
+    # 2) Clamp preload (IDENTICAL)
+    # -----------------------------
+    F_per_bolt_N = float(torque_Nm) / (float(nut_factor) * d_m)
+    F_total_N = F_per_bolt_N * int(bolt_count)
+
+    # -----------------------------
+    # 3) Pressure (IDENTICAL)
+    # -----------------------------
+    n_interfaces = n1 * n2
+    A_pressure_mm2 = a_mm * l_mm * n_interfaces
+    P_N_per_mm2 = F_total_N / A_pressure_mm2
+
+    # -----------------------------
+    # 4) Y curve (IDENTICAL)
+    # -----------------------------
+    P_used = min(P_N_per_mm2, 60.0)
+    x = P_used
+
+    Y_fit = (
+        7890.141
+        - 716.6075 * x
+        + 31.08879 * x**2
+        - 0.7183196 * x**3
+        + 0.008589617 * x**4
+        - 0.00004151038 * x**5
+    )
+
+    Y_uohm = max(600.0, min(Y_fit, 6000.0))
+
+    # -----------------------------
+    # 5) Contact resistance (IDENTICAL)
+    # -----------------------------
+    # Using total area here is equivalent to Ri_single / n_interfaces
+    Ri_uohm = Y_uohm / A_pressure_mm2
+    Ri = Ri_uohm * 1e-6
+
+
+    if debug:
+        print("\n[SANDWICH JOINT DEBUG]")
+        print(f"a_mm                = {a_mm:.3f}")
+        print(f"l_mm                = {l_mm:.3f}")
+        print(f"b_mm                = {b_mm:.3f}")
+        print(f"streamline_ratio    = {streamline_ratio:.6f}")
+        print(f"e_used              = {e_used:.6f}")
+        print(f"n_interfaces        = {n_interfaces}")
+        print(f"A_pressure_mm2      = {A_pressure_mm2:.3f}")
+        print(f"P_N_per_mm2         = {P_N_per_mm2:.6f}")
+        print(f"Y_uohm              = {Y_uohm:.6f}")
+        print(f"Rs_single_ohm       = {Rs_single:.6e}")
+        print(f"Rs_total_ohm        = {Rs_total:.6e}")
+        print(f"Ri_ohm              = {Ri:.6e}")
+        print(f"R_total_ohm         = {(Rs_total + Ri):.6e}")
+
+
+    return Rs_total + Ri
 
 def clamped_edge_joint_resistance(
     bar1_width_m: float,
@@ -272,6 +379,9 @@ def clamped_edge_joint_resistance(
     n1 = int(bar1_parallel_count)
     n2 = int(bar2_parallel_count)
 
+    # Number of electrically parallel interfaces
+    n_interfaces = n1 * n2
+
     if min(w1_m, t1_m, w2_m, t2_m) <= 0:
         raise ValueError("Invalid bar geometry supplied.")
 
@@ -315,7 +425,11 @@ def clamped_edge_joint_resistance(
     else:
         e_used = float(e_streamline)
 
-    Rs = (e_used * RHO_CU_OHM_M * l_m) / (a_m * b_m)
+    # Single-interface streamline resistance
+    Rs_single = (e_used * RHO_CU_OHM_M * l_m) / (a_m * b_m)
+
+    # Equivalent streamline resistance for full parallel joint
+    Rs_total = Rs_single / n_interfaces
 
     # -----------------------------
     # 2) Clamp preload from torque
@@ -327,8 +441,7 @@ def clamped_edge_joint_resistance(
     # -----------------------------
     # 3) Pressure in N/mm²
     # -----------------------------
-    # Contact area is (a * l) * number of interfaces
-    n_interfaces = n1 * n2
+    # Pressure is evaluated over the total physical contact area
     A_pressure_mm2 = a_mm * l_mm * n_interfaces
     P_N_per_mm2 = F_total_N / A_pressure_mm2
 
@@ -358,8 +471,10 @@ def clamped_edge_joint_resistance(
     # 5) Contact resistance
     # Ri = Y / (contact area)
     # -----------------------------
+    # Using total area here is equivalent to Ri_single / n_interfaces
     Ri_uohm = Y_uohm / A_pressure_mm2
     Ri = Ri_uohm * 1e-6
+
 
     if debug:
         print("\n[CLAMPED JOINT DEBUG]")
@@ -385,8 +500,9 @@ def clamped_edge_joint_resistance(
         print(f"P_N_per_mm2         = {P_N_per_mm2:.6f}")
         print(f"Y_uohm              = {Y_uohm:.6f}")
         print(f"Ri_uohm             = {Ri_uohm:.6f}")
-        print(f"Rs_ohm              = {Rs:.6e}")
+        print(f"Rs_single_ohm       = {Rs_single:.6e}")
+        print(f"Rs_total_ohm        = {Rs_total:.6e}")
         print(f"Ri_ohm              = {Ri:.6e}")
-        print(f"R_total_ohm         = {(Rs + Ri):.6e}")
+        print(f"R_total_ohm         = {(Rs_total + Ri):.6e}")
 
-    return Rs + Ri
+    return Rs_total + Ri

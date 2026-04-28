@@ -15,8 +15,12 @@ def evaluate_derating(component: Any, T_internal: float) -> float | None:
     temp_start = getattr(component, "derating_temp_start_C", None)
 
 
-    if rated is None or func_str is None:
+    if rated is None:
         return None
+
+    if func_str is None:
+        # Fallback to 80% of rated current if no derating function is provided
+        return rated * 0.8
 
     if temp_start is not None and T_internal <= temp_start:
         factor = 1.0
@@ -26,9 +30,11 @@ def evaluate_derating(component: Any, T_internal: float) -> float | None:
             # Evaluate expression safely
             factor = eval(func_str, {"__builtins__": {}}, {"x": T_internal, "math": math})
             if not isinstance(factor, (int, float)):
-                return None
+                # If function fails, fallback to 80%
+                return rated * 0.8
         except Exception:
-            return None
+            # If evaluation fails, fallback to 80%
+            return rated * 0.8
 
     # Clamp: 0.0 to 1.0
     factor = max(0.0, min(1.0, float(factor)))
@@ -224,6 +230,7 @@ def evaluate_tier_compliance(
     # BUILT-IN COMPONENTS
     # -----------------------------------------
     T_top = float(tier_res.get("T_top", ambient_C))
+    limit_C_tier = float(tier_res.get("limit_C", ambient_C + 70.0))
 
     # Prefer tier's own effective limit (which typically min(component limits))
     if hasattr(tier, "effective_max_temp_C") and tier.effective_max_temp_C is not None:
@@ -246,7 +253,7 @@ def evaluate_tier_compliance(
             built_in_limit = min(component_limits)
         else:
             # Fall back to manual tier limit or default
-            built_in_limit = float(getattr(tier, "max_temp_C", ambient_C + 70.0))
+            built_in_limit = limit_C_tier
 
     built_in_max_T = T_top
     built_in_ok = built_in_max_T <= built_in_limit

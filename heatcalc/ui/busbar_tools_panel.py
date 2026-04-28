@@ -227,8 +227,8 @@ class BusbarToolsPanel(QWidget):
             inst_lay.addWidget(b)
             return b
 
-        self.btn_inst1 = _make_inst_btn(0, "Type 1", "Joint_Type_1_BoltedOverlap.png")
-        self.btn_inst2 = _make_inst_btn(1, "Type 2", "Joint_Type_2_Clamped.png")
+        self.btn_inst1 = _make_inst_btn(0, "Bolted Overlap", "Joint_Type_1_BoltedOverlap.png")
+        self.btn_inst2 = _make_inst_btn(1, "Clamped Edge", "Joint_Type_2_Clamped.png")
         self.btn_inst3 = _make_inst_btn(2, "Sandwich", "Joint_Type_3_Sandwich.png")
         self.btn_inst1.setChecked(True)
 

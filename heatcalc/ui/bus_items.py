@@ -1227,6 +1227,78 @@ class BusJoinItem(QGraphicsEllipseItem):
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(self.rect())
 
+    def contextMenuEvent(self, event):
+        from PyQt5.QtWidgets import QMenu, QInputDialog, QAction
+        menu = QMenu()
+
+        act_type = menu.addMenu("Change Type")
+        t1 = act_type.addAction("Bolted Overlap")
+        t2 = act_type.addAction("Clamped Edge")
+        t3 = act_type.addAction("Sandwich Joint")
+
+        act_overlap = menu.addAction(f"Change Overlap ({self.overlap_m * 1000:.0f} mm)...")
+        if self.joint_type in ["clamped_edge", "sandwich_joint"]:
+            act_overlap.setEnabled(False)
+        act_bolts = menu.addAction(f"Change Bolt Count ({self.bolt_count})...")
+        act_dia = menu.addAction(f"Change Bolt Diameter (M{self.bolt_dia_mm:.0f})...")
+        act_torque = menu.addAction(f"Change Torque ({self.torque_Nm:.1f} Nm)...")
+
+        menu.addSeparator()
+        act_delete = menu.addAction("Delete Joint")
+
+        action = menu.exec_(event.screenPos())
+        if not action:
+            return
+
+        if action == t1:
+            self.set_joint_parameters(joint_type="bolted_overlap")
+        elif action == t2:
+            self.set_joint_parameters(joint_type="clamped_edge")
+        elif action == t3:
+            self.set_joint_parameters(joint_type="sandwich_joint")
+        elif action == act_overlap:
+            val, ok = QInputDialog.getDouble(None, "Joint Overlap", "Overlap (mm):", self.overlap_m * 1000, 1, 1000, 1)
+            if ok:
+                self.set_joint_parameters(overlap_m=val / 1000.0)
+        elif action == act_bolts:
+            val, ok = QInputDialog.getInt(None, "Bolt Count", "Count:", self.bolt_count, 1, 100, 1)
+            if ok:
+                self.set_joint_parameters(bolt_count=val)
+        elif action == act_dia:
+            val, ok = QInputDialog.getDouble(None, "Bolt Diameter", "Diameter (mm):", self.bolt_dia_mm, 1, 100, 1)
+            if ok:
+                self.set_joint_parameters(bolt_dia_mm=val)
+        elif action == act_torque:
+            val, ok = QInputDialog.getDouble(None, "Joint Torque", "Torque (Nm):", self.torque_Nm, 1, 1000, 1)
+            if ok:
+                self.set_joint_parameters(torque_Nm=val)
+        elif action == act_delete:
+            if self.scene():
+                # Notify parent if needed, or just remove
+                p = self.parentItem()
+                if isinstance(p, BusLineItem):
+                    p.delete_child(self)
+                self.scene().removeItem(self)
+        
+        # Trigger re-solve if needed (through the project dirty signal or similar)
+        if self.scene():
+            self.scene().update()
+        
+        # Find SwitchboardTab and mark dirty
+        view = None
+        if self.scene() and self.scene().views():
+            view = self.scene().views()[0]
+        
+        if view:
+            # Walk up to find SwitchboardTab
+            w = view
+            while w:
+                if w.__class__.__name__ == "SwitchboardTab":
+                    if hasattr(w, "_mark_project_dirty"):
+                        w._mark_project_dirty()
+                    break
+                w = w.parent()
+
     def type(self):
         return BUS_JOIN_TYPE
 
