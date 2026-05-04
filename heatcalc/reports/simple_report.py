@@ -546,8 +546,7 @@ def _bus_table_for_tier(tier: TierRow) -> Table:
         leading=11,
         alignment=1,  # ✅ CENTER
     )
-
-    header = ["Bus Line", "Dimensions (mm)", "Bars/Ph", "Len (m)", "I (A)", "Total (W)"]
+    header = ["Bus", "Dimensions (mm)", "Bars/Ph", "Len (m)", "I (A)", "Total (W)"]
     rows = [header]
 
     for b in tier.buses:
@@ -1110,7 +1109,12 @@ def enclosure_dissipation_table(th: TierThermal) -> Table:
     is_vented = bool(th.vent)
 
     rows = [
-        ["Is vented (openings specified)", "Yes" if is_vented else "No"],
+        ["Parameter", "Value"],
+
+        [
+            "Is vented (openings specified)",
+            "Yes" if is_vented else "No",
+        ],
 
         [
             "Vent inlet opening area (cm²)",
@@ -1142,32 +1146,61 @@ def enclosure_dissipation_table(th: TierThermal) -> Table:
         ],
     ]
 
-    tbl = Table(rows, colWidths=[95 * mm, 30 * mm])
-    tbl.setStyle(TableStyle([
-        # Label column
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#215096")),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-        ("FONTNAME", (0, 0), (0, -1), FONT),
+    tbl = Table(
+        rows,
+        colWidths=[100 * mm, 75 * mm],
+        repeatRows=1,
+    )
 
-        # Values
-        ("FONTNAME", (1, 0), (1, -1), FONT),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-
-        # Borders
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        # Padding
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
+    tbl.setStyle(_standard_table_style())
 
     return tbl
+def _tier_details_scope_text(tier) -> str:
+    items = []
 
+    if getattr(tier, "components", None):
+        items.append("installed component heat dissipation")
 
+    if getattr(tier, "cables", None):
+        items.append("cable losses")
+
+    if getattr(tier, "buses", None):
+        items.append("busbar geometry, loading, losses and calculated temperatures")
+
+    if getattr(tier, "joints", None):
+        items.append("busbar joint losses and calculated joint temperatures")
+
+    if not items:
+        return (
+            "This section summarises the thermal inputs and calculated results assigned "
+            "to this tier. No component, cable, busbar or joint data has been assigned."
+        )
+
+    if len(items) == 1:
+        item_text = items[0]
+    else:
+        item_text = ", ".join(items[:-1]) + f" and {items[-1]}"
+
+    return (
+        "This section summarises the thermal inputs and calculated results assigned "
+        f"to this tier, including {item_text} where relevant."
+    )
+
+def _small_header_style():
+    return ParagraphStyle(
+        name="SmallHeaderWhite",
+        parent=BodySmall,
+        fontName=FONT_B,
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.white,
+    )
 def render_tier_details(flow, tier, tier_thermal: Optional[TierThermal] = None):
     flow.append(Paragraph("Tier Details", H3_NUM))
     flow.append(Spacer(1, 4))
+
+    flow.append(Paragraph(_tier_details_scope_text(tier), BodySmall))
+    flow.append(Spacer(1, 6))
 
     if tier.components:
         flow.append(Paragraph("Components", H3_NUM))
@@ -1186,6 +1219,10 @@ def render_tier_details(flow, tier, tier_thermal: Optional[TierThermal] = None):
 
     if getattr(tier, "joints", None):
         flow.append(Paragraph("Joints", H3_NUM))
+        flow.append(Paragraph(
+            "For joint identification, please refer to Switchboard Layout figure.",
+            BodySmall
+        ))
         flow.append(_joint_table_for_tier(tier))
         flow.append(Spacer(1, 6))
 
@@ -1417,7 +1454,7 @@ def component_derating_table(tier: TierRow, th: TierThermal) -> Table | Paragrap
         ])
 
     if len(rows) == 1:
-        return Paragraph("No component derating data available for this tier.", BodySmall)
+        return None
 
     tbl = Table(
         rows,
@@ -1427,25 +1464,25 @@ def component_derating_table(tier: TierRow, th: TierThermal) -> Table | Paragrap
     tbl.setStyle(_standard_table_style())
     return tbl
 
-def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, comp=None):
+def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, comp=None, cd_tbl=None):
     has_buses = bool(tier.buses) if tier else False
 
-    flow.append(Paragraph(
-        f"{sec.h3_num()} AS/NZS 61439 Table 6 – Working Temperature Assessment",
-        H3_NUM
-    ))
-    flow.append(Spacer(1, 4))
-
-    flow.append(Paragraph(
-        "The following tables summarise the steady-state working temperatures used for "
-        "AS/NZS 61439 Table 6 assessment for this tier, including enclosure temperatures, "
-        "all busbar working / hotspot temperatures, joint temperatures, and terminal temperatures "
-        "where applicable.",
-        BodySmall
-    ))
-    flow.append(Spacer(1, 6))
-
     if has_buses:
+        flow.append(Paragraph(
+            f"{sec.h3_num()} AS/NZS 61439 Table 6 – Working Temperature Assessment",
+            H3_NUM
+        ))
+        flow.append(Spacer(1, 4))
+
+        flow.append(Paragraph(
+            "The following tables summarise the steady-state working temperatures used for "
+            "AS/NZS 61439 Table 6 assessment for this tier, including enclosure temperatures, "
+            "all busbar working / hotspot temperatures, joint temperatures, and terminal temperatures "
+            "where applicable.",
+            BodySmall
+        ))
+        flow.append(Spacer(1, 6))
+
         flow.append(Paragraph(
             f"{sec.h3_num()} Tier / enclosure conditions",
             H3_NUM
@@ -1453,24 +1490,29 @@ def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, c
         flow.append(working_summary_table(th, comp))
         flow.append(Spacer(1, 8))
 
-    if has_buses:
         flow.append(Paragraph(
             f"{sec.h3_num()} Busbar working temperatures",
             H3_NUM
         ))
+        flow.append(Paragraph(
+            "The segments correspond to discretised thermal elements of the busbar, representing localised regions"
+            " of heat generation, transfer, and conduction, rather than distinct physical busbars themselves."
+            " This segmentation enables spatial variation in temperature, resistance, and joint effects"
+            " along the length of a single conductor.",
+            BodySmall
+        ))
         flow.append(bus_working_temperature_table(tier, comp))
         flow.append(Spacer(1, 8))
 
-    if has_buses and tier.joints:
-        flow.append(Paragraph(
-            f"{sec.h3_num()} Joint working temperatures",
-            H3_NUM
-        ))
-        flow.append(joint_working_temperature_table(tier, comp))
-        flow.append(Spacer(1, 8))
+        if tier.joints:
+            flow.append(Paragraph(
+                f"{sec.h3_num()} Joint working temperatures",
+                H3_NUM
+            ))
+            flow.append(joint_working_temperature_table(tier, comp))
+            flow.append(Spacer(1, 8))
 
-    from heatcalc.core.compliance_61439 import evaluate_derating
-
+    # Pre-calculate deratings for all components if not already done
     for c in tier.components:
         c.derated_current_A = evaluate_derating(c, th.max_C)
 
@@ -1482,13 +1524,16 @@ def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, c
         flow.append(terminal_working_temperature_table(comp))
         flow.append(Spacer(1, 8))
 
-    if tier.components:
+    if cd_tbl is None:
+        cd_tbl = component_derating_table(tier, th)
+        
+    if cd_tbl:
         flow.append(Spacer(1, 10))
         flow.append(Paragraph(
             f"{sec.h3_num()} Component derated current capacity",
             H3_NUM
         ))
-        flow.append(component_derating_table(tier, th))
+        flow.append(cd_tbl)
         flow.append(Spacer(1, 6))
 
 # ------------------------------------------------------------------
@@ -1827,6 +1872,8 @@ def export_simple_report(
 
             if not Path(img_path).exists():
                 continue
+            flow.append(PageBreak())
+
             flow.append(Paragraph(
                 f"{sec.h2_num()} Temperature Rise Summary — {title}",
                 H1_NUM
@@ -2006,9 +2053,10 @@ def export_simple_report(
             comp = comp_by_tier.get(str(th.tag))
 
             has_buses = bool(tier.buses) if tier else False
-            has_components = bool(tier.components) if tier else False
+            cd_tbl = component_derating_table(tier, th) if tier else None
+            has_cd = cd_tbl is not None
 
-            if tier is not None and (has_buses or has_components):
+            if tier is not None and (has_buses or has_cd):
                 flow.append(PageBreak())
                 flow.append(Paragraph(
                     f"{sec.h2_num()} AS/NZS 61439 Working Temperature Assessment — {th.tag}",
@@ -2016,7 +2064,7 @@ def export_simple_report(
                 ))
                 flow.append(Spacer(1, 6))
 
-                render_working_temperature_page(flow, sec, tier, th, comp)
+                render_working_temperature_page(flow, sec, tier, th, comp, cd_tbl=cd_tbl)
 
     doc.multiBuild(flow)
     return out_pdf

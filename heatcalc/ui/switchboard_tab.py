@@ -386,11 +386,10 @@ class SwitchboardTab(QWidget):
         splitter.setStretchFactor(2, 0)  # bus panel fixed-ish
 
         # initial sizes
-        splitter.setSizes([350, 1200, 300])
+        splitter.setSizes([450, 1050, 380])
 
-        # optional caps
-        left.setMaximumWidth(500)
-        self.bus_panel.setMaximumWidth(350)
+        left.setMaximumWidth(650)
+        self.bus_panel.setMaximumWidth(500)
 
         root = QHBoxLayout(self)
         root.addWidget(splitter)
@@ -1266,6 +1265,7 @@ class SwitchboardTab(QWidget):
             "solver_history": history,
             "solver_converged": converged,
         }
+        self.last_solve_result = result_dict
 
         if apply_to_ui:
             # Look for BusbarToolsPanel to apply results to graphics

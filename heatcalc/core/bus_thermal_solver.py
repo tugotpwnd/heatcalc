@@ -43,6 +43,9 @@ class ThermalEdgeResult:
     bars_in_parallel: int
     gap_to_wall_mm: float = 50.0
     orientation_to_wall: str = "width"
+    joint_id: str | None = None
+    joint_number: int | None = None
+    T_min_C: float = 0.0
 
 
 @dataclass
@@ -316,14 +319,15 @@ def _aggregate_segment_results(segment_rows):
         total_resid = sum(r["residual_W"] for r in rows)
 
         Tmax = max(r["T_C"] for r in rows)
+        Tmin = min(r["T_C"] for r in rows)
 
-        # 🔥 THIS WAS MISSING
         first = rows[0]
 
         out.append(
             ThermalEdgeResult(
                 edge_id=int(edge_id),
                 T_C=float(Tmax),
+                T_min_C=float(Tmin),
                 I_A=float(first["I_A"]),
                 length_m=float(total_len),
                 is_joint=bool(first["is_joint"]),
@@ -337,6 +341,7 @@ def _aggregate_segment_results(segment_rows):
                 bars_in_parallel=int(first.get("bars_in_parallel", 1)),
                 gap_to_wall_mm=float(first.get("gap_to_wall_mm", 50.0)),
                 orientation_to_wall=str(first.get("orientation_to_wall", "width")),
+                joint_id=first.get("joint_id"),
             )
         )
 
@@ -606,7 +611,7 @@ def solve_thermal(
     joint_debug = False
     joint_cooling_debug = False
     conduction_debug = False
-    joint_link_debug = True
+    joint_link_debug = False
     joint_balance_debug = False
 
     def edge_air(edge_id):
@@ -819,13 +824,14 @@ def solve_thermal(
                     R20_elec = joint_R20_ohm(joint_nd, debug=False)
                     R_elec_T = R20_elec * (1.0 + ALPHA_CU * (T_ref_C - 20.0))
 
-                    # Optional calibration factor. Keep at 1.0 initially.
                     thermal_link_factor = float(
-                        getattr(joint_nd["joint_spec"], "thermal_link_factor", 1.0)
+                        getattr(joint_nd["joint_spec"], "thermal_link_factor")
                     )
 
                     G_full_joint = thermal_link_factor * (L0_W_OHM_PER_K2 * T_ref_K) / max(R_elec_T, 1e-12)
                     G = 0.5 * G_full_joint
+
+                    G = G * thermal_link_factor
                     mode = "joint_wf"
 
             else:
@@ -846,31 +852,31 @@ def solve_thermal(
     for i, j, G, tag in thermal_edges:
         nbrs[i].append((j, G, tag))
 
-        if joint_link_debug:
-            print("\n================ JOINT THERMAL CONNECTIVITY DEBUG ================")
+    if joint_link_debug:
+        print("\n================ JOINT THERMAL CONNECTIVITY DEBUG ================")
 
-            for i, nd in enumerate(thermal_nodes):
-                if not nd["is_joint"]:
-                    continue
+        for i, nd in enumerate(thermal_nodes):
+            if not nd["is_joint"]:
+                continue
 
+            print(
+                f"\n[joint_node] idx={i} | seg={nd['seg_id']} | "
+                f"edge={nd['base_edge_id']} | I={nd['I']:.2f} A | "
+                f"L={nd['L']:.6f} m | w={nd['w'] * 1000:.1f} mm | t={nd['t'] * 1000:.1f} mm"
+            )
+
+            if not nbrs[i]:
+                print("  !! NO THERMAL NEIGHBOURS FOUND FOR THIS JOINT !!")
+                continue
+
+            for j, G_fixed, tag in nbrs[i]:
+                nb = thermal_nodes[j]
                 print(
-                    f"\n[joint_node] idx={i} | seg={nd['seg_id']} | "
-                    f"edge={nd['base_edge_id']} | I={nd['I']:.2f} A | "
-                    f"L={nd['L']:.6f} m | w={nd['w'] * 1000:.1f} mm | t={nd['t'] * 1000:.1f} mm"
+                    f"  -> neighbour idx={j} | seg={nb['seg_id']} | "
+                    f"edge={nb['base_edge_id']} | is_joint={nb['is_joint']} | "
+                    f"tag={tag} | G_initial={G_fixed:.6e} W/K | "
+                    f"shared_nodes=({nd['u']},{nd['v']}) <-> ({nb['u']},{nb['v']})"
                 )
-
-                if not nbrs[i]:
-                    print("  !! NO THERMAL NEIGHBOURS FOUND FOR THIS JOINT !!")
-                    continue
-
-                for j, G_fixed, tag in nbrs[i]:
-                    nb = thermal_nodes[j]
-                    print(
-                        f"  -> neighbour idx={j} | seg={nb['seg_id']} | "
-                        f"edge={nb['base_edge_id']} | is_joint={nb['is_joint']} | "
-                        f"tag={tag} | G_initial={G_fixed:.6e} W/K | "
-                        f"shared_nodes=({nd['u']},{nd['v']}) <-> ({nb['u']},{nb['v']})"
-                    )
 
 
 
@@ -1099,12 +1105,12 @@ def solve_thermal(
             P_conv = 0.0
             P_rad = 0.0
 
-            # if joint_cooling_debug:
-            #     # Still calculate for debug logging if requested
-            #     cool = joint_cooling_state(nd, Ti, Tai)
-            #     print(f"[joint_thermal_loss] {f'seg-{nd['seg_id']}'}")
-            #     print(f"  P_conv_actual={cool.P_conv_W:.4f} W | P_rad_actual={cool.P_rad_W:.4f} W")
-            #     print(f"  P_total_loss_applied=0.0000 W (conduction only)")
+            if joint_cooling_debug:
+                # Still calculate for debug logging if requested
+                cool = joint_cooling_state(nd, Ti, Tai)
+                print(f"[joint_thermal_loss] {f'seg-{nd['seg_id']}'}")
+                print(f"  P_conv_actual={cool.P_conv_W:.4f} W | P_rad_actual={cool.P_rad_W:.4f} W")
+                print(f"  P_total_loss_applied=0.0000 W (conduction only)")
         else:
             st = compute_busbar_physics(
                 geom=nd["geom"],
@@ -1174,9 +1180,48 @@ def solve_thermal(
                 R20_joint = joint_R20_ohm(joint_node_ref, debug=False)
                 R_elec_T = R20_joint * (1.0 + ALPHA_CU * (T_joint_C - 20.0))
 
+                # ---------------------------------------------------------
+                # Joint thermal coupling adjustment
+                #
+                # The joint-to-bus thermal conductance is derived using the
+                # Wiedemann–Franz relationship:
+                #
+                #     G_th ≈ (L0 * T) / R_e
+                #
+                # which assumes an ideal metallic conduction path.
+                #
+                # However, real busbar joints exhibit non-ideal behaviour due to:
+                #   • partial contact at microscopic asperities
+                #   • surface oxidation and contamination
+                #   • non-uniform clamping pressure
+                #   • constriction and spreading resistance effects
+                #
+                # These effects reduce the effective thermal conductance relative
+                # to the idealised WF prediction.
+                #
+                # To account for this, a thermal link factor is applied:
+                #
+                #     G_eff = thermal_link_factor · G_WF
+                #
+                # where:
+                #     thermal_link_factor < 1 reduces heat transfer into adjacent busbars
+                #
+                # This improves representation of:
+                #   • localised joint heating
+                #   • realistic temperature gradients
+                #   • reduced thermal smearing into the busbar network
+                #
+                # A value of thermal_link_factor = 0.5 has been adopted to introduce moderate
+                # conservatism while maintaining physical plausibility.
+                #
                 thermal_link_factor = float(
-                    getattr(joint_node_ref["joint_spec"], "thermal_link_factor", 1.0)
+                    getattr(joint_node_ref["joint_spec"], "thermal_link_factor")
                 )
+                # This parameter may be varied to represent joint condition:
+                #   thermal_link_factor ≈ 1.0 → ideal, well-formed joint
+                #   thermal_link_factor ≈ 0.5 → typical practical joint (adopted)
+                #   thermal_link_factor < 0.3 → degraded or poorly installed joint
+                # ---------------------------------------------------------
 
                 G_full_joint = (
                         thermal_link_factor
@@ -1369,7 +1414,7 @@ def solve_thermal(
                     R20_joint = joint_R20_ohm(joint_node_ref, debug=False)
                     
                     thermal_link_factor = float(
-                        getattr(joint_node_ref["joint_spec"], "thermal_link_factor", 1.0)
+                        getattr(joint_node_ref["joint_spec"], "thermal_link_factor")
                     )
                     # C includes 0.5 factor because link is split
                     C = 0.5 * thermal_link_factor * L0_W_OHM_PER_K2
@@ -1467,6 +1512,7 @@ def solve_thermal(
             "I_A": float(nd["I"]),
             "length_m": float(nd["L"]),
             "is_joint": bool(nd["is_joint"]),
+            "joint_id": nd["joint_spec"].joint_id if nd["is_joint"] and nd["joint_spec"] else None,
             "P_gen_W": float(P_gen),
             "P_conv_W": float(P_conv),
             "P_rad_W": float(P_rad),

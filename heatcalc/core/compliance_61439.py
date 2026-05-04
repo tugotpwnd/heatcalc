@@ -203,7 +203,9 @@ def evaluate_tier_compliance(
                 or f"Node {load.node}"
             )
 
-            source_bus = f"Bus {edge.id}"
+            run_id = getattr(edge, "physical_run_id", None)
+            display_id = run_id if isinstance(run_id, int) else edge.id
+            source_bus = f"Bus {display_id}"
 
             ok = T_bus_local <= T_limit
             if not ok:

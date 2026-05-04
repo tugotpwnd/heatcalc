@@ -51,6 +51,22 @@ def _natural_tier_key(tag: str):
     return key
 
 
+def _same_tier_item(a, b) -> bool:
+    if a is b:
+        return True
+    if a is None or b is None:
+        return False
+
+    a_id = getattr(a, "tier_id", None)
+    b_id = getattr(b, "tier_id", None)
+    if a_id and b_id:
+        return str(a_id) == str(b_id)
+
+    a_name = str(getattr(a, "name", getattr(a, "tag", ""))).strip()
+    b_name = str(getattr(b, "name", getattr(b, "tag", ""))).strip()
+    return bool(a_name and b_name and a_name == b_name)
+
+
 def _dims_m_from_tier(t: TierItem) -> Tuple[float, float, float]:
     rect = t._rect if hasattr(t, "_rect") else t.rect()
     wmm = max(1, int(rect.width() / GRID * MM_PER_GRID_MM))
@@ -117,7 +133,7 @@ def _map_tier_item(t: TierItem, solve) -> ReportTier:
         tier_edge_ids = {e.id for e in tier_edges.get(t, [])}
 
         for row in schedule:
-            if row.bus_id not in tier_edge_ids:
+            if not any(eid in tier_edge_ids for eid in getattr(row, "edge_ids", [])):
                 continue
 
             buses.append(
@@ -137,8 +153,14 @@ def _map_tier_item(t: TierItem, solve) -> ReportTier:
         tier_joint_rows = []
 
         for jr in joint_schedule:
-            if jr.joint_id not in tier_edge_ids:
-                continue
+            owner_tier = getattr(jr, "owner_tier", None)
+            if owner_tier is not None:
+                if not _same_tier_item(owner_tier, t):
+                    continue
+            else:
+                joint_edge_id = getattr(jr, "graph_edge_id", None)
+                if joint_edge_id not in tier_edge_ids:
+                    continue
             tier_joint_rows.append(jr)
 
     return ReportTier(

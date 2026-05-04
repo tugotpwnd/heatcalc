@@ -295,6 +295,8 @@ class BusbarJointSpec:
     nut_factor: float = 0.20
     e_streamline: float = 0.5
 
+    joint_id: str | None = None
+    thermal_link_factor: float = 1
     csa_factor: float = 1.0
     h_contact: float = 5000.0  # W/m²K
 

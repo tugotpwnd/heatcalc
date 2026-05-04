@@ -203,11 +203,17 @@ def format_joint_tooltip(result) -> str:
     P = float(_get(result, "P_gen_W", 0.0))
     Ta = float(_get(result, "ambient_C", 0.0))
     dT = T - Ta
+    joint_number = _get(result, "joint_number", None)
+    if joint_number not in (None, ""):
+        joint_ref = f"Joint {joint_number}"
+    else:
+        jid = _get(result, "joint_id", "")
+        joint_ref = str(jid)[:8] if jid else "-"
 
     html = f"""
     <div style='font-family: sans-serif; min-width: 220px;'>
 
-        <b style='color:#58a6ff;'>Joint Result</b><br/>
+        <b style='color:#58a6ff;'>Joint Result ({joint_ref})</b><br/>
 
         <table style='border-spacing:4px; margin-top:4px;'>
         <tr>
@@ -927,6 +933,18 @@ class BusLoadItem(QGraphicsEllipseItem):
         self._label.setBrush(QBrush(QColor("#d0d7de")))
         self._label.setPos(10, -10)
 
+        self.node_id: int | None = None
+        self._node_label = QGraphicsSimpleTextItem("", self)
+        self._node_label.setBrush(QBrush(QColor("#58a6ff")))
+        self._node_label.setPos(10, 5)
+
+    def set_node_id(self, nid: int | None):
+        self.node_id = nid
+        if nid is not None:
+            self._node_label.setText(f"Node: {nid}")
+        else:
+            self._node_label.setText("")
+
     def set_disconnected(self, disconnected: bool):
         self.disconnected = disconnected
         if disconnected:
@@ -1118,7 +1136,7 @@ class BusLoadItem(QGraphicsEllipseItem):
 
 class BusJoinItem(QGraphicsEllipseItem):
 
-    def __init__(self, center: QPointF, spec: BusbarJointSpec | None = None):
+    def __init__(self, center: QPointF, spec: BusbarJointSpec | None = None, join_id: str | None = None):
         r = 6
         super().__init__(-r, -r, 2 * r, 2 * r)
 
@@ -1135,6 +1153,9 @@ class BusJoinItem(QGraphicsEllipseItem):
         # use the passed spec directly
         self.spec = spec or BusbarJointSpec()
 
+        self.join_id = join_id or self.spec.joint_id or str(uuid.uuid4())[:8]
+        self.spec.joint_id = self.join_id
+
         # mirror spec fields onto UI-facing attributes
         self.overlap_m = float(self.spec.overlap_m)
         self.bolt_count = int(self.spec.bolt_count)
@@ -1146,6 +1167,7 @@ class BusJoinItem(QGraphicsEllipseItem):
         self.e_streamline = float(self.spec.e_streamline)
         self.csa_factor = float(self.spec.csa_factor)
         self.h_contact = float(self.spec.h_contact)
+        self.joint_number: int | None = None
 
         self._label = QGraphicsSimpleTextItem(self._label_text(), self)
         self._label.setBrush(QBrush(QColor("#d0d7de")))
@@ -1166,11 +1188,21 @@ class BusJoinItem(QGraphicsEllipseItem):
         self.update()
 
     def _label_text(self) -> str:
+        heading = (
+            f"Joint {self.joint_number}"
+            if self.joint_number is not None
+            else f"ID: {self.join_id[:8]}"
+        )
         return (
+            f"{heading}\n"
             f"{self.joint_type}\n"
             f"{self.bolt_count}x M{self.bolt_dia_mm:.0f}\n"
-            f"{self.torque_Nm:.0f} Nm"
+            f"{self.torque_Nm:.1f} Nm"
         )
+
+    def set_joint_number(self, joint_number: int | None):
+        self.joint_number = None if joint_number is None else int(joint_number)
+        self._label.setText(self._label_text())
 
     def refresh_spec(self):
         self.spec.x_m = 0.0
@@ -1444,6 +1476,7 @@ class BusJoinItem(QGraphicsEllipseItem):
             "bolt_dia_mm": self.bolt_dia_mm,
             "torque_Nm": self.torque_Nm,
             "joint_type": self.joint_type,
+            "joint_id": self.join_id,
             "nut_factor": self.nut_factor,
             "e_streamline": self.e_streamline,
             "csa_factor": self.csa_factor,
@@ -1456,6 +1489,7 @@ class BusJoinItem(QGraphicsEllipseItem):
         p = QPointF(d["x"], d["y"])
 
         spec = BusbarJointSpec(
+            joint_id=d.get("joint_id"),
             overlap_m=d.get("overlap_m", 0.05),
             bolt_count=d.get("bolt_count", 4),
             bolt_dia_mm=d.get("bolt_dia_mm", 10.0),
@@ -1493,6 +1527,18 @@ class BusSourceItem(QGraphicsEllipseItem):
         self._label.setBrush(QBrush(QColor("#d0d7de")))
         self._label.setPos(10, -10)
         self.disconnected = False
+
+        self.node_id: int | None = None
+        self._node_label = QGraphicsSimpleTextItem("", self)
+        self._node_label.setBrush(QBrush(QColor("#58a6ff")))
+        self._node_label.setPos(10, 5)
+
+    def set_node_id(self, nid: int | None):
+        self.node_id = nid
+        if nid is not None:
+            self._node_label.setText(f"Node: {nid}")
+        else:
+            self._node_label.setText("")
 
     def set_disconnected(self, disconnected: bool):
         self.disconnected = disconnected
