@@ -30,48 +30,118 @@ class JointScheduleRow:
     P_W: float
 
     segment_count: int
-
 def build_bus_schedule(graph, thermal_result):
     """
-    Builds a per-bus schedule from ThermalSolveResult.
+    Build a per-parent-busbar schedule from ThermalSolveResult.
 
-    Groups segmented solver results back to physical runs (collinear edges of same tier/geom).
+    The thermal solver may split one drawn BusLineItem into many graph edges
+    due to:
+      - thermal discretisation,
+      - endpoint/intersection splitting,
+      - explicit joint splitting.
+
+    For reporting, those solver edges are grouped back to the actual parent
+    BusLineItem using edge.ui_item. This means each drawn busbar appears as
+    one report line item.
     """
 
-    # Group by physical_run_id if available, else by edge_id
-    run_to_items = defaultdict(list)
+    def edge_sort_key(edge):
+        """
+        Stable visual-ish ordering for bus numbering.
+        Sort by upper/left position of the edge in the scene, then edge ID.
+        """
+        try:
+            p0 = graph.nodes[edge.u].p
+            p1 = graph.nodes[edge.v].p
+            return (
+                min(p0.y(), p1.y()),
+                min(p0.x(), p1.x()),
+                int(edge.id),
+            )
+        except Exception:
+            return (0.0, 0.0, int(getattr(edge, "id", 0)))
 
-    for er in thermal_result.edge_results:
-        if er.is_joint:
+    def group_key_for_edge(edge):
+        """
+        Preferred grouping:
+            parent BusLineItem -> one drawn busbar.
+
+        Fallbacks:
+            physical_run_id -> legacy grouping,
+            edge.id          -> final safe fallback.
+        """
+        ui_item = getattr(edge, "ui_item", None)
+
+        if ui_item is not None:
+            # bus_id is persistent through save/load; id(ui_item) is runtime fallback.
+            parent_id = getattr(ui_item, "bus_id", None)
+            if parent_id:
+                return ("ui", str(parent_id))
+            return ("ui_obj", id(ui_item))
+
+        run_id = getattr(edge, "physical_run_id", None)
+        if run_id is not None:
+            return ("run", run_id)
+
+        return ("edge", int(edge.id))
+
+    group_to_items = defaultdict(list)
+    group_sort_keys = {}
+
+    for er in getattr(thermal_result, "edge_results", []) or []:
+        if getattr(er, "is_joint", False):
             continue
+
         edge = graph.edges.get(er.edge_id)
         if edge is None:
             continue
 
-        # Prefer physical_run_id for grouping collinear segments
-        run_id = getattr(edge, "physical_run_id", None)
-        if run_id is None:
-            run_id = f"e{er.edge_id}"
+        key = group_key_for_edge(edge)
 
-        run_to_items[run_id].append((edge, er))
+        group_to_items[key].append((edge, er))
+
+        if key not in group_sort_keys:
+            group_sort_keys[key] = edge_sort_key(edge)
+        else:
+            group_sort_keys[key] = min(group_sort_keys[key], edge_sort_key(edge))
 
     rows = []
 
-    for run_id, items in run_to_items.items():
-        edges = [it[0] for it in items]
-        results = [it[1] for it in items]
+    ordered_keys = sorted(
+        group_to_items.keys(),
+        key=lambda k: group_sort_keys.get(k, (0.0, 0.0, 0)),
+    )
 
-        # Representative geometry from first edge
+    for display_id, key in enumerate(ordered_keys, start=1):
+        items = group_to_items[key]
+
+        edges = [edge for edge, _ in items]
+        results = [er for _, er in items]
+
+        if not edges:
+            continue
+
         first = edges[0]
 
-        temps_max = [r.T_C for r in results]
-        temps_min = [r.T_min_C for r in results]
-        currents = [r.I_A for r in results]
-        losses = [r.P_gen_W for r in results]
+        temps_max = [
+            float(getattr(r, "T_C", 0.0) or 0.0)
+            for r in results
+        ]
 
-        # bus_id for display - if it's a physical run ID, use it,
-        # else try to parse the edge ID back.
-        display_id = run_id if isinstance(run_id, int) else int(str(run_id)[1:])
+        temps_min = [
+            float(getattr(r, "T_min_C", getattr(r, "T_C", 0.0)) or 0.0)
+            for r in results
+        ]
+
+        currents = [
+            float(getattr(r, "I_A", 0.0) or 0.0)
+            for r in results
+        ]
+
+        losses = [
+            float(getattr(r, "P_gen_W", 0.0) or 0.0)
+            for r in results
+        ]
 
         rows.append(
             BusScheduleRow(
@@ -79,7 +149,7 @@ def build_bus_schedule(graph, thermal_result):
                 width_mm=float(first.width_mm),
                 thickness_mm=float(first.thickness_mm),
                 bars=int(first.bars_in_parallel),
-                length_m=float(sum(e.length_m for e in edges)),
+                length_m=float(sum(float(e.length_m) for e in edges)),
 
                 I_max_A=max(currents) if currents else 0.0,
                 T_max_C=max(temps_max) if temps_max else 0.0,
@@ -87,12 +157,10 @@ def build_bus_schedule(graph, thermal_result):
                 P_total_W=sum(losses),
 
                 segment_count=len(results),
-                edge_ids=[e.id for e in edges],
+                edge_ids=[int(e.id) for e in edges],
             )
         )
 
-    # sort by bus_id for consistent report order
-    rows.sort(key=lambda x: x.bus_id)
     return rows
 
 def build_joint_schedule(graph, thermal_result):

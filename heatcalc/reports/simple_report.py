@@ -1495,10 +1495,9 @@ def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, c
             H3_NUM
         ))
         flow.append(Paragraph(
-            "The segments correspond to discretised thermal elements of the busbar, representing localised regions"
-            " of heat generation, transfer, and conduction, rather than distinct physical busbars themselves."
-            " This segmentation enables spatial variation in temperature, resistance, and joint effects"
-            " along the length of a single conductor.",
+            "The table below summarises each drawn parent busbar as a single line item. "
+            "Thermal solver segments are aggregated internally to determine the total busbar loss, "
+            "minimum working temperature, and maximum hotspot temperature for each parent busbar.",
             BodySmall
         ))
         flow.append(bus_working_temperature_table(tier, comp))
