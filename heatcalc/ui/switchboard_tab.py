@@ -8,7 +8,8 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QGroupBox,
     QLabel, QFormLayout, QLineEdit, QCheckBox, QSpinBox,
     QSplitter, QListWidget, QListWidgetItem, QAbstractItemView, QTableView,
-    QToolButton, QComboBox, QMessageBox, QSizePolicy, QDoubleSpinBox
+    QToolButton, QComboBox, QMessageBox, QSizePolicy, QDoubleSpinBox,
+    QScrollArea, QTabWidget, QLayout
 )
 from PyQt5.QtGui import QFontMetrics
 
@@ -135,6 +136,11 @@ class SwitchboardTab(QWidget):
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(8, 8, 8, 8)
         left_lay.setSpacing(10)
+        left_lay.setSizeConstraint(QLayout.SetMinimumSize)
+        project_heading = QLabel("INSTALLATION · ALL TIERS")
+        project_heading.setWordWrap(True)
+        project_heading.setStyleSheet("font-weight: bold; color: #3873a0; padding: 6px 0;")
+        left_lay.addWidget(project_heading)
 
         # Global flag (affects curves)
         self.cb_wall = QCheckBox("Wall-mounted installation")
@@ -202,13 +208,21 @@ class SwitchboardTab(QWidget):
         self._tier_clipboard: dict | None = None
 
         # Selected tier basics
+        tier_heading = QLabel("SELECTED TIER · SETTINGS & CONTENTS")
+        tier_heading.setWordWrap(True)
+        tier_heading.setStyleSheet("font-weight: bold; color: #3873a0; padding: 6px 0;")
+        left_lay.addWidget(tier_heading)
         gb_sel = CollapsibleGroupBox("Selected tier")
         sel_form = QFormLayout()
+        sel_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         gb_sel.setLayout(sel_form)
         self.lbl_sel_name = QLabel("-")
         self.ed_name = QLineEdit("")
         self.ed_name.editingFinished.connect(self._apply_name)
         self.lbl_size = QLabel("-")
+        sel_form.addRow("Current:", self.lbl_sel_name)
+        sel_form.addRow("Rename:", self.ed_name)
+        sel_form.addRow("Size (mm):", self.lbl_size)
 
         # ---------------- Vent controls (clean layout) ----------------
         # ---- Vent controls (single-line layout) ------------------------
@@ -273,9 +287,6 @@ class SwitchboardTab(QWidget):
         self.lbl_effective_limit = QLabel("Effective limit: –")  # helper label
         sel_form.addRow("Effective:", self.lbl_effective_limit)
 
-        sel_form.addRow("Current:", self.lbl_sel_name)
-        sel_form.addRow("Rename:", self.ed_name)
-        sel_form.addRow("Size (mm):", self.lbl_size)
         left_lay.addWidget(gb_sel)
 
         # Selected tier contents (list)
@@ -283,6 +294,7 @@ class SwitchboardTab(QWidget):
         v_contents = QVBoxLayout()
         gb_contents.setLayout(v_contents)
         self.list_contents = QListWidget()
+        self.list_contents.setFixedHeight(190)
         self.list_contents.setSelectionMode(QAbstractItemView.SingleSelection)
         v_contents.addWidget(self.list_contents)
 
@@ -297,18 +309,19 @@ class SwitchboardTab(QWidget):
 
         self.lbl_total_heat = QLabel("Total heat: 0.0 W")
         v_contents.addWidget(self.lbl_total_heat)
-        left_lay.addWidget(gb_contents, 1)
+        left_lay.addWidget(gb_contents)
 
         # Component library (search + category + table)
+        library_heading = QLabel("ADD EQUIPMENT TO SELECTED TIER")
+        library_heading.setWordWrap(True)
+        library_heading.setStyleSheet("font-weight: bold; color: #3873a0; padding: 6px 0;")
+        left_lay.addWidget(library_heading)
         gb_db = CollapsibleGroupBox("Component library")
         v_db = QVBoxLayout()
         gb_db.setLayout(v_db)
 
-        top_row = QWidget(); tr = QHBoxLayout(top_row); tr.setContentsMargins(0, 0, 0, 0)
         self.cmb_category = QComboBox(); self.cmb_category.addItem("All categories")
         self.ed_search = QLineEdit(); self.ed_search.setPlaceholderText("Search description / part #")
-        tr.addWidget(self.cmb_category, 0); tr.addWidget(self.ed_search, 1)
-        v_db.addWidget(top_row)
 
         self.btn_refresh_components = QToolButton()
         self.btn_refresh_components.setText("↻")
@@ -326,6 +339,8 @@ class SwitchboardTab(QWidget):
         v_db.addWidget(top_row)
 
         self.tbl = QTableView()
+        self.tbl.setFixedHeight(260)
+        self.tbl.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl.doubleClicked.connect(self._add_component_from_table)
@@ -339,7 +354,7 @@ class SwitchboardTab(QWidget):
         ar.addWidget(QLabel("Qty:")); ar.addWidget(self.sp_qty); ar.addStretch(1); ar.addWidget(self.btn_add_comp)
         v_db.addWidget(add_row)
 
-        left_lay.addWidget(gb_db, 2)
+        left_lay.addWidget(gb_db)
 
         # --- Cable adder (next to/under component library) ---
         gb_cab = CollapsibleGroupBox("Cable adder")
@@ -357,7 +372,7 @@ class SwitchboardTab(QWidget):
         self.btn_add = QPushButton("Add tier"); self.btn_del = QPushButton("Delete selected")
         self.btn_add.clicked.connect(self._add_tier); self.btn_del.clicked.connect(self._delete_selected)
         br.addWidget(self.btn_add); br.addWidget(self.btn_del)
-        left_lay.addWidget(btn_row)
+        left_lay.insertWidget(left_lay.indexOf(gb_sel), btn_row)
 
         # Row for adding a brand-new component into the CSV
         add_new_row = QWidget();
@@ -372,13 +387,33 @@ class SwitchboardTab(QWidget):
         # ---- Splitter so left can be ~half ----
         # ---- Splitter: Left panel | Designer | Bus panel ----
         splitter = QSplitter()
+        self.splitter = splitter
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
 
         # bus tools panel (RHS)
         self.bus_panel = BusbarToolsPanel(self.view, parent=self)
+        from .thermal_preview_panel import ThermalPreviewPanel
+        self.preview_panel = ThermalPreviewPanel(self)
+        self.right_tabs = QTabWidget()
 
-        splitter.addWidget(left)
+        def scroll_panel(widget):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setWidget(widget)
+            return scroll
+
+        # Each section keeps its content height; the panel takes overflow.
+        left_lay.addStretch(1)
+        self.left_scroll = scroll_panel(left)
+        self.bus_panel.layout().setSizeConstraint(QLayout.SetMinimumSize)
+        self.right_tabs.addTab(scroll_panel(self.bus_panel), "Busbar")
+        self.right_tabs.addTab(scroll_panel(self.preview_panel), "Preview")
+        self.right_tabs.currentChanged.connect(lambda _: self.preview_panel.refresh())
+        splitter.addWidget(self.left_scroll)
         splitter.addWidget(self.view)
-        splitter.addWidget(self.bus_panel)
+        splitter.addWidget(self.right_tabs)
 
         # stretch behaviour
         splitter.setStretchFactor(0, 0)  # left tools fixed-ish
@@ -386,11 +421,13 @@ class SwitchboardTab(QWidget):
         splitter.setStretchFactor(2, 0)  # bus panel fixed-ish
 
         # initial sizes
-        splitter.setSizes([350, 1200, 300])
+        splitter.setSizes([440, 1000, 400])
 
         # optional caps
-        left.setMaximumWidth(500)
-        self.bus_panel.setMaximumWidth(350)
+        self.left_scroll.setMaximumWidth(1000)
+        self.right_tabs.setMaximumWidth(700)
+        self.left_scroll.setMinimumWidth(280)
+        self.right_tabs.setMinimumWidth(320)
 
         root = QHBoxLayout(self)
         root.addWidget(splitter)
@@ -998,7 +1035,12 @@ class SwitchboardTab(QWidget):
 
         return None
 
-    def solve_all_thermal(self, apply_to_ui: bool = False):
+    def solve_all_thermal(self, apply_to_ui: bool = False, *, airflow_overrides=None,
+                          preview_only: bool = False):
+        # A failed attempt must never leave an older solve available to export.
+        if not preview_only:
+            self.last_solve_result = None
+            self.preview_panel.set_result(None)
         from heatcalc.core.bus_graph import extract_graph
         from heatcalc.core.bus_current_solver import (
             solve_currents,
@@ -1059,7 +1101,8 @@ class SwitchboardTab(QWidget):
             filter_graph_to_source_component(graph)
             solve_currents(graph)
 
-        self._graph = graph
+        if not preview_only:
+            self._graph = graph
 
         # -------------------------------------------------
         # 2. Resolve edge ownership robustly
@@ -1130,6 +1173,7 @@ class SwitchboardTab(QWidget):
                     ip_rating_n=ip_rating_n,
                     solar_delta_K=solar_dt,
                     P_override_W=P_base + P_bus,
+                    selected_airflow_m3h=(airflow_overrides or {}).get(t),
                 )
                 res["ambient_C"] = float(ambient)
                 tier_res[t] = res
@@ -1226,7 +1270,7 @@ class SwitchboardTab(QWidget):
             else:
                 last_node_temps = {}
 
-            if dT < tol_T and dP < tol_P:
+            if not any_bus_items or (dT < tol_T and dP < tol_P and global_sol.converged):
                 converged = True
                 P_bus_by_tier = P_bus_new_by_tier
                 break
@@ -1249,9 +1293,9 @@ class SwitchboardTab(QWidget):
                 "converged": bool(converged),
                 "iterations": len(history),
                 "history": history,
-                "P_base_W": float(getattr(t, "total_heat_w", 0.0)),
+                "P_base_W": float(getattr(t, "static_heat_w", 0.0)),
                 "P_bus_W": float(P_bus_by_tier.get(t, 0.0)),
-                "P_total_W": float(getattr(t, "total_heat_w", 0.0)) + float(P_bus_by_tier.get(t, 0.0)),
+                "P_total_W": float(getattr(t, "static_heat_w", 0.0)) + float(P_bus_by_tier.get(t, 0.0)),
             }
             final_tier_results[t] = res
 
@@ -1267,7 +1311,10 @@ class SwitchboardTab(QWidget):
             "solver_converged": converged,
         }
 
-        if apply_to_ui:
+        if not preview_only:
+            self.last_solve_result = result_dict
+            self.preview_panel.set_result(result_dict)
+        if apply_to_ui and not preview_only:
             # Look for BusbarToolsPanel to apply results to graphics
             if hasattr(self, "bus_panel"):
                 self.bus_panel._apply_results(result_dict)
@@ -1397,6 +1444,8 @@ class SwitchboardTab(QWidget):
     # UI refresh helpers
     # ------------------------------------------------------------------ #
     def _update_left_from_selection(self):
+        if hasattr(self, "preview_panel"):
+            self.preview_panel.refresh()
         it = self._selected_tier()
         vents_allowed = _vents_allowed_by_ip(self.project)
 

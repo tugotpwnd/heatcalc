@@ -208,7 +208,19 @@ def annex_k_sealed_p890(
     }
 
 
-def calc_tier_iec60890(
+def calc_tier_iec60890(*, selected_airflow_m3h=None, **kwargs) -> Dict:
+    """Installed-condition calculation, optionally with a selected fan."""
+    from .fan_cooling import apply_fan_operating_point
+    result = _calc_tier_natural(**kwargs)
+    flow = selected_airflow_m3h
+    if flow is None:
+        flow = getattr(kwargs["tier"], "selected_airflow_m3h", 0.0)
+    return apply_fan_operating_point(
+        result, airflow_m3h=flow, altitude_m=kwargs["altitude_m"],
+    )
+
+
+def _calc_tier_natural(
     *,
     tier: TierItem,
     tiers: List[TierItem],
@@ -388,13 +400,13 @@ def calc_tier_iec60890(
             "vent_recommended": False,
 
             # ---- temperatures (external conditions dominate) ----
-            "dt_mid": 0.0,
-            "dt_top": 0.0,
-            "dt_075": None,
+            "dt_mid": dt_mid,
+            "dt_top": dt_top,
+            "dt_075": dt_075,
 
-            "T_mid": ambient_C + external_dt,
-            "T_top": ambient_C + external_dt,
-            "T_075": None,
+            "T_mid": T_mid,
+            "T_top": T_top,
+            "T_075": T_075,
 
             "limit_C": limit_C,
             "compliant_mid": False,

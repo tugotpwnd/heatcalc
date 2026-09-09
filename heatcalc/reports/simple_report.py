@@ -293,6 +293,8 @@ class TierThermal:
 
     # --- Cooling / dissipation breakdown (returned by IEC60890 calc) ---
     airflow_m3h: Optional[float] = None
+    selected_airflow_m3h: float = 0.0
+    selected_fan_name: str = ""
     P_material_W: Optional[float] = None
     P_cooling_W: Optional[float] = None
     vent_recommended: bool = False
@@ -451,31 +453,8 @@ TABLE_WIDTH = 175 * mm  # ✅ increased width
 from heatcalc.core.compliance_61439 import evaluate_derating
 
 def _standard_table_style():
-    return TableStyle([
-        # Fonts
-        ("FONT", (0,0), (-1,0), FONT_B, 9),
-        ("FONT", (0,1), (-1,-1), FONT, 9),
-
-        # Header styling
-        ("BACKGROUND", (0,0), (-1,0), green),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-
-        # Alignment
-        ("ALIGN", (0,0), (-1,-1), "CENTER"),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-
-        ("GRID", (0,0), (-1,-1), 0.5, colors.black),
-
-        # Optional soft rows
-        ("ROWBACKGROUNDS", (0,1), (-1,-1),
-            [colors.white, colors.whitesmoke]),
-
-        # Padding
-        ("LEFTPADDING", (0,0), (-1,-1), 4),
-        ("RIGHTPADDING", (0,0), (-1,-1), 4),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 3),
-        ("TOPPADDING", (0,0), (-1,-1), 3),
-    ])
+    from .table_styles import standard_table_style
+    return standard_table_style()
 
 # ---------------- COMPONENTS ----------------
 def _components_table_for_tier(tier: TierRow) -> Table:
@@ -1400,7 +1379,7 @@ def component_derating_table(tier: TierRow, th: TierThermal) -> Table | Paragrap
     header = ["Component", "Rated (A)", "Internal Temp (°C)", "Derated Output (A)"]
     rows = [header]
 
-    T_eval = th.max_C
+    T_eval = th.T_top
 
     for c in tier.components:
         derated = evaluate_derating(c, T_eval)
@@ -1472,7 +1451,7 @@ def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, c
     from heatcalc.core.compliance_61439 import evaluate_derating
 
     for c in tier.components:
-        c.derated_current_A = evaluate_derating(c, th.max_C)
+        c.derated_current_A = evaluate_derating(c, th.T_top)
 
     if has_buses and comp is not None and getattr(comp, "terminal_rows", None):
         flow.append(Paragraph(
@@ -1489,7 +1468,21 @@ def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, c
             H3_NUM
         ))
         flow.append(component_derating_table(tier, th))
+        flow.append(Paragraph(
+            f"Current capacity evaluated at solved top air temperature ({th.T_top:.1f}°C), "
+            "with the existing 80% rated-current ceiling. Component temperature ratings "
+            "must also be satisfied.", BodySmall
+        ))
         flow.append(Spacer(1, 6))
+
+    if th.selected_airflow_m3h > 0:
+        from xml.sax.saxutils import escape
+        flow.append(Paragraph(
+            f"Selected fan: {escape(th.selected_fan_name or 'Unspecified model')}; "
+            f"delivered airflow {th.selected_airflow_m3h:.1f} m³/h. "
+            "Temperatures use an estimated fan heat balance with sealed-enclosure "
+            "dissipation and the existing solar allowance.", BodySmall
+        ))
 
 # ------------------------------------------------------------------
 # IEC Calculation

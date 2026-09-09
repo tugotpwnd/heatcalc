@@ -494,7 +494,8 @@ class MainWindow(QMainWindow):
         # 2) Perform full thermal solve to get bus results
         if hasattr(self.switchboard_tab, "solve_all_thermal"):
             # This ensures BusLineItems have thermal_results populated for the report.
-            self.switchboard_tab.solve_all_thermal(apply_to_ui=True)
+            if not self.switchboard_tab.solve_all_thermal(apply_to_ui=True):
+                return
 
         # 3) Output PDF path
         out_path_str, _ = QFileDialog.getSaveFileName(self, "Export PDF Report", "", "PDF (*.pdf)")

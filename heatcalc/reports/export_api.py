@@ -240,7 +240,7 @@ def export_project_report(
     Export a PDF report.
 
     IMPORTANT:
-    - All thermal results (including airflow) come exclusively from calc_tier_iec60890().
+    - Thermal results use the latest coupled solve, including selected fan airflow.
     - No airflow.py usage is permitted.
     """
     meta = _meta_from_project(project)
@@ -260,7 +260,7 @@ def export_project_report(
             "No Results",
             "Please run the thermal solve before exporting the report."
         )
-        return out_pdf
+        return None
 
     # Refresh curve_no + wall_mounted etc from the latest geometry before reporting.
     if hasattr(switchboard_tab, "_recompute_all_curves"):
@@ -308,6 +308,7 @@ def export_project_report(
 
     # IEC 60890 / temperature results per tier.
     tier_thermals: list[TierThermal] = []
+    blocked: List[Tuple[str, List[str], float]] = []
 
     if ambient_C is not None:
 
@@ -325,7 +326,6 @@ def export_project_report(
         except Exception:
             pass
 
-        blocked: List[Tuple[str, List[str], float]] = []  # (tier_name, blockers, delta_allow_K)
         for t in report_tier_items:
 
             # ---------------- Vent areas via louvre model ----------------
@@ -357,6 +357,10 @@ def export_project_report(
                 vent_test_area_cm2=vent_test_area_cm2,
                 solar_delta_K=solar_dt,
             )
+            # Use the authoritative coupled result, including the saved fan and
+            # temperature-dependent busbar losses from the pre-export solve.
+            solved = getattr(switchboard_tab, "last_solve_result", None) or {}
+            res = solved.get("tiers", {}).get(t, res)
 
             # ------------------------------------------------------------
             # HARD BLOCK: thermally infeasible tiers
@@ -399,6 +403,8 @@ def export_project_report(
                     compliant_top=bool(res.get("compliant_top", False)),
 
                     airflow_m3h=res.get("airflow_m3h"),
+                    selected_airflow_m3h=res.get("selected_airflow_m3h", 0.0),
+                    selected_fan_name=getattr(t, "selected_fan_name", ""),
                     P_material_W=res.get("P_material"),
                     P_cooling_W=res.get("P_cooling"),
                     vent_recommended=bool(res.get("vent_recommended", False)),

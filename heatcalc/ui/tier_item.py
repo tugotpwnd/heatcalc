@@ -606,6 +606,8 @@ class TierItem(ResizableBox):
 
         # --- Live IEC overlay ----------------------------------------------
         self.live_thermal: dict | None = None
+        self.selected_airflow_m3h = 0.0
+        self.selected_fan_name = ""
         self.show_live_overlay: bool = True
         self.overlay_item = TierOverlayItem(self)
 
@@ -1102,6 +1104,8 @@ class TierItem(ResizableBox):
 
             # Limits
             "max_temp_C": self.max_temp_C,
+            "selected_airflow_m3h": self.selected_airflow_m3h,
+            "selected_fan_name": self.selected_fan_name,
             "use_auto_component_temp": self.use_auto_component_temp,
 
             # Horizontal partitions
@@ -1150,6 +1154,8 @@ class TierItem(ResizableBox):
         t.wall_mounted = bool(d.get("wall_mounted", False))
         t.curve_no = int(d.get("curve_no", 1))
         t.max_temp_C = int(d.get("max_temp_C", 70))
+        t.selected_airflow_m3h = max(0.0, float(d.get("selected_airflow_m3h", 0.0)))
+        t.selected_fan_name = str(d.get("selected_fan_name", ""))
         t.use_auto_component_temp = bool(d.get("use_auto_component_temp", False))
 
         # Horizontal partitions

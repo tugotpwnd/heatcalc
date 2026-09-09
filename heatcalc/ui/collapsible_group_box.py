@@ -13,7 +13,7 @@ class CollapsibleGroupBox(QGroupBox):
         self._inner_layout.setContentsMargins(0, 0, 0, 0)
 
         outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(10, 22, 10, 10)
         outer.addWidget(self._content)
         super().setLayout(outer)
 
@@ -42,6 +42,7 @@ class CollapsibleGroupBox(QGroupBox):
         else:
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             self.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+        self.updateGeometry()
 
     def _on_toggled(self, checked: bool):
         self._apply_collapsed_look(not checked)
