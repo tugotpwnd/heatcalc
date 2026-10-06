@@ -911,6 +911,12 @@ class DesignerView(QGraphicsView):
             ambient_C = float(air_payload)
 
         line_samples = {}
+        joint_numbers_by_edge = {}
+        for idx, join in enumerate(getattr(graph_obj, "joins", []) or [], start=1):
+            joint_numbers_by_edge[int(join.edge_id)] = idx
+            ui_join = getattr(join, "ui_item", None)
+            if ui_join is not None and hasattr(ui_join, "set_joint_number"):
+                ui_join.set_joint_number(idx)
 
         for e in edge_rows:
 
@@ -946,6 +952,8 @@ class DesignerView(QGraphicsView):
 
             if edge_obj.ui_join_item is not None:
                 join = edge_obj.ui_join_item
+                if edge_id in joint_numbers_by_edge:
+                    e["joint_number"] = joint_numbers_by_edge[edge_id]
                 join.temperature_C = T
                 join.thermal_result = e
 

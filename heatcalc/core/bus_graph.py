@@ -102,6 +102,7 @@ class Join:
     x_m: float
     spec: BusbarJointSpec
     ui_item: object | None = None
+    owner_tier: object | None = None
 
 
 @dataclass
@@ -455,6 +456,18 @@ def _shared_joint_endpoints(edge: Edge, joint_edge: Edge) -> list[int]:
     if edge.u == joint_edge.v or edge.v == joint_edge.v:
         out.append(joint_edge.v)
     return out
+
+
+def _owning_tier_from_item(item) -> TierItem | None:
+    obj = item
+    while obj is not None:
+        if isinstance(obj, TierItem):
+            return obj
+        if hasattr(obj, "parentItem"):
+            obj = obj.parentItem()
+        else:
+            break
+    return None
 
 
 def _geom_tuple(edge: Edge) -> tuple[float, float, int]:
@@ -837,6 +850,8 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
             best = min(nodes.values(), key=lambda n: _dist(p, n.p))
             source_node = best.id
             source_ui_item = item
+            if hasattr(item, "set_node_id"):
+                item.set_node_id(best.id)
             if item not in best.ui_items:
                 best.ui_items.append(item)
 
@@ -848,6 +863,8 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
             p = item.center()
             best = min(nodes.values(), key=lambda n: _dist(p, n.p))
             loads.append(Load(best.id, item.I_load_A, ui_item=item))
+            if hasattr(item, "set_node_id"):
+                item.set_node_id(best.id)
             if item not in best.ui_items:
                 best.ui_items.append(item)
 
@@ -861,8 +878,15 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
             best_edge = None
             best_t = None
             best_dist = 1e9
+            parent_bus = item.parentItem()
+            candidate_edges = [
+                e for e in edges.values()
+                if isinstance(parent_bus, BusLineItem) and e.ui_item is parent_bus
+            ]
+            if not candidate_edges:
+                candidate_edges = list(edges.values())
 
-            for e in edges.values():
+            for e in candidate_edges:
                 a = nodes[e.u].p
                 b = nodes[e.v].p
 
@@ -897,8 +921,13 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
 
                 spec = BusbarJointSpec(**vars(item.spec))
                 spec.x_m = x_m
-
-                parent_bus = item.parentItem()
+                owner_tier = (
+                    _owning_tier_from_item(parent_bus)
+                    if isinstance(parent_bus, BusLineItem)
+                    else None
+                )
+                if owner_tier is None:
+                    owner_tier = best_edge.tier
 
                 if isinstance(parent_bus, BusLineItem):
                     # ---- TRUE HOST (from UI ownership) ----
@@ -945,6 +974,7 @@ def extract_graph(scene, px_to_m=0.001, debug=False):
                         x_m=x_m,
                         spec=spec,
                         ui_item=item,
+                        owner_tier=owner_tier,
                     )
                 )
 

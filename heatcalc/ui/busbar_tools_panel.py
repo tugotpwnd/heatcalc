@@ -510,6 +510,16 @@ class BusbarToolsPanel(QWidget):
 
         ambient = float(getattr(self.swb.project.meta, "ambient_C", 40.0))
 
+        for idx, join in enumerate(getattr(graph, "joins", []) or [], start=1):
+            er = edge_result_by_id.get(join.edge_id)
+            if er is not None:
+                er.joint_number = idx
+                er.ambient_C = float(air_by_edge.get(er.edge_id, ambient))
+
+            ui_join = getattr(join, "ui_item", None)
+            if ui_join is not None and hasattr(ui_join, "set_joint_number"):
+                ui_join.set_joint_number(idx)
+
 
         for er in global_sol.edge_results:
             edge = graph.edges[er.edge_id]
@@ -526,6 +536,7 @@ class BusbarToolsPanel(QWidget):
         for er in global_sol.edge_results:
             edge = graph.edges[er.edge_id]
             if edge.is_joint and edge.ui_join_item:
+                er.ambient_C = float(air_by_edge.get(er.edge_id, ambient))
                 edge.ui_join_item.thermal_result = er
 
         for er in global_sol.edge_results:

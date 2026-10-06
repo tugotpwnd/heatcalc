@@ -16,55 +16,148 @@ class BusScheduleRow:
     P_total_W: float
 
     segment_count: int
+    edge_ids: list[int] = None
 
 @dataclass
 class JointScheduleRow:
     joint_id: int
     bus_id: int
+    graph_edge_id: int
+    owner_tier: object | None
 
     I_A: float
     T_C: float
     P_W: float
 
     segment_count: int
-
 def build_bus_schedule(graph, thermal_result):
     """
-    Builds a per-bus schedule from ThermalSolveResult.
+    Build a per-parent-busbar schedule from ThermalSolveResult.
 
-    Groups segmented solver results back to original edge_id.
+    The thermal solver may split one drawn BusLineItem into many graph edges
+    due to:
+      - thermal discretisation,
+      - endpoint/intersection splitting,
+      - explicit joint splitting.
+
+    For reporting, those solver edges are grouped back to the actual parent
+    BusLineItem using edge.ui_item. This means each drawn busbar appears as
+    one report line item.
     """
 
-    grouped = defaultdict(list)
+    def edge_sort_key(edge):
+        """
+        Stable visual-ish ordering for bus numbering.
+        Sort by upper/left position of the edge in the scene, then edge ID.
+        """
+        try:
+            p0 = graph.nodes[edge.u].p
+            p1 = graph.nodes[edge.v].p
+            return (
+                min(p0.y(), p1.y()),
+                min(p0.x(), p1.x()),
+                int(edge.id),
+            )
+        except Exception:
+            return (0.0, 0.0, int(getattr(edge, "id", 0)))
 
-    for er in thermal_result.edge_results:
-        if er.is_joint:
+    def group_key_for_edge(edge):
+        """
+        Preferred grouping:
+            parent BusLineItem -> one drawn busbar.
+
+        Fallbacks:
+            physical_run_id -> legacy grouping,
+            edge.id          -> final safe fallback.
+        """
+        ui_item = getattr(edge, "ui_item", None)
+
+        if ui_item is not None:
+            # bus_id is persistent through save/load; id(ui_item) is runtime fallback.
+            parent_id = getattr(ui_item, "bus_id", None)
+            if parent_id:
+                return ("ui", str(parent_id))
+            return ("ui_obj", id(ui_item))
+
+        run_id = getattr(edge, "physical_run_id", None)
+        if run_id is not None:
+            return ("run", run_id)
+
+        return ("edge", int(edge.id))
+
+    group_to_items = defaultdict(list)
+    group_sort_keys = {}
+
+    for er in getattr(thermal_result, "edge_results", []) or []:
+        if getattr(er, "is_joint", False):
             continue
-        grouped[er.edge_id].append(er)
+
+        edge = graph.edges.get(er.edge_id)
+        if edge is None:
+            continue
+
+        key = group_key_for_edge(edge)
+
+        group_to_items[key].append((edge, er))
+
+        if key not in group_sort_keys:
+            group_sort_keys[key] = edge_sort_key(edge)
+        else:
+            group_sort_keys[key] = min(group_sort_keys[key], edge_sort_key(edge))
 
     rows = []
 
-    for edge_id, results in grouped.items():
-        edge = graph.edges[edge_id]
+    ordered_keys = sorted(
+        group_to_items.keys(),
+        key=lambda k: group_sort_keys.get(k, (0.0, 0.0, 0)),
+    )
 
-        temps = [r.T_C for r in results]
-        currents = [r.I_A for r in results]
-        losses = [r.P_gen_W for r in results]
+    for display_id, key in enumerate(ordered_keys, start=1):
+        items = group_to_items[key]
+
+        edges = [edge for edge, _ in items]
+        results = [er for _, er in items]
+
+        if not edges:
+            continue
+
+        first = edges[0]
+
+        temps_max = [
+            float(getattr(r, "T_C", 0.0) or 0.0)
+            for r in results
+        ]
+
+        temps_min = [
+            float(getattr(r, "T_min_C", getattr(r, "T_C", 0.0)) or 0.0)
+            for r in results
+        ]
+
+        currents = [
+            float(getattr(r, "I_A", 0.0) or 0.0)
+            for r in results
+        ]
+
+        losses = [
+            float(getattr(r, "P_gen_W", 0.0) or 0.0)
+            for r in results
+        ]
 
         rows.append(
             BusScheduleRow(
-                bus_id=edge_id,
-                width_mm=float(edge.width_mm),
-                thickness_mm=float(edge.thickness_mm),
-                bars=int(edge.bars_in_parallel),
-                length_m=float(edge.length_m),
+                bus_id=display_id,
+                width_mm=float(first.width_mm),
+                thickness_mm=float(first.thickness_mm),
+                bars=int(first.bars_in_parallel),
+                length_m=float(sum(float(e.length_m) for e in edges)),
 
                 I_max_A=max(currents) if currents else 0.0,
-                T_max_C=max(temps) if temps else 0.0,
-                T_min_C=min(temps) if temps else 0.0,
+                T_max_C=max(temps_max) if temps_max else 0.0,
+                T_min_C=min(temps_min) if temps_min else 0.0,
                 P_total_W=sum(losses),
 
                 segment_count=len(results),
+                edge_ids=[int(e.id) for e in edges],
             )
         )
 
@@ -72,37 +165,54 @@ def build_bus_schedule(graph, thermal_result):
 
 def build_joint_schedule(graph, thermal_result):
     """
-    Extract joint-level thermal results.
+    Extract physical joint results.
+
+    Uses graph.joins as the source of truth, rather than every thermal edge
+    marked is_joint. This prevents solver edge IDs being presented as physical
+    joint IDs.
     """
 
-    from collections import defaultdict
-
-    grouped = defaultdict(list)
-
-    for er in thermal_result.edge_results:
-        if not er.is_joint:
-            continue
-        grouped[er.edge_id].append(er)
+    result_by_edge_id = {
+        er.edge_id: er
+        for er in thermal_result.edge_results
+        if er.is_joint
+    }
 
     rows = []
 
-    for edge_id, results in grouped.items():
-        edge = graph.edges[edge_id]
+    for idx, j in enumerate(graph.joins, start=1):
 
-        temps = [r.T_C for r in results]
-        currents = [r.I_A for r in results]
-        losses = [r.P_gen_W for r in results]
+        er = result_by_edge_id.get(j.edge_id)
+        if er is None:
+            continue
+        er.joint_number = idx
+
+        ui_join = getattr(j, "ui_item", None)
+        if ui_join is not None and hasattr(ui_join, "set_joint_number"):
+            ui_join.set_joint_number(idx)
+
+        host_bus_id = getattr(
+            j.spec,
+            "_host_edge_id_before_joint_split",
+            j.edge_id,
+        )
+        owner_tier = getattr(j, "owner_tier", None)
+        if owner_tier is None:
+            edge = graph.edges.get(j.edge_id)
+            owner_tier = getattr(edge, "tier", None) if edge is not None else None
 
         rows.append(
             JointScheduleRow(
-                joint_id=edge_id,
-                bus_id=edge_id,  # (you can improve later if you track parent bus)
+                joint_id=idx,
+                bus_id=host_bus_id,
+                graph_edge_id=j.edge_id,
+                owner_tier=owner_tier,
 
-                I_A=max(currents) if currents else 0.0,
-                T_C=max(temps) if temps else 0.0,
-                P_W=sum(losses),
+                I_A=float(er.I_A),
+                T_C=float(er.T_C),
+                P_W=float(er.P_gen_W),
 
-                segment_count=len(results),
+                segment_count=1,
             )
         )
 

@@ -212,7 +212,8 @@ def _joint_buried_contact_area_single_side(
 
     return float(A_single * n_int)
 
-
+# NOT USED AS IT OVER-REPRESENTS JOINT COOLING
+# SHAME.
 def compute_joint_self_cooling(
     *,
     joint_type: str,

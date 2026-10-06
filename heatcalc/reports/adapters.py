@@ -48,7 +48,7 @@ def tiers_from_items(tier_items: Iterable) -> Tuple[List[TierRow], float]:
 
         # Buses
         buses = []
-        for bl in getattr(t, "bus_items", lambda: [])():
+        for i, bl in enumerate(getattr(t, "bus_items", lambda: [])()):
             # bl is a BusLineItem
             if not hasattr(bl, "spec"):
                 continue
@@ -75,7 +75,7 @@ def tiers_from_items(tier_items: Iterable) -> Tuple[List[TierRow], float]:
                     # print(f"  Result: I={getattr(res, 'I_A', 0.0)}, P={getattr(res, 'P_gen_W', 0.0)}")
 
             buses.append(BusRow(
-                name=f"Bus {bl.bus_id[:4]}",
+                name=f"Bus segment {i+1}",
                 width_mm=float(bl.spec.width_mm),
                 thickness_mm=float(bl.spec.thickness_mm),
                 parallel_bars=int(bl.spec.bars_in_parallel),
@@ -98,10 +98,17 @@ def tiers_from_items(tier_items: Iterable) -> Tuple[List[TierRow], float]:
             if isinstance(item, BusJoinItem):
                 res = getattr(item, "thermal_result", None)
                 if res:
+                    joint_number = getattr(item, "joint_number", getattr(res, "joint_number", None))
+                    joint_label = (
+                        joint_number
+                        if joint_number is not None
+                        else str(getattr(res, "joint_id", getattr(item, "join_id", "Joint")))[:8]
+                    )
                     joints.append(SimpleNamespace(
-                        joint_id=getattr(item, "join_id", "Joint")[:8],
+                        joint_id=joint_label,
                         I_A=float(getattr(res, "I_A", 0.0)),
-                        P_W=float(getattr(res, "P_gen_W", 0.0))
+                        P_W=float(getattr(res, "P_gen_W", 0.0)),
+                        T_C=float(getattr(res, "T_C", 0.0))
                     ))
 
         tier = TierRow(
