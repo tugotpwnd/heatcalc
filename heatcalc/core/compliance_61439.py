@@ -5,7 +5,39 @@ from typing import List, Dict, Any, Optional, Sequence, Tuple
 
 from heatcalc.core.enclosure_thermal_solver import estimate_enclosure_surface_temp_C, estimate_top_side_surface_temp_C
 
-def evaluate_derating(component: Any, T_internal: float) -> float | None:
+MANUFACTURER_DERATING_NOTE = (
+    "Project setting: for devices with a valid manufacturer-supplied temperature "
+    "derating curve, the 80% Ith limit is superseded by the manufacturer's curve "
+    "at the calculated internal air temperature. Devices without a usable curve "
+    "retain the 80% limit. Device temperature ratings and rated current remain applicable."
+)
+
+
+def has_valid_derating_curve(component, temperatures):
+    """Validate the actual expression, including below-threshold operating points."""
+    expression = getattr(component, "derating_function", None)
+    rated = getattr(component, "rated_current_A", None)
+    if not isinstance(expression, str) or not expression.strip() or rated is None:
+        return False
+    try:
+        if not math.isfinite(float(rated)) or float(rated) <= 0:
+            return False
+        code = compile(expression, "<derating curve>", "eval")
+        start = getattr(component, "derating_temp_start_C", None)
+        probes = [*temperatures, float(start) + 1 if start is not None else 40.0]
+        for temperature in probes:
+            if start is not None and temperature <= start:
+                continue
+            value = eval(code, {"__builtins__": {}}, {"x": temperature, "math": math})
+            if not isinstance(value, (int, float)) or not math.isfinite(value):
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def evaluate_derating(component: Any, T_internal: float, *,
+                      use_manufacturer_curve: bool = False) -> float | None:
     """
     Evaluate available current at operating temperature for a component.
     Based on rated_current_A, derating_temp_start_C and derating_function (expression of x).
@@ -18,6 +50,9 @@ def evaluate_derating(component: Any, T_internal: float) -> float | None:
     if rated is None:
         return None
 
+    if use_manufacturer_curve and not has_valid_derating_curve(component, [T_internal]):
+        return rated * 0.8
+
     if func_str is None:
         # Fallback to 80% of rated current if no derating function is provided
         return rated * 0.8
@@ -29,7 +64,7 @@ def evaluate_derating(component: Any, T_internal: float) -> float | None:
             # x = internal operating temperature (°C)
             # Evaluate expression safely
             factor = eval(func_str, {"__builtins__": {}}, {"x": T_internal, "math": math})
-            if not isinstance(factor, (int, float)):
+            if not isinstance(factor, (int, float)) or not math.isfinite(factor):
                 # If function fails, fallback to 80%
                 return rated * 0.8
         except Exception:
@@ -42,7 +77,7 @@ def evaluate_derating(component: Any, T_internal: float) -> float | None:
     I_80 = rated * 0.8
     I_derated = rated * factor
 
-    return min(I_80, I_derated)
+    return I_derated if use_manufacturer_curve else min(I_80, I_derated)
 
 @dataclass
 class TerminalWorkingRow:

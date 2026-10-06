@@ -21,6 +21,7 @@ from reportlab.platypus import Paragraph, Table, TableStyle
 from ..utils.resources import get_resource_path
 from .fan_sizing_plot import draw_fan_sizing_figure, BLUE, GREEN
 from .table_styles import standard_table_style
+from ..core.compliance_61439 import MANUFACTURER_DERATING_NOTE
 
 
 def export_fan_sizing_report(path, data, meta, fan_name=""):
@@ -34,6 +35,7 @@ def export_fan_sizing_report(path, data, meta, fan_name=""):
     cell = ParagraphStyle("FanCell", parent=body, fontSize=9, leading=11, alignment=1)
     header_cell = ParagraphStyle("FanHeaderCell", parent=cell,
                                 fontName="Arial-Bold", textColor=colors.white)
+    small = ParagraphStyle("FanBasis", parent=body, fontSize=8, leading=11)
     heading = ParagraphStyle("FanHeading", parent=body, fontName="Arial-Bold",
                              fontSize=16, leading=20, textColor=blue)
     subhead = ParagraphStyle("FanSubhead", parent=body, fontName="Arial-Bold",
@@ -78,7 +80,8 @@ def export_fan_sizing_report(path, data, meta, fan_name=""):
             )])
         table = Table(schedule, colWidths=[12*mm, width-106*mm, 9*mm, 18*mm, 20*mm, 24*mm, 23*mm])
         table.setStyle(standard_table_style())
-        return title, details, summary, table
+        note = p(MANUFACTURER_DERATING_NOTE, small) if data.use_manufacturer_derating and data.devices else None
+        return title, details, summary, table, note
 
     # Keep names and all device values legible on one sheet; use a larger ISO
     # sheet for unusually large schedules instead of clipping or dropping rows.
@@ -86,8 +89,8 @@ def export_fan_sizing_report(path, data, meta, fan_name=""):
     for page_size in (A4, A3, A2, A1, A0):
         width, height = page_size
         available = width - 24*mm
-        title, details, summary, table = blocks(available)
-        elements = (title, details, summary, table)
+        title, details, summary, table, note = blocks(available)
+        elements = [element for element in (title, details, summary, table, note) if element is not None]
         measured = [element.wrap(available, height)[1] for element in elements]
         needed = sum(measured) + chart_height + 68*mm
         if needed <= height:
@@ -137,6 +140,8 @@ def export_fan_sizing_report(path, data, meta, fan_name=""):
         draw(table)
     else:
         draw(p("No devices with valid derating curves in this tier."))
+    if note is not None:
+        draw(note, 0)
     logo = get_resource_path("heatcalc/data/company_logo.png")
     if logo.exists():
         canvas.drawImage(str(logo), 12*mm, 8*mm, width=45*mm, height=13*mm,

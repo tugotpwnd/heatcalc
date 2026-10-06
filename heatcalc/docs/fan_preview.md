@@ -37,6 +37,14 @@ chart as PNG; the chart toolbar also provides zoom, pan and save controls.
 
 ## Calculation assumptions
 
+In **Project Info**, enable **Use manufacturer derating curves instead of the
+80% Ith limit** to use each eligible device's manufacturer curve without the
+additional 80% cap. This project-wide setting is saved in project JSON and is off
+by default, including for older projects. Devices without a usable curve retain
+the 80% limit. Outputs never exceed rated current, and device temperature limits
+still apply. Previews, fan plots and both PDF reports follow the setting; when
+used, a note below the device table records the manufacturer-curve basis.
+
 The new operating-point estimate inverts the application's existing Annex K
 minimum-airflow balance:
 
@@ -56,8 +64,9 @@ natural-cooling point separately. Partition effects are handled as in the existi
 Annex K sizing routine. Fans reduce temperature rise but do not eliminate heat
 generation or cool below the model's external-temperature floor.
 
-Current capacity uses `evaluate_derating`, including its existing 80% rated-current
-ceiling and fallback for absent/invalid curves. Temperature-rating exceedances
+Current capacity uses `evaluate_derating`, including the 80% rated-current
+ceiling unless the manufacturer-curve project setting is enabled, and the 80%
+fallback for absent/invalid curves. Temperature-rating exceedances
 are flagged separately; a current value alone is not a compliance verdict. The PDF
 previously evaluated at the tier limit; it now evaluates at solved top temperature.
 

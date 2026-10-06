@@ -378,6 +378,7 @@ class MainWindow(QMainWindow):
             "ambient_C": float(m.ambient_C),
             "altitude_m": float(m.altitude_m),
             "ip_rating_n": int(m.ip_rating_n),
+            "use_manufacturer_derating": bool(m.use_manufacturer_derating),
 
             # ---- Solar (NEW) ----
             "solar": {

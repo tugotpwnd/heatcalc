@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Any, Sequence, Tuple
 from pathlib import Path
 import os
+import hashlib
+import math
+from xml.sax.saxutils import escape
 
 from PIL import Image, ImageEnhance, ImageFilter
 from PyPDF2 import PdfMerger
@@ -21,8 +24,8 @@ from reportlab.platypus.tableofcontents import TableOfContents
 
 from heatcalc.utils.resources import get_resource_path
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -60,12 +63,10 @@ blue = colors.HexColor("#215096")
 green = colors.HexColor("#007F4D")
 
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, KeepTogether
-matplotlib.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "Liberation Serif"],
-    "mathtext.fontset": "cm",   # Computer Modern, LaTeX-style maths
-    "axes.unicode_minus": False,
-})
+from matplotlib import font_manager
+for _font_file in ("arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"):
+    font_manager.fontManager.addfont(str(get_resource_path(f"heatcalc/assets/fonts/{_font_file}")))
+pdfmetrics.registerFontFamily(FONT, normal=FONT, bold=FONT_B, italic=FONT_I, boldItalic=FONT_BI)
 
 IEC_HEAD = "IEC 60890 Preconditions (Clause 4)"
 
@@ -169,19 +170,22 @@ class SectionCounter:
         return f"{self.h1}.{self.h2}.{self.h3}"
 
 
-# ---------------- Times font helper for matplotlib ----------------
-def _times_rc():
+# ---------------- Maxwell plot styling (matches the harmonic report) ----------------
+def _maxwell_rc():
     return {
-        "font.family": "serif",
-        "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "Liberation Serif", "DejaVu Serif"],
-        "mathtext.fontset": "dejavuserif",
+        "font.family": "sans-serif",
+        "font.sans-serif": [FONT, "Liberation Sans", "DejaVu Sans"],
+        "font.size": 8,
+        "mathtext.fontset": "dejavusans",
+        "axes.unicode_minus": False,
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
-        "axes.titlesize": 14,
-        "axes.labelsize": 12,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 10,
+        "axes.titlesize": 11,
+        "axes.titleweight": "bold",
+        "axes.labelsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
     }
 
 # ---------------- Report rows ----------------
@@ -194,6 +198,7 @@ class ProjectMeta:
     revision: str
     date: str
     ip_rating_n: str
+    use_manufacturer_derating: bool = False
 
 @dataclass
 class ComponentRow:
@@ -252,6 +257,9 @@ class TierRow:
     h_partitions_enabled: bool = False
     h_partitions_count: int = 1
 
+    # Includes drawn loads/sources even when there is no solved bus schedule.
+    has_bus_elements: bool = False
+
     @property
     def heat_w(self) -> float:
         return (
@@ -295,6 +303,7 @@ class TierThermal:
     airflow_m3h: Optional[float] = None
     selected_airflow_m3h: float = 0.0
     selected_fan_name: str = ""
+    use_manufacturer_derating: bool = False
     P_material_W: Optional[float] = None
     P_cooling_W: Optional[float] = None
     vent_recommended: bool = False
@@ -345,15 +354,16 @@ def build_iec60890_checklist_section(
         name="IECBody",
         parent=styles["BodyText"],
         fontName="Arial",
-        fontSize=9,
-        leading=11,
+        fontSize=8,
+        leading=10,
     )
 
     header_style = ParagraphStyle(
         name="IECHeader",
         parent=styles["BodyText"],
         fontName="Arial-Bold",
-        fontSize=9,
+        fontSize=8,
+        leading=10,
         textColor=colors.white,
         alignment=1,
     )
@@ -397,22 +407,11 @@ def build_iec60890_checklist_section(
 
     table = Table(
         table_data,
-        colWidths=[55, 380, 90],
+        colWidths=[18 * mm, 125 * mm, 32 * mm],
         repeatRows=1,
     )
 
-    table.setStyle(TableStyle([
-        ("GRID", (0,0), (-1,-1), 0.5, colors.black),
-        ("BACKGROUND", (0,0), (-1,0), GREEN),
-        ("ALIGN", (0,0), (0,-1), "CENTER"),
-        ("ALIGN", (-1,1), (-1,-1), "CENTER"),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("LEFTPADDING", (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 4),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.transparent]),
-    ]))
+    table.setStyle(_standard_table_style())
 
     elements.append(table)
 
@@ -428,7 +427,7 @@ def build_iec60890_checklist_section(
             applied_dt = max(solar_dts)
 
             justification = (
-                "<b>* Solar radiation consideration (IEC TR 60890:2022 – Annex C)</b><br/>"
+                "<b>Solar radiation consideration (IEC TR 60890:2022 - Annex C)</b><br/>"
                 "The enclosure is exposed to solar radiation and therefore does not "
                 "meet the base assumption of IEC 60890 Clause 5.1. "
                 "In accordance with IEC TR 60890:2022 Annex C, an additional internal "
@@ -441,7 +440,7 @@ def build_iec60890_checklist_section(
 
             elements.extend([
                 Spacer(1, 8),
-                Paragraph(justification, body_style),
+                _note_callout(justification, prefix="*"),
             ])
 
     return elements
@@ -456,14 +455,42 @@ def _standard_table_style():
     from .table_styles import standard_table_style
     return standard_table_style()
 
+
+def _note_callout(text: str, *, prefix: str = "Note:") -> Table:
+    note_style = ParagraphStyle("Note", fontName=FONT, fontSize=8.5, leading=12)
+    content = Paragraph(f'<font color="#007F4D"><b>{prefix}</b></font> {text}', note_style)
+    table = Table([[content]], colWidths=[TABLE_WIDTH], hAlign="CENTER")
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#DDECD5")),
+        ("LINEBEFORE", (0, 0), (0, 0), 3.2, green),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return table
+
+
+def _report_table(rows, widths) -> Table:
+    """Wrap text so long component names and headings stay inside their cells."""
+    body = ParagraphStyle("ReportCell", fontName=FONT, fontSize=8, leading=10)
+    header = ParagraphStyle("ReportHeader", parent=body, fontName=FONT_B,
+                            textColor=colors.white, alignment=1)
+    data = [[cell if isinstance(cell, Paragraph) else
+             Paragraph(escape(str(cell)), header if index == 0 else body)
+             for cell in row] for index, row in enumerate(rows)]
+    table = Table(data, colWidths=widths, repeatRows=1)
+    table.setStyle(_standard_table_style())
+    return table
+
 # ---------------- COMPONENTS ----------------
 def _components_table_for_tier(tier: TierRow) -> Table:
     Cell = ParagraphStyle(
         "Cell",
         fontName=FONT,
-        fontSize=9,
-        leading=11,
-        alignment=1,  # ✅ CENTER
+        fontSize=8,
+        leading=10,
+        alignment=TA_LEFT,
     )
 
     header = ["Description", "Part No.", "Qty", "W each", "Total (W)"]
@@ -480,7 +507,7 @@ def _components_table_for_tier(tier: TierRow) -> Table:
 
     colWidths = [72*mm, 36*mm, 14*mm, 20*mm, 33*mm]  # ≈175mm
 
-    t = Table(rows, colWidths=colWidths, repeatRows=1)
+    t = _report_table(rows, colWidths)
     t.setStyle(_standard_table_style())
     return t
 
@@ -490,9 +517,9 @@ def _cables_table_for_tier(tier: TierRow) -> Table:
     Cell = ParagraphStyle(
         "Cell",
         fontName=FONT,
-        fontSize=9,
-        leading=11,
-        alignment=1,  # ✅ CENTER
+        fontSize=8,
+        leading=10,
+        alignment=TA_LEFT,
     )
 
     header = ["Cable", "CSA (mm²)", "Inst.", "Len (m)", "I (A)", "W/m", "Total (W)"]
@@ -511,7 +538,7 @@ def _cables_table_for_tier(tier: TierRow) -> Table:
 
     colWidths = [38*mm, 18*mm, 18*mm, 17*mm, 17*mm, 17*mm, 50*mm]  # ≈175mm
 
-    tbl = Table(rows, colWidths=colWidths, repeatRows=1)
+    tbl = _report_table(rows, colWidths)
     tbl.setStyle(_standard_table_style())
     return tbl
 
@@ -521,9 +548,9 @@ def _bus_table_for_tier(tier: TierRow) -> Table:
     Cell = ParagraphStyle(
         "Cell",
         fontName=FONT,
-        fontSize=9,
-        leading=11,
-        alignment=1,  # ✅ CENTER
+        fontSize=8,
+        leading=10,
+        alignment=TA_LEFT,
     )
 
     header = ["Bus Line", "Dimensions (mm)", "Bars/Ph", "Len (m)", "I (A)", "Total (W)"]
@@ -541,7 +568,7 @@ def _bus_table_for_tier(tier: TierRow) -> Table:
 
     colWidths = [38*mm, 35*mm, 15*mm, 20*mm, 15*mm, 52*mm]  # ≈175mm
 
-    tbl = Table(rows, colWidths=colWidths, repeatRows=1)
+    tbl = _report_table(rows, colWidths)
     tbl.setStyle(_standard_table_style())
     return tbl
 
@@ -551,9 +578,9 @@ def _joint_table_for_tier(tier) -> Table:
     Cell = ParagraphStyle(
         "Cell",
         fontName=FONT,
-        fontSize=9,
-        leading=11,
-        alignment=1,  # ✅ CENTER
+        fontSize=8,
+        leading=10,
+        alignment=TA_LEFT,
     )
 
     header = ["Joint ID", "I (A)", "Total (W)"]
@@ -568,7 +595,7 @@ def _joint_table_for_tier(tier) -> Table:
 
     colWidths = [55*mm, 40*mm, 80*mm]  # ≈175mm
 
-    tbl = Table(rows, colWidths=colWidths, repeatRows=1)
+    tbl = _report_table(rows, colWidths)
     tbl.setStyle(_standard_table_style())
     return tbl
 
@@ -635,135 +662,42 @@ def _scale_to_fit(img_w_px, img_h_px, max_w_mm, max_h_mm, dpi=144):
     return w_pt * scale, h_pt * scale
 
 def render_temp_profile_png(
-    title: str,
-    ambient_C: float,
-    T_mid: float,
-    T_top: float,
-    out_path: Path,
-    *,
-    T_075: float | None = None,
+    title: str, ambient_C: float, T_mid: float, T_top: float, out_path: Path,
+    *, T_075: float | None = None,
 ):
-    """
-    Plot absolute temperature vs normalised height (IEC 60890).
-    Straight-line construction, matching UI behaviour.
-    """
-    with plt.rc_context(_times_rc()):
-        fig = plt.figure(figsize=(6.0, 3.2), dpi=144)
-        ax = plt.gca()
-
-        # Ambient → mid-height
-        xs = [ambient_C, T_mid]
-        ys = [0.0, 0.5]
-
-        ax.plot(xs, ys, linewidth=2.2)
-
+    """Plot the solved temperatures using the Maxwell harmonic-report theme."""
+    with matplotlib.rc_context(_maxwell_rc()):
+        fig = Figure(figsize=(6.9, 2.6), dpi=200)
+        FigureCanvasAgg(fig)
+        ax = fig.subplots()
+        temperatures = [ambient_C, T_mid]
+        heights = [0.0, 0.5]
         if T_075 is not None:
-            # Ae ≤ 1.25 m² (Fig. 2)
-            ax.plot([T_mid, T_075], [0.5, 0.75], linewidth=2.2)
-            ax.plot([T_075, T_075], [0.75, 1.0], linewidth=2.2)
-
-            ax.scatter(
-                [T_mid, T_075, T_top],
-                [0.5, 0.75, 1.0],
-                zorder=5
-            )
-        else:
-            # Ae > 1.25 m² (Fig. 1)
-            ax.plot([T_mid, T_top], [0.5, 1.0], linewidth=2.2)
-            ax.scatter([T_mid, T_top], [0.5, 1.0], zorder=5)
-
-        ax.set_xlim(min(xs) - 2, max(T_top, T_mid) + 2)
+            temperatures.append(T_075)
+            heights.append(0.75)
+        temperatures.append(T_top)
+        heights.append(1.0)
+        ax.plot(temperatures, heights, color="#215096", linewidth=2.2)
+        ax.scatter(temperatures[1:], heights[1:], color="#007F4D", s=28, zorder=5)
+        ax.set_xlim(min(temperatures) - 2, max(temperatures) + 2)
         ax.set_ylim(-0.02, 1.04)
         ax.set_xlabel("Temperature (°C)")
-        ax.set_ylabel("Normalised Height")
-        ax.grid(True, linestyle=":", linewidth=0.6)
-        ax.set_title(title)
-
+        ax.set_ylabel("Normalised height")
+        ax.set_title(title, color="#215096", pad=10)
+        ax.grid(True, color="#D9DEE5", linewidth=0.55, alpha=0.9)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color("#3F4650")
+            ax.spines[side].set_linewidth(0.8)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(out_path), format="png", bbox_inches="tight")
-        plt.close(fig)
-
+        fig.tight_layout()
+        fig.savefig(str(out_path), format="png", facecolor="white")
+        fig.clear()
     return out_path
 
-def render_temp_slice_png(
-    out_path: Path,
-    ambient_C: float,
-    T_mid: float,
-    T_top: float,
-    max_C: float | None,
-    aspect_wh: float = 0.8,       # width / height ratio of tier (visual)
-    title: str = "Vertical Temperature Slice",
-    *, show_max_label: bool = True,  # <— default: do not annotate in-plot
-    max_in_title: bool = True  # <— default: append “Max …°C” to title
-) -> Path:
-    """
-    Draw a vertical “slice” of the enclosure as a coloured rectangle.
-    y=0.0 -> ambient_C; y=0.5 -> T_mid; y=1.0 -> T_top (piecewise linear).
-    """
-    import numpy as np
-    fig = plt.figure(figsize=(3.2, 3.2), dpi=144)  # square render, ignore aspect_wh
-    ax = plt.gca()
 
-    ax.set_title(
-    f"{title}" + (f" — Max {max_C:.1f}°C" if (max_in_title and max_C is not None) else ""),
-    fontsize = 11)
-
-    # Build 1D temperature profile (0..1 height)
-    y = np.linspace(0, 1, 300)
-    T = np.empty_like(y)
-    mid_idx = y <= 0.5
-    # bottom→mid
-    T[mid_idx] = ambient_C + (T_mid - ambient_C) * (y[mid_idx] / 0.5)
-    # mid→top
-    T[~mid_idx] = T_mid + (T_top - T_mid) * ((y[~mid_idx]-0.5) / 0.5)
-
-    # Expand to 2D so imshow can draw a rectangle
-    Z = np.tile(T[:, None], (1, 50))
-
-    im = ax.imshow(
-        Z, origin="lower", aspect="auto",
-        extent=(0, 1, 0, 1),  # x from 0..1, y from 0..1
-        cmap="plasma"
-    )
-
-    # Y-axis ticks at bottom/mid/top with temperatures
-    ax.set_yticks([0.0, 0.5, 1.0])
-    ax.set_yticklabels([
-        f"Bottom (0.0t) — {ambient_C:.1f}°C",
-        f"Mid (0.5t) — {T_mid:.1f}°C",
-        f"Top (1.0t) — {T_top:.1f}°C",
-    ])
-    ax.set_xticks([])
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    ax.set_title(title, fontsize=11)
-
-    # Optional max temperature line
-    if max_C is not None:
-        # convert max_C to a y-level on our piecewise profile (invert)
-        # do a numeric search on y to find where T(y) == max_C
-        idx = (np.abs(T - max_C)).argmin()
-        y_max = float(y[idx])
-        if 0.0 <= y_max <= 1.0:
-            ax.axhline(y_max, ls="--", lw=1.2, color="k")
-
-            if show_max_label:
-                # put the label INSIDE the plot, just above the dashed line
-                y_anno = min(0.98, y_max + 0.04)
-                ax.text(0.5, y_anno, f"{max_C:.1f}°C",
-                ha = "center", va = "bottom", fontsize = 8,
-                        bbox = dict(boxstyle="round,pad=0.2", fc="white", ec="0.7", lw=0.5))
-
-    # Colour bar (temperature)
-    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Temperature (°C)")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(str(out_path), bbox_inches="tight")
-    plt.close(fig)
-    return out_path
-
-# --------------- Header / Footer drawing ---------------
-# --------------- Header / Footer drawing ---------------
 def _draw_header_footer(
     canvas,
     doc,
@@ -933,7 +867,7 @@ def iec60890_preconditions_section(iec60890_checklist):
 
 def iec60890_tab_sheet(th: TierThermal) -> Table:
     rows = [
-        ["Surface", "Dimensions (m)", "A₀ (m²)", "b", "Aₑ (m²)"]
+        ["Surface", "Dimensions (m)", "A0 (m²)", "b", "Ae (m²)"]
     ]
 
     for s in th.surfaces or []:
@@ -945,7 +879,7 @@ def iec60890_tab_sheet(th: TierThermal) -> Table:
             f"{s['Ae']:.2f}",
         ])
 
-    rows.append(["", "", "", "Σ Aₑ", f"{th.Ae:.2f}"])
+    rows.append(["", "", "", "Total Ae", f"{th.Ae:.2f}"])
 
     tbl = Table(
         rows,
@@ -958,125 +892,75 @@ def iec60890_tab_sheet(th: TierThermal) -> Table:
     return tbl
 
 def tier_cooling_summary(th) -> tuple[str, str, bool]:
-    """
-    Returns (arrangement, cooling_text, mitigation_required)
-    """
+    """Return arrangement, delivered/required airflow, and failed compliance."""
+    selected = float(getattr(th, "selected_airflow_m3h", 0.0) or 0.0)
+    compliant = bool(th.compliant_top and th.compliant_mid)
+    if selected > 0:
+        return "Forced ventilation", f"{selected:g}", not compliant
+    if compliant:
+        return "Natural convection", "-", False
+    required = getattr(th, "airflow_m3h", None)
+    if required and required > 0:
+        return "Forced ventilation required", f"{required:.1f}", True
+    return "Mitigation required", "-", True
 
-    # 1. IEC 60890 compliant — no mitigation
-    if th.compliant_top:
-        return (
-            "Natural convection",
-            "–",
-            False,
-        )
 
-    # 2. Forced ventilation required (mitigation)
-    if th.airflow_m3h and th.airflow_m3h > 0:
-        return (
-            "Forced ventilation",
-            f"{th.airflow_m3h:.0f}",
-            True,
-        )
+def _selected_fan_text(th) -> str:
+    selected = float(getattr(th, "selected_airflow_m3h", 0.0) or 0.0)
+    if selected <= 0:
+        return ""
+    return (f"Selected fan: {escape(th.selected_fan_name or 'Unspecified model')}; "
+            f"delivers {selected:g} m³/h of airflow.")
 
-    # 3. Genuinely non-compliant
+
+def _application_text(tier_thermals) -> str:
     return (
-        "Non-compliant",
-        "Mitigation required",
-        True,
+        "A compliant result means the calculated internal air temperatures are within the tier limits "
+        "for the cooling arrangement shown. Natural-convection results use enclosure heat dissipation "
+        "under the specified conditions. Forced-ventilation results include the selected fan and are "
+        "conditional on providing and maintaining the stated delivered airflow through that tier. "
+        "Enclosure temperature compliance does not establish full rated-current capacity for components. "
+        "Apply the component current capacities and temperature limits reported for each tier."
     )
 
+
+def _application_results(flow, tier_thermals, *, detailed=False):
+    heading_style = ParagraphStyle("ApplicationHeading", parent=H2, textColor=green)
+    blocks = [Spacer(1, 8), Paragraph("Important application of results", heading_style)]
+    if detailed:
+        text = _application_text(tier_thermals)
+    else:
+        th = tier_thermals[0]
+        text = ("Compliance is conditional on providing and maintaining "
+                "the stated delivered airflow through the tier. " if th.selected_airflow_m3h > 0 else
+                "The calculated temperatures use natural enclosure heat dissipation under the specified conditions. ")
+        text += ("A non-compliant result requires additional cooling or a design change. "
+                 "Enclosure temperature compliance does not establish full rated-current capacity; "
+                 "component current capacities and temperature limits also apply.")
+    blocks.append(Paragraph(text, Body))
+    fan_style = ParagraphStyle("ApplicationFan", parent=Body, leftIndent=12,
+                               bulletIndent=0, bulletFontName=FONT, bulletFontSize=10)
+    for th in tier_thermals:
+        if getattr(th, "selected_airflow_m3h", 0) > 0:
+            blocks.append(Paragraph(
+                f'<font color="#007F4D"><b>{escape(th.tag)}:</b></font> {_selected_fan_text(th)}',
+                fan_style, bulletText="•"))
+    flow.extend(blocks)
 
 
 def build_tier_summary_page(tier_thermals):
-    rows = [
-        ["Tier", "Compliance", "Cooling Arrangement", "Cooling (m³/h)"]
-    ]
-
-    style_cmds = []
-
-    for i, th in enumerate(tier_thermals, start=1):
-        arrangement, cooling_req, mitigation = tier_cooling_summary(th)
-        if str(cooling_req).strip() in ("0", "0.0"):
-            cooling_req = ">1"
-
-        compliance = "Non-compliant" if mitigation else "Compliant"
-
-        rows.append([
-            th.tag,
-            compliance,
-            arrangement,
-            cooling_req,
-        ])
-
-        # Compliance colouring (report-level compliance)
-        if mitigation:
-            style_cmds.append(
-                ("TEXTCOLOR", (1, i), (1, i), colors.HexColor("#C62828"))  # red
-            )
-        else:
-            style_cmds.append(
-                ("TEXTCOLOR", (1, i), (1, i), colors.HexColor("#009640"))  # green
-            )
-
-        style_cmds.append(("FONTNAME", (1, i), (1, i), FONT_B))
-
-    tbl = Table(
-        rows,
-        colWidths=[
-            28 * mm,   # Tier
-            32 * mm,   # Compliance
-            60 * mm,   # Cooling Arrangement (reduced)
-            30 * mm,   # Cooling (m³/h)
-        ],
-        repeatRows=1,
-    )
-
-    tbl.setStyle(TableStyle([
-        # Header row
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#007F4D")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), FONT_B),
-        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-
-        # Tier column
-        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#215096")),
-        ("TEXTCOLOR", (0, 1), (0, -1), colors.white),
-        ("FONTNAME", (0, 1), (0, -1), FONT_B),
-        ("ALIGN", (0, 1), (0, -1), "CENTER"),
-
-        # Internal grid — black, thin
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-
-        # General spacing
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-
-        *style_cmds,
-    ]))
-
-    flow = []
-    flow.append(Paragraph("Temperature Rise – Tier Summary", H1_NUM))
-    flow.append(Spacer(1, 10))
-    flow.append(tbl)
-
-    # ---- Engineering statement (aligned with your tone) ----
-    flow.append(Spacer(1, 8))
-    flow.append(Paragraph(
-        "A compliant result indicates that the enclosure is capable of dissipating the calculated internal heat "
-        "through natural convection and radiation mechanisms in accordance with the IEC 60890 calculation framework, "
-        "without the requirement for forced cooling. A non-compliant result indicates that natural heat dissipation "
-        "is insufficient under the specified conditions, and supplementary cooling measures such as forced ventilation "
-        "or design modification are required to maintain acceptable operating temperatures. "
-        "Compliance at the enclosure level does not imply that all components may "
-        "operate at their full rated capacity; temperature-based derating of equipment may still be required "
-        "depending on the internal operating conditions.",
-        BodySmall
-    ))
-
+    rows = [["Tier", "Compliance", "Cooling arrangement", "Airflow (m³/h)"]]
+    for th in tier_thermals:
+        arrangement, airflow, mitigation = tier_cooling_summary(th)
+        status_style = ParagraphStyle("SummaryStatus", fontName=FONT_B, fontSize=8,
+                                      leading=10, textColor=colors.red if mitigation else green)
+        rows.append([th.tag, Paragraph(_compliance_label(not mitigation), status_style),
+                     arrangement, airflow])
+    tbl = _report_table(rows, [28 * mm, 35 * mm, 77 * mm, 35 * mm])
+    flow = [Paragraph("Temperature Rise - Tier Summary", H1_NUM), Spacer(1, 10), tbl]
+    _application_results(flow, tier_thermals, detailed=True)
     return flow
+
 
 def enclosure_dissipation_table(th: TierThermal) -> Table:
     def fmt(v, unit="", ndash="–"):
@@ -1121,33 +1005,15 @@ def enclosure_dissipation_table(th: TierThermal) -> Table:
         ],
     ]
 
-    tbl = Table(rows, colWidths=[95 * mm, 30 * mm])
-    tbl.setStyle(TableStyle([
-        # Label column
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#215096")),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-        ("FONTNAME", (0, 0), (0, -1), FONT),
-
-        # Values
-        ("FONTNAME", (1, 0), (1, -1), FONT),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-
-        # Borders
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        # Padding
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-
-    return tbl
+    if th.selected_airflow_m3h > 0:
+        rows.extend([
+            ["Selected fan", th.selected_fan_name or "Unspecified model"],
+            ["Delivered airflow (m³/h)", f"{th.selected_airflow_m3h:g}"],
+        ])
+    return _report_table([["Parameter", "Value"], *rows], [100 * mm, 75 * mm])
 
 
 def render_tier_details(flow, tier, tier_thermal: Optional[TierThermal] = None):
-    flow.append(Paragraph("Tier Details", H3_NUM))
-    flow.append(Spacer(1, 4))
-
     if tier.components:
         flow.append(Paragraph("Components", H3_NUM))
         flow.append(_components_table_for_tier(tier))
@@ -1194,6 +1060,11 @@ def _apply_compliance_colours(tbl: Table, rows: list[list], compliance_col: int)
     for r in range(1, len(rows)):
         txt = str(rows[r][compliance_col]).strip().lower()
         ok = txt.startswith("compliant")
+        cell = tbl._cellvalues[r][compliance_col]
+        if isinstance(cell, Paragraph):
+            tbl._cellvalues[r][compliance_col] = Paragraph(cell.text, ParagraphStyle(
+                "ComplianceCell", parent=cell.style, fontName=FONT_B,
+                textColor=GREEN if ok else colors.red))
         cmds.append((
             "TEXTCOLOR",
             (compliance_col, r), (compliance_col, r),
@@ -1285,11 +1156,7 @@ def working_summary_table(th: TierThermal, comp=None) -> Table:
             _compliance_label(busbar_ok)
         ])
 
-    tbl = Table(
-        rows,
-        colWidths=[75 * mm, 35 * mm, 30 * mm, 35 * mm],
-        repeatRows=1,
-    )
+    tbl = _report_table(rows, [75 * mm, 35 * mm, 30 * mm, 35 * mm])
     tbl.setStyle(_standard_table_style())
     _apply_compliance_colours(tbl, rows, 3)
     return tbl
@@ -1314,11 +1181,7 @@ def bus_working_temperature_table(tier: TierRow, comp=None) -> Table:
             _compliance_label(ok),
         ])
 
-    tbl = Table(
-        rows,
-        colWidths=[45 * mm, 20 * mm, 25 * mm, 30 * mm, 25 * mm, 30 * mm],
-        repeatRows=1,
-    )
+    tbl = _report_table(rows, [45 * mm, 20 * mm, 25 * mm, 30 * mm, 25 * mm, 30 * mm])
     tbl.setStyle(_standard_table_style())
     _apply_compliance_colours(tbl, rows, 5)
     return tbl
@@ -1341,11 +1204,7 @@ def joint_working_temperature_table(tier: TierRow, comp=None) -> Table:
             _compliance_label(ok),
         ])
 
-    tbl = Table(
-        rows,
-        colWidths=[55 * mm, 25 * mm, 30 * mm, 30 * mm, 35 * mm],
-        repeatRows=1,
-    )
+    tbl = _report_table(rows, [55 * mm, 25 * mm, 30 * mm, 30 * mm, 35 * mm])
     tbl.setStyle(_standard_table_style())
     _apply_compliance_colours(tbl, rows, 4)
     return tbl
@@ -1365,124 +1224,93 @@ def terminal_working_temperature_table(comp) -> Table:
             _compliance_label(bool(tr.compliant)),
         ])
 
-    tbl = Table(
-        rows,
-        colWidths=[45 * mm, 20 * mm, 30 * mm, 25 * mm, 25 * mm, 30 * mm],
-        repeatRows=1,
-    )
+    tbl = _report_table(rows, [45 * mm, 20 * mm, 30 * mm, 25 * mm, 25 * mm, 30 * mm])
     tbl.setStyle(_standard_table_style())
     _apply_compliance_colours(tbl, rows, 5)
     return tbl
 
 
-def component_derating_table(tier: TierRow, th: TierThermal) -> Table | Paragraph:
-    header = ["Component", "Rated (A)", "Internal Temp (°C)", "Derated Output (A)"]
-    rows = [header]
-
-    T_eval = th.T_top
-
-    for c in tier.components:
-        derated = evaluate_derating(c, T_eval)
+def _component_derating_results(tier, th):
+    from ..core.compliance_61439 import has_valid_derating_curve
+    results = []
+    for component in tier.components:
+        rated = getattr(component, "rated_current_A", None)
+        if rated is None or not math.isfinite(float(rated)) or float(rated) <= 0:
+            continue
+        use_curve = bool(getattr(th, "use_manufacturer_derating", False))
+        derated = evaluate_derating(component, th.T_top, use_manufacturer_curve=use_curve)
         if derated is None:
             continue
+        component.derated_current_A = derated
+        manufacturer = use_curve and has_valid_derating_curve(component, [th.T_top])
+        results.append((component, derated, manufacturer))
+    return results
 
-        c.derated_current_A = derated
 
-        rows.append([
-            str(c.description),
-            f"{float(c.rated_current_A):.1f}",
-            f"{T_eval:.1f}",
-            f"{derated:.1f}",
-        ])
+def component_derating_table(tier: TierRow, th: TierThermal, *, results=None) -> Table | None:
+    results = _component_derating_results(tier, th) if results is None else results
+    if not results:
+        return None
+    rows = [["Component", "Rated (A)", "Internal temp (°C)", "Derated output (A)"]]
+    for component, derated, manufacturer in results:
+        rows.append([str(component.description) + ("*" if manufacturer else ""),
+                     f"{float(component.rated_current_A):.1f}", f"{th.T_top:.1f}",
+                     f"{derated:.1f}"])
+    return _report_table(rows, [85 * mm, 30 * mm, 30 * mm, 30 * mm])
 
-    if len(rows) == 1:
-        return Paragraph("No component derating data available for this tier.", BodySmall)
 
-    tbl = Table(
-        rows,
-        colWidths=[85 * mm, 30 * mm, 30 * mm, 30 * mm],
-        repeatRows=1,
-    )
-    tbl.setStyle(_standard_table_style())
-    return tbl
-
-def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, comp=None):
-    has_buses = bool(tier.buses) if tier else False
-
-    flow.append(Paragraph(
-        f"{sec.h3_num()} AS/NZS 61439 Table 6 – Working Temperature Assessment",
-        H3_NUM
+def _has_bus_elements(tier, comp=None) -> bool:
+    return bool(tier and (
+        getattr(tier, "has_bus_elements", False) or tier.buses
+        or getattr(tier, "joints", None) or getattr(tier, "loads", None)
+        or getattr(tier, "sources", None) or getattr(comp, "terminal_rows", None)
     ))
-    flow.append(Spacer(1, 4))
 
-    flow.append(Paragraph(
-        "The following tables summarise the steady-state working temperatures used for "
-        "AS/NZS 61439 Table 6 assessment for this tier, including enclosure temperatures, "
-        "all busbar working / hotspot temperatures, joint temperatures, and terminal temperatures "
-        "where applicable.",
-        BodySmall
-    ))
-    flow.append(Spacer(1, 6))
 
-    if has_buses:
+def render_working_temperature_page(flow, sec, tier: TierRow, th: TierThermal, comp=None,
+                                    *, derating_results=None):
+    if _has_bus_elements(tier, comp):
         flow.append(Paragraph(
-            f"{sec.h3_num()} Tier / enclosure conditions",
-            H3_NUM
-        ))
+            f"{sec.h3_num()} AS/NZS 61439 Table 6 - Working Temperature Assessment", H3_NUM))
+        flow.append(Paragraph(
+            "The following tables summarise the steady-state working temperatures used for "
+            "AS/NZS 61439 Table 6 assessment for this tier, including enclosure, busbar, joint "
+            "and terminal temperatures where applicable.", BodySmall))
+        flow.append(Paragraph(f"{sec.h3_num()} Tier / enclosure conditions", H3_NUM))
         flow.append(working_summary_table(th, comp))
         flow.append(Spacer(1, 8))
+        if tier.buses:
+            flow.append(Paragraph(f"{sec.h3_num()} Busbar working temperatures", H3_NUM))
+            flow.append(bus_working_temperature_table(tier, comp))
+            flow.append(Spacer(1, 8))
+        if getattr(tier, "joints", None):
+            flow.append(Paragraph(f"{sec.h3_num()} Joint working temperatures", H3_NUM))
+            flow.append(joint_working_temperature_table(tier, comp))
+            flow.append(Spacer(1, 8))
+        if getattr(comp, "terminal_rows", None):
+            flow.append(Paragraph(f"{sec.h3_num()} Terminal working temperatures", H3_NUM))
+            flow.append(terminal_working_temperature_table(comp))
+            flow.append(Spacer(1, 8))
 
-    if has_buses:
-        flow.append(Paragraph(
-            f"{sec.h3_num()} Busbar working temperatures",
-            H3_NUM
-        ))
-        flow.append(bus_working_temperature_table(tier, comp))
-        flow.append(Spacer(1, 8))
-
-    if has_buses and tier.joints:
-        flow.append(Paragraph(
-            f"{sec.h3_num()} Joint working temperatures",
-            H3_NUM
-        ))
-        flow.append(joint_working_temperature_table(tier, comp))
-        flow.append(Spacer(1, 8))
-
-    from heatcalc.core.compliance_61439 import evaluate_derating
-
-    for c in tier.components:
-        c.derated_current_A = evaluate_derating(c, th.T_top)
-
-    if has_buses and comp is not None and getattr(comp, "terminal_rows", None):
-        flow.append(Paragraph(
-            f"{sec.h3_num()} Terminal working temperatures",
-            H3_NUM
-        ))
-        flow.append(terminal_working_temperature_table(comp))
-        flow.append(Spacer(1, 8))
-
-    if tier.components:
-        flow.append(Spacer(1, 10))
-        flow.append(Paragraph(
-            f"{sec.h3_num()} Component derated current capacity",
-            H3_NUM
-        ))
-        flow.append(component_derating_table(tier, th))
-        flow.append(Paragraph(
-            f"Current capacity evaluated at solved top air temperature ({th.T_top:.1f}°C), "
-            "with the existing 80% rated-current ceiling. Component temperature ratings "
-            "must also be satisfied.", BodySmall
-        ))
+    results = _component_derating_results(tier, th) if derating_results is None else derating_results
+    if results:
+        flow.append(Paragraph(f"{sec.h3_num()} Component derated current capacity", H3_NUM))
+        flow.append(component_derating_table(tier, th, results=results))
         flow.append(Spacer(1, 6))
+        if any(manufacturer for _, _, manufacturer in results):
+            text = "Component(s) temperature deratings were solved directly using manufacturer data."
+            fan_text = _selected_fan_text(th)
+            if fan_text:
+                text += " " + fan_text
+            flow.append(_note_callout(text, prefix="*"))
+            flow.append(Spacer(1, 6))
+        basis = f"Current capacity evaluated at solved top air temperature ({th.T_top:.1f}°C). "
+        if any(not manufacturer for _, _, manufacturer in results):
+            basis += ("The 80% rated-current maximum applies to components where the manufacturer has not specified "
+                      "a derating curve.")
+        basis += "Component temperature ratings must also be satisfied."
+        flow.append(Paragraph(basis, BodySmall))
 
-    if th.selected_airflow_m3h > 0:
-        from xml.sax.saxutils import escape
-        flow.append(Paragraph(
-            f"Selected fan: {escape(th.selected_fan_name or 'Unspecified model')}; "
-            f"delivered airflow {th.selected_airflow_m3h:.1f} m³/h. "
-            "Temperatures use an estimated fan heat balance with sealed-enclosure "
-            "dissipation and the existing solar allowance.", BodySmall
-        ))
 
 # ------------------------------------------------------------------
 # IEC Calculation
@@ -1513,11 +1341,7 @@ def iec_scalar_table(th: TierThermal) -> Table:
         f"{th.ambient_C:.1f}"
     ])
 
-    tbl = Table(
-        rows,
-        colWidths=[100*mm, 75*mm],  # ~175mm
-        repeatRows=1
-    )
+    tbl = _report_table(rows, [100 * mm, 75 * mm])
 
     tbl.setStyle(_standard_table_style())  # ✅ unified styling
 
@@ -1652,15 +1476,14 @@ def export_simple_report(
     class TOCDocTemplate(BaseDocTemplate):
         def afterFlowable(self, flowable):
             if isinstance(flowable, Paragraph):
-                text = flowable.getPlainText()
-                style = flowable.style.name
+                level = {"H1_NUM": 0, "H2_NUM": 1, "H3_NUM": 2}.get(flowable.style.name)
+                if level is not None:
+                    text = flowable.getPlainText()
+                    position = self.frame._y + flowable.height
+                    key = f"toc_{self.page}_{position:.3f}_{hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]}"
+                    self.canv.bookmarkHorizontalAbsolute(key, position)
+                    self.notify("TOCEntry", (level, escape(text), self.page, key))
 
-                if style == "H1_NUM":
-                    self.notify("TOCEntry", (0, text, self.page))
-                elif style == "H2_NUM":
-                    self.notify("TOCEntry", (1, text, self.page))
-                elif style == "H3_NUM":
-                    self.notify("TOCEntry", (2, text, self.page))
 
     doc = TOCDocTemplate(
         str(out_pdf),
@@ -1687,35 +1510,18 @@ def export_simple_report(
 
     toc = TableOfContents()
     toc.levelStyles = [
-        ParagraphStyle(
-            name="TOCLevel1",
-            fontName=FONT,
-            fontSize=10,
-            leftIndent=20,
-            firstLineIndent=-20,
-            spaceBefore=4,
-        ),
-        ParagraphStyle(
-            name="TOCLevel2",
-            fontName=FONT,
-            fontSize=9,
-            leftIndent=40,
-            firstLineIndent=-20,
-            spaceBefore=2,
-        ),
-        ParagraphStyle(
-            name="TOCLevel3",
-            fontName=FONT,
-            fontSize=9,
-            leftIndent=60,
-            firstLineIndent=-20,
-            spaceBefore=1,
-        ),
+        ParagraphStyle("TOCLevel1", fontName=FONT_B, fontSize=10, leading=14,
+                       leftIndent=0, spaceBefore=7, textColor=colors.black),
+        ParagraphStyle("TOCLevel2", fontName=FONT, fontSize=9, leading=12,
+                       leftIndent=20, firstLineIndent=-20, spaceBefore=2, textColor=colors.black),
+        ParagraphStyle("TOCLevel3", fontName=FONT, fontSize=8.5, leading=11,
+                       leftIndent=38, firstLineIndent=-18, spaceBefore=1, textColor=colors.black),
     ]
+
 
     ################################## TABLE OF CONTENTS PAGE ########################################
 
-    flow.append(Paragraph("Calculation Table of Contents", H1_NUM))
+    flow.append(Paragraph("Calculation Table of Contents", ParagraphStyle("ContentsTitle", parent=H1_NUM)))
     flow.append(Spacer(1, 12))
     flow.append(toc)
 
@@ -1732,9 +1538,9 @@ def export_simple_report(
     if diagram_png_path and Path(diagram_png_path).exists():
         try:
             from PIL import Image as PILImage
-            img = PILImage.open(diagram_png_path)
-            img_w, img_h = img.size
-            dpi = int((img.info.get("dpi", (144,144))[0]) or 144)
+            with PILImage.open(diagram_png_path) as img:
+                img_w, img_h = img.size
+                dpi = int((img.info.get("dpi", (144,144))[0]) or 144)
         except Exception:
             img_w, img_h, dpi = 1200, 800, 144
         target_w_pt, target_h_pt = _scale_to_fit(img_w, img_h, max_w_mm=180, max_h_mm=110, dpi=dpi)
@@ -1750,7 +1556,8 @@ def export_simple_report(
 
     ################################## HEADER PAGE ########################################
 
-    flow.append(PageBreak())
+    if diagram_png_path and Path(diagram_png_path).exists():
+        flow.append(PageBreak())
 
     ################################## ASSUMPTIONS PAGE ########################################
     flow.append(Paragraph(
@@ -1797,7 +1604,7 @@ def export_simple_report(
             has_cables = bool(tier.cables) if tier else False
             has_joints = bool(getattr(tier, "joints", [])) if tier else False
 
-            if tier and not any([has_buses, has_components, has_cables, has_joints]):
+            if tier and not any([has_buses, has_components, has_cables, has_joints, _has_bus_elements(tier)]):
                 flow.append(Spacer(1, 10))
                 flow.append(Paragraph(
                     "No heat-generating equipment or current-carrying conductors are present within this tier. "
@@ -1822,7 +1629,7 @@ def export_simple_report(
                 continue
             flow.append(Paragraph(
                 f"{sec.h2_num()} Temperature Rise Summary — {title}",
-                H1_NUM
+                H2_NUM
             ))
 
             flow.append(Paragraph(
@@ -1831,60 +1638,21 @@ def export_simple_report(
             ))
             try:
                 from PIL import Image as PILImage
-                img = PILImage.open(img_path)
-                img_w, img_h = img.size
-                dpi = int((img.info.get("dpi", (144,144))[0]) or 144)
+                with PILImage.open(img_path) as img:
+                    img_w, img_h = img.size
+                    dpi = int((img.info.get("dpi", (144,144))[0]) or 144)
             except Exception:
                 img_w, img_h, dpi = 1200, 800, 144
             target_w_pt, target_h_pt = _scale_to_fit(img_w, img_h, 180, 240, dpi)
-            scale_factor = 0.6
-            target_w_pt *= scale_factor
-            target_h_pt *= scale_factor
             flow.append(Spacer(1, 4))
             flow.append(RLImage(str(img_path), width=target_w_pt, height=target_h_pt))
 
-            # Determine aspect ratio from tier geometry (if available)
-            ratio = 0.8
-            try:
-                tr = next(t for t in tiers if t.tag == th.tag)
-                if tr.height_mm > 0:
-                    ratio = max(0.2, min(2.0, tr.width_mm / tr.height_mm))
-            except Exception:
-                pass
 
-            slice_png = assets / f"temp_slice_{th.tag.replace(' ', '_')}.png"
-            render_temp_slice_png(
-                out_path=slice_png,
-                ambient_C=th.ambient_C, T_mid=th.T_mid, T_top=th.T_top,
-                max_C=getattr(th, "max_C", None),
-                aspect_wh=ratio,
-                title=f"Temperature Slice — {th.tag}"
-            )
 
-            # scale the slice image a touch smaller
-            try:
-                s = PILImage.open(slice_png)
-                sw, sh = s.size
-                dpi2 = int((s.info.get("dpi", (160,160))[0]) or 160)
-                sw_pt, sh_pt = _scale_to_fit(sw, sh, 65, 170, dpi2)
-            except Exception:
-                sw_pt, sh_pt = 60*mm, 140*mm
-            flow.append(Spacer(1, 6))
-            flow.append(Paragraph(
-                f"{sec.h3_num()} Temperature Slice",
-                H3_NUM
-            ))
-            flow.append(Spacer(1, 4))
-
-            flow.append(RLImage(str(slice_png), width=sw_pt, height=sh_pt))
-            flow.append(Spacer(1, 6))
-
-            # Summary table on the same page
-            flow.append(Spacer(1, 8))
+            # Keep the results and their application text together if the equipment schedule is long.
+            results_start = len(flow)
             comp_mid = "Compliant" if th.compliant_mid else "Not compliant"
             comp_top = "Compliant" if th.compliant_top else "Not compliant"
-            comp_mid_color = colors.green if th.compliant_mid else colors.red
-            comp_top_color = colors.green if th.compliant_top else colors.red
 
             main_rows = [
                 ["Tier heat load (W)", f"{th.P_W:.1f}"],
@@ -1902,23 +1670,14 @@ def export_simple_report(
                 ["Compliance @ 1.0t", comp_top],
             ]
 
-            tbl = Table(main_rows, colWidths=[60 * mm, 85 * mm])
-            style_cmds = [
-                ("FONT", (0, 0), (-1, -1), FONT, 9),
-                ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.whitesmoke),
-                ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ]
-            for i, row in enumerate(main_rows):
-                label = row[0]
-                if label == "Compliance @ 0.5t":
-                    style_cmds.append(("TEXTCOLOR", (1, i), (1, i), comp_mid_color))
-                elif label == "Compliance @ 1.0t":
-                    style_cmds.append(("TEXTCOLOR", (1, i), (1, i), comp_top_color))
-            tbl.setStyle(TableStyle(style_cmds))
+            for row in main_rows:
+                if row[0].startswith("Compliance @"):
+                    colour = green if row[1] == "Compliant" else colors.red
+                    row[1] = Paragraph(row[1], ParagraphStyle(
+                        "TemperatureStatus", fontName=FONT_B, fontSize=8, leading=10, textColor=colour))
+            tbl = _report_table([["Parameter", "Value"], *main_rows], [100 * mm, 75 * mm])
 
-            flow.append(Spacer(1, 8))
+
             flow.append(Paragraph(
                 f"{sec.h3_num()} Temperature Rise Results",
                 H3_NUM
@@ -1927,22 +1686,8 @@ def export_simple_report(
 
             flow.append(tbl)
 
-            flow.append(Spacer(1, 4))
-
-            flow.append(Paragraph(
-                "A compliant result indicates that the enclosure can adequately dissipate heat via "
-                "natural convection and radiation under the specified conditions. A non-compliant "
-                "result indicates that natural cooling is insufficient, and forced ventilation or "
-                "alternative cooling methods must be considered to achieve acceptable operating temperatures. "
-                "This compliance assessment does not imply that all components or protective devices may "
-                "operate at their full rated capacity. In accordance with the defined calculation preconditions, "
-                "protective devices are limited to a maximum of 80% of their rated current. Additional "
-                "temperature-based derating of components may be required depending on the internal operating "
-                "temperature conditions.",
-                BodySmall
-            ))
-
-            flow.append(Spacer(1, 6))
+            _application_results(flow, [th])
+            flow[results_start:] = [KeepTogether(flow[results_start:])]
 
             # ---------------------------------------------------------
             # PAGE 2 — IEC 60890 CALCULATION SHEET (PER TIER)
@@ -1998,18 +1743,18 @@ def export_simple_report(
             # ---------------------------------------------------------
             comp = comp_by_tier.get(str(th.tag))
 
-            has_buses = bool(tier.buses) if tier else False
-            has_components = bool(tier.components) if tier else False
-
-            if tier is not None and (has_buses or has_components):
-                flow.append(PageBreak())
-                flow.append(Paragraph(
-                    f"{sec.h2_num()} AS/NZS 61439 Working Temperature Assessment — {th.tag}",
-                    H2_NUM
-                ))
+            derating_results = _component_derating_results(tier, th) if tier else []
+            has_bus_elements = _has_bus_elements(tier, comp)
+            if has_bus_elements or derating_results:
+                if has_bus_elements:
+                    flow.append(PageBreak())
+                heading = ("AS/NZS 61439 Working Temperature Assessment" if has_bus_elements
+                           else "Component Current Capacity Assessment")
+                flow.append(Paragraph(f"{sec.h2_num()} {heading} - {escape(th.tag)}", H2_NUM))
                 flow.append(Spacer(1, 6))
+                render_working_temperature_page(flow, sec, tier, th, comp,
+                                                derating_results=derating_results)
 
-                render_working_temperature_page(flow, sec, tier, th, comp)
 
     doc.multiBuild(flow)
     return out_pdf

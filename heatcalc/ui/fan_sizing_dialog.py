@@ -76,9 +76,12 @@ class FanSizingDialog(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.canvas)
         layout.addWidget(scroll, 1)
+        current_basis = ("Manufacturer derating curves replace the 80% Ith cap. "
+                         if self.swb.project.meta.use_manufacturer_derating else
+                         "Current is limited to 80% of rated current. ")
         self.note = QLabel("Operating-point markers use the coupled network solve. Curves use that operating "
-                           "point's heat load. Current is per device with the existing 80% ceiling; "
-                           "temperature ratings must also be satisfied. Zero airflow uses natural cooling.")
+                           "point's heat load. " + current_basis + "Current is per device; temperature ratings "
+                           "must also be satisfied. Zero airflow uses natural cooling.")
         self.note.setWordWrap(True)
         layout.addWidget(self.note)
         self.timer = QTimer(self)

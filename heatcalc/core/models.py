@@ -46,6 +46,7 @@ class ProjectMeta:
     enclosure_material: str = "Sheet metal"
     enclosure_k_W_m2K: float = 5.5
     allow_material_dissipation: bool = False
+    use_manufacturer_derating: bool = False
 
     # ---- Solar (NEW) ----
     solar_enabled: bool = False

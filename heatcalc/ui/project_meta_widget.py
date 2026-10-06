@@ -173,6 +173,16 @@ class ProjectMetaWidget(QWidget):
         self.cmb_ip.currentIndexChanged.connect(self._on_ip_changed)
         form.addRow("IP Rating – Solids (IP N X):", self.cmb_ip)
 
+        self.cb_manufacturer_derating = QCheckBox("Use manufacturer derating curves\ninstead of the 80% Ith limit")
+        self.cb_manufacturer_derating.setChecked(project.meta.use_manufacturer_derating)
+        self.cb_manufacturer_derating.setToolTip(
+            "Project-wide: devices with valid manufacturer temperature derating curves "
+            "use those curves up to rated current. Devices without usable curves retain "
+            "the 80% limit. Applies to previews, plots and reports."
+        )
+        self.cb_manufacturer_derating.toggled.connect(self._on_manufacturer_derating_changed)
+        form.addRow("Device current capacity:", self.cb_manufacturer_derating)
+
         # Initialise IP rating from project meta (IMPORTANT)
         n = int(getattr(self._project.meta, "ip_rating_n", 2))
         idx = self.cmb_ip.findData(n)
@@ -245,6 +255,9 @@ class ProjectMetaWidget(QWidget):
             pass
 
     def refresh_from_project(self):
+        self.cb_manufacturer_derating.blockSignals(True)
+        self.cb_manufacturer_derating.setChecked(self._project.meta.use_manufacturer_derating)
+        self.cb_manufacturer_derating.blockSignals(False)
         for key, le in self._edits.items():
             val = getattr(self._project.meta, key, "")
             if le.text() != str(val):
@@ -274,6 +287,10 @@ class ProjectMetaWidget(QWidget):
 
     # --- Meta Set  ---------------------------------------------------------
     def set_meta(self, meta: dict):
+        self._project.meta.use_manufacturer_derating = bool(meta.get("use_manufacturer_derating", False))
+        self.cb_manufacturer_derating.blockSignals(True)
+        self.cb_manufacturer_derating.setChecked(self._project.meta.use_manufacturer_derating)
+        self.cb_manufacturer_derating.blockSignals(False)
         for key, _label in self.FIELDS:
             val = str(meta.get(key, ""))
             le = self._edits.get(key)
@@ -286,6 +303,11 @@ class ProjectMetaWidget(QWidget):
                 setattr(self._project.meta, key, val)
             except Exception:
                 pass
+
+    def _on_manufacturer_derating_changed(self, checked: bool):
+        self._project.meta.use_manufacturer_derating = checked
+        signals.project_changed.emit()
+        signals.project_meta_changed.emit()
 
     def _on_ambient_changed(self, val: float):
         try:
@@ -332,7 +354,7 @@ class ProjectMetaWidget(QWidget):
         signals.project_changed.emit()
 
     def get_meta(self) -> dict:
-        out = {}
+        out = {"use_manufacturer_derating": self.cb_manufacturer_derating.isChecked()}
         for key, _label in self.FIELDS:
             le = self._edits.get(key)
             out[key] = le.text().strip() if le is not None else ""

@@ -1,105 +1,209 @@
-Category,Description,PartNumber,HeatLoss,MaxTemp,rated_current_A,derating_temp_start_C,derating_function
-Contactor,"Acti9 4 poles, 4 NO, 25 A",A9C20834,1.6,60,25,40,1 - 0.01*(x-40)
-Contactor,"Acti9 4 poles, 4 NO, 25 A",A9C20837,1.6,60,25,40,1 - 0.01*(x-40)
-RCBO,"iC60N RCBO, 6A",A9D61806,1.3,60,6,40,1 - 0.01*(x-40)
-RCBO,"iC60N RCBO, 10A",A9D61810,2,60,10,40,1 - 0.01*(x-40)
-RCBO,"iC60N RCBO, 16A",A9D61816,2.1,60,16,40,1 - 0.01*(x-40)
-RCBO,"iC60N RCBO, 20A",A9D61820,2.2,60,20,40,1 - 0.01*(x-40)
-RCBO,"iC60N RCBO, 25A",A9D61825,2.7,60,25,40,1 - 0.01*(x-40)
-RCBO,"iC60N RCBO, 32A",A9D61832 ,2.8,60,32,40,1 - 0.01*(x-40)
-RCBO,"iC60N RCBO, 50A",A9D61850,4,60,50,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 1P, 1A",A9F44101,2.3,70,1,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 1P, 2A",A9F44102,1.9,70,2,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 1P, 6A",A9F44106,1.3,70,6,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 1P, 20A",A9F44120,2.2,70,20,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 1P, 32A",A9F44132,2.8,70,32,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 1P, 40A",A9F44140,3.6,70,40,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 1P, 64A",A9F44163,5.6,70,64,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 3P, 6A",A9F44306,3.9,70,6,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 3P, 10A",A9F44310,6,70,10,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 3P, 16A",A9F44316,6.3,70,16,40,1 - 0.01*(x-40)
-MCB,"iC60N MCB, 3P, 20A",A9F44320,6.6,70,,,
-MCB,"iC60N MCB, 3P, 25A",A9F44325,8.1,70,,,
-MCB,"iC60N MCB, 3P, 30A",A9F44350,12,70,,,
-MCB,"iC60N MCB, 3P, 63A",A9F44363,16.8,70,,,
-MCB,"iC60N MCB, 1P, DC, 8A",A9N61508,2,70,,,
-MCB,"iC60N MCB, 1P, DC, 10A",A9N61510,2.1,70,,,
-MCB,"iC60N MCB, 1P, DC, 20A",A9N61520,4.6,70,,,
-RCBO,"DIN-T RCBO, 6A",DSRCBH-06-30-A,1.57,55,,,
-RCBO,"DIN-T RCBO, 10A",DSRCBH-10-30-A,1.56,55,,,
-RCBO,"DIN-T RCBO, 16A",DSRCBH-16-100-A,2.586,55,,,
-RCBO,"DIN-T RCBO, 16A",DSRCBH-16-30-A,2.586,55,,,
-RCBO,"DIN-T RCBO, 20A",DSRCBH-20-100-A,2.76,55,,,
-RCBO,"DIN-T RCBO, 20A",DSRCBH-20-30-A,2.76,55,,,
-RCBO,"DIN-T RCBO, 25A",DSRCBH-25-30-A,3.188,55,,,
-MCB,"DIN-T MCB, 2A",DTCB10102C,1.24,70,,,
-MCB,"DIN-T MCB, 6A",DTCB10106C,1.56,70,,,
-MCB,"DIN-T MCB, 10A",DTCB10110C,1.57,70,,,
-MCB,"DIN-T MCB, 16A",DTCB10116C,2.586,70,,,
-MCB,"DIN-T MCB, 20A",DTCB10120C,2.76,70,,,
-MCB,"DIN-T MCB, 6A",DTCB10306C,4.68,70,,,
-MCB,"DIN-T MCB, 10A",DTCB10310C,4.71,70,,,
-MCB,"DIN-T MCB, 16A",DTCB10316C,7.758,70,,,
-MCB,"DIN-T MCB, 20A",DTCB10320C,8.28,70,,,
-MCB,"DIN-T MCB, 25A",DTCB10325C,9.564,70,,,
-MCB,"DIN-T MCB, 32A",DTCB10332C,9.216,70,,,
-MCB,"DIN-T MCB, 40A",DTCB10340c,12,70,,,
-MCB,"DIN-T MCB, 6A",DTCB15306C,4.68,70,,,
-MCB,"DIN-T MCB, 2A",DTCB10202C,2.48,70,,,
-MCB,"DIN-T MCB, 10A",DTCB6210C,2.98,70,,,
-MCB,"DIN-T MCB, 4A",DTCB6204C,3.12,70,,,
-MCB,"DIN-T MCB, 4A",DTCB10204C,2.98,70,,,
-MCB,"DIN-T MCB, 20A",DTCB10220C,5.4,70,,,
-PSU,"PowerBox, 330W ",PB251A-24CM-CC-T-S,0.463,70,,,
-PFR,PhaseFail Relay,PPA-01-C-M44,0.4,70,,,
-MCCB,"TemBreak MCCB, 125A",S125NJ3125,40.4,70,,,
-MCCB,"TemBreak MCCB, 63A",S125NJ363,15,70,,,
-MCCB,"TemBreak MCCB, 40A",S250NE340,55,70,,,
-MCCB,"TemBreak MCCB, 250A",S250NE3250,19,70,,,
-MCCB,"TemBreak MCCB, 250A",S250NE4250,25.3,70,,,
-MCCB,"TemBreak MCCB, 100A",S125NJ3100,15,70,,,
-MCCB,"TemBreak MCCB, 20A",S125NJ320,15,70,,,
-MCCB,"TemBreak MCCB, 32A",S125NJ332 ,24,70,,,
-MCCB,"TemBreak MCCB, 32A",E125NJ332,25,70,,,
-MCCB,"ComPacT NSX100, 16A, TMD",C10X3TM100,2.92,70,,,
-MCCB,"ComPacT NSX100, 25A, TMD",C10X3TM100,4.01,70,,,
-MCCB,"ComPacT NSX100, 32A, TMD",C10X3TM100,4.03,70,,,
-MCCB,"ComPacT NSX100, 40A, TMD",C10X3TM100,5.47,70,,,
-MCCB,"ComPacT NSX100, 50A, TMD",C10X3TM100,4.11,70,,,
-MCCB,"ComPacT NSX100, 63A, TMD",C10X3TM100,8.61,70,,,
-MCCB,"ComPacT NSX100, 80A, TMD",C10X3TM100,8.77,70,,,
-MCCB,"ComPacT NSX100, 100A, TMD",C10X3TM100,8.8,70,,,
-MCCB,"ComPacT NSX160, 80A, TMD",C16X3TM160,8.06,70,,,
-MCCB,"ComPacT NSX160, 100A, TMD",C16X3TM160,7.7,70,,,
-MCCB,"ComPacT NSX160, 125A, TMD",C16X3TM160,10.78,70,,,
-MCCB,"ComPacT NSX160, 160A, TMD",C16X3TM160,13.95,70,,,
-MCCB,"ComPacT NSX250, 125A, TMD",C25X3TM250,9.45,70,,,
-MCCB,"ComPacT NSX250, 160A, TMD",C25X3TM250,11.78,70,,,
-MCCB,"ComPacT NSX250, 200A, TMD",C25X3TM250,15.4,70,,,
-MCCB,"ComPacT NSX250, 250A, TMD",C25X3TM250,18.75,70,,,
-MCCB,"ComPacT NSX100, ML < 40A",C10X32D100,1.3,70,,,
-MCCB,"ComPacT NSX100, ML > 40A",C10X32D100,4.7,70,,,
-MCCB,"ComPacT NSX160, ML < 40A",C10X32D160,1.2,70,,,
-MCCB,"ComPacT NSX160, ML > 40A",C10X32D160,9.2,70,,,
-MCCB,"ComPacT NSX250, ML < 40A",C10X32D250,2.7,70,,,
-MCCB,"ComPacT NSX250, ML > 40A",C10X32D250,17.6,70,,,
-MCCB,"ComPacT NSX400, ML < 400A",C10X32D400,19.2,70,,,
-MCCB,"ComPacT NSX630, ML > 630A",C10X32D630,39.7,70,,,
-ATS,"TemBreak 2 ATS, 250A",S250PE,8.5,70,,,
-Isolator,"Socomec, Load break, 160A",SLB1603PD,17.4,70,,,
-Isolator,"Socomec, Load break, 250A",SLB2503PD,5.4,70,,,
-Isolator,"Socomec, Load break, 125A",SLBM1253PD,5.4,70,,,
-MCCB,"TemBreak MCCB, 100A",P160F23100BE,3.9,70,,,
-Other,Emergency Lighting Relay,CPELK,4,70,,,
-Surge,Surge Reduction Filter,TSF20A240V,0,40,,,
-PFR,PhaseFail Relay,DPA01CM48W4,0,60,,,
-RTU,SCADAPack 474,TBUP474-UA50-BB00S,0.4,70,,,
-RTU,Expansion Module 6601,ACS580-01-106A-4,0.12,70,,,
-Terminal,Generic (24VDC < 0.5A),Generic,0.00134,70,,,
-Terminal,Terminal Generic (230VAC < 5A),Generic,0.048,70,,,
-Terminal,Terminal Generic (230VAC > 10A),Generic,0.134,70,,,
-Terminal,Terminal Generic (230VAC > 16A),Generic,0.342,70,,,
-Terminal,Terminal Generic (230VAC > 25A),Generic,0.836,70,,,
-Terminal,Terminal Generic (230VAC > 32A),Generic,1.369,70,,,
-Terminal,Terminal Generic (230VAC > 40A),Generic,2.139,70,,,
-Terminal,Terminal Generic (230VAC > 63A),Generic,5.3,70,,,
+Category,Description,PartNumber,HeatLoss,MaxTemp,rated_current_A,derating_temp_start_C,derating_function,
+Contactor,"Acti9 4 poles, 4 NO, 25 A",A9C20834,1.6,60,25,,,
+Contactor,"Acti9 4 poles, 4 NO, 25 A",A9C20837,1.6,60,25,,,
+Contactor,EVALUATION UNIT FOR SPEED MONITORING,DD0296 ,6,60,,,,
+Contactor,"Contactor, TeSys D, 9A",LC1D09B7,3.3,70,9,,,
+Contactor,"Contactor, TeSys D, 38A",LC1D38U7,3,70,38,,,Derating + 60 degrees
+Contactor,"Acti9 1 pole, 2 NO, 25 A",A9C20732,1.2,60,25,,,
+Contactor,S+S CA7 Contactor 5.5kW 4Pole 24VAC Coil,CA712M4024VAC,5,60,7.65,,,"Hold in demand current is 1A, at 24V and 5 ohms coil resistance thats about 5W"
+Relay,"Harmony, Miniature Plug in Relay, 6A",RXM4AB1U7,0.9,55,6,,,
+Relay,"Harmony, Miniature Plug in Relay, 12A",RXM2AB1B7,0.9,55,12,,,
+Relay,"Harmony, Miniature Plug in Relay, 6A",RXM4AB1BD,0.9,55,6,,,
+Relay,"Harmony, Miniature Plug in Relay, 6A",RGZE1S48M,0.9,55,6,,,
+Relay,"Harmony, Interface Plug in Relay, 5A",RXG22P7,5.2,70,5,,,
+Relay,"Harmony, Interface Plug in Relay, 5A",RXG22BD,5.2,70,5,,,
+Relay,"Harmony Timer, Dual Function Relay, 8A",RE22R2AMR,1.5,60,8,,,
+Relay,"Harmony Timer, Single Function Relay, 8A",RE22R2CMR,1.5,60,8,,,
+Relay,Finder 55 Series Miniature GP Relay,55320054240VAC,0.1,85,,,,Assumed Heat loss - Negligable and not stated.
+RCBO,"iC60N RCBO, 6A",A9D61806,1.3,60,6,,,
+RCBO,"iC60N RCBO, 10A",A9D61810,2,60,10,,,
+RCBO,"iC60N RCBO, 16A",A9D61816,2.1,60,16,,,
+RCBO,"iC60N RCBO, 20A",A9D61820,2.2,60,20,,,
+RCBO,"iC60N RCBO, 25A",A9D61825,2.7,60,25,,,
+RCBO,"iC60N RCBO, 32A",A9D61832 ,2.8,60,32,,,
+RCBO,"iC60N RCBO, 50A",A9D61850,4,60,50,,,
+MCB,"iC60N MCB, 1P, 1A",A9F44101,2.3,70,1,,,
+MCB,"iC60N MCB, 1P, 2A",A9F44102,1.9,70,2,,,
+MCB,"iC60N MCB, 1P, 4A",A9F44104,1.8,70,4,,,
+MCB,"iC60N MCB, 1P, 6A",A9F44106,1.3,70,6,,,
+MCB,"iC60N MCB, 1P, 10A",A9F44110,1.7,70,10,,,
+MCB,"iC60N MCB, 1P, 20A",A9F44120,2.2,70,20,,,
+MCB,"iC60N MCB, 1P, 32A",A9F44132,2.8,70,32,,,
+MCB,"iC60N MCB, 1P, 40A",A9F44140,3.6,70,40,,,
+MCB,"iC60N MCB, 1P, 63A",A9F44163,5.6,70,63,,,
+MCB,"iC60N MCB, 3P, 2A",A9F44302,2.7,70,2,,,
+MCB,"iC60N MCB, 3P, 6A",A9F44306,3.9,70,6,,,
+MCB,"iC60N MCB, 3P, 10A",A9F44310,6,70,10,,,
+MCB,"iC60N MCB, 3P, 16A",A9F44316,6.3,70,16,,,
+MCB,"iC60N MCB, 3P, 20A",A9F44320,6.6,70,20,,,
+MCB,"iC60N MCB, 3P, 25A",A9F44325,8.1,70,25,,,
+MCB,"iC60N MCB, 3P, 30A",A9F44330,12,70,30,,,
+MCB,"iC60N MCB, 3P, 40A",A9F44340,13.8,70,40,,,
+MCB,"iC60N MCB, 3P, 63A",A9F44363,16.8,70,63,,,
+MCB,"iC60N MCB, 1P, DC, 8A",A9N61508,2,70,8,,,
+MCB,"iC60N MCB, 1P, DC, 10A",A9N61510,2.1,70,10,,,
+MCB,"iC60N MCB, 1P, DC, 20A",A9N61520,4.6,70,20,,,
+MCB,"iC60 MCB, 2P, DC, 6A",A9N61526,3.9,70,6,,,
+MCB,S+S KT9 MOTOR PROTECTION CIRCUIT 10-16A,KTA932S16A,8.4,60,16,,,
+RCBO,"DIN-T RCBO, 6A",DSRCBH-06-30-A,1.57,55,6,,,
+RCBO,"DIN-T RCBO, 10A",DSRCBH-10-30-A,1.56,55,10,,,
+RCBO,"DIN-T RCBO, 16A",DSRCBH-16-100-A,2.586,55,16,,,
+RCBO,"DIN-T RCBO, 16A",DSRCBH-16-30-A,2.586,55,16,,,
+RCBO,"DIN-T RCBO, 20A",DSRCBH-20-100-A,2.76,55,20,,,
+RCBO,"DIN-T RCBO, 20A",DSRCBH-20-30-A,2.76,55,20,,,
+RCBO,"DIN-T RCBO, 25A",DSRCBH-25-30-A,3.188,55,25,,,
+MCB,"DIN-T MCB, 2A",DTCB10102C,1.24,70,2,,,
+MCB,"DIN-T MCB, 6A",DTCB10106C,1.56,70,6,,,
+MCB,"DIN-T MCB, 10A",DTCB10110C,1.57,70,10,,,
+MCB,"DIN-T MCB, 16A",DTCB10116C,2.586,70,16,,,
+MCB,"DIN-T MCB, 20A",DTCB10120C,2.76,70,20,,,
+MCB,"DIN-T MCB, 6A",DTCB10306C,4.68,70,6,,,
+MCB,"DIN-T MCB, 10A",DTCB10310C,4.71,70,10,,,
+MCB,"DIN-T MCB, 16A",DTCB10316C,7.758,70,16,,,
+MCB,"DIN-T MCB, 20A",DTCB10320C,8.28,70,20,,,
+MCB,"DIN-T MCB, 25A",DTCB10325C,9.564,70,25,,,
+MCB,"DIN-T MCB, 32A",DTCB10332C,9.216,70,32,,,
+MCB,"DIN-T MCB, 40A",DTCB10340c,12,70,40,,,
+MCB,"DIN-T MCB, 50A",DTCB10350c,12.9,70,50,,,
+MCB,"DIN-T MCB, 6A",DTCB15306C,4.68,70,6,,,
+MCB,"DIN-T MCB, 2A",DTCB10202C,2.48,70,2,,,
+MCB,"DIN-T MCB, 10A",DTCB6210C,2.98,70,10,,,
+MCB,"DIN-T MCB, 4A",DTCB6204C,3.12,70,4,,,
+MCB,"DIN-T MCB, 4A",DTCB10204C,2.98,70,4,,,
+MCB,DIN-T Miniature Circuit Breaker MCB 6kA 1 Pole 4A C Curve,DTM6104C,1.8,55,4,,,
+MCB,DIN-T Miniature Circuit Breaker MCB 6kA 1 Pole 20A C Curve,DTM6120C,2.8,55,20,,,
+MCB,"DIN-T MCB, 10A",DTCB10220C,5.4,70,10,,,
+MCB,"DIN-T RCBO, 10A",DTR6L1030A,1.57,55,10,,,
+MCB,"DIN-T RCBO, 16A",DTR6L1630A,2.586,55,16,,,
+MCB,"DIN-T MCB, 10A, @ 5A",DTR6L1030A,1.35,55,10,,,Power Law
+MCB,"DIN-T RCBO, 16A @7.5A",DTR6L1630A,0.56,55,16,,,Power Law
+PSU,"PowerBox, 330W ",PB251A-24CM-CC-T-S,0.463,70,13.75,,,
+PFR,PhaseFail Relay - Carlo Gavazzi,PPA-01-C-M44,0.4,70,,,,
+MCCB,"TemBreak MCCB, 125A",S125NJ3125,40.4,70,125,,,
+MCCB,"TemBreak MCCB, 63A",S125NJ363,15,70,63,,,
+MCCB,"TemBreak MCCB, 40A",S250NE340,55,70,40,,,
+MCCB,"TemBreak MCCB, 250A",S250NE3250,19,70,250,,,
+MCCB,"TemBreak MCCB, 250A",S250NE4250,25.3,70,250,,,
+MCCB,"TemBreak MCCB, 100A",S125NJ3100,15,70,100,,,
+MCCB,"TemBreak MCCB, 20A",S125NJ320,15,70,20,,,
+MCCB,"TemBreak MCCB, 32A",S125NJ332 ,24,70,32,,,
+MCCB,"TemBreak MCCB, 32A",E125NJ332,25,70,32,,,
+MCCB,"ComPacT NSX100, 16A, TMD",C10X3TM100,2.92,70,16,,,
+MCCB,"ComPacT NSX100, 25A, TMD",C10X3TM100,4.01,70,25,,,
+MCCB,"ComPacT NSX100, 32A, TMD",C10X3TM100,4.03,70,32,,,
+MCCB,"ComPacT NSX100, 40A, TMD",C10X3TM100,5.47,70,40,,,
+MCCB,"ComPacT NSX100, 50A, TMD",C10X3TM100,4.11,70,50,,,
+MCCB,"ComPacT NSX100, 63A, TMD",C10X3TM100,8.61,70,63,,,
+MCCB,"ComPacT NSX100, 80A, TMD",C10X3TM100,8.77,70,80,,,
+MCCB,"ComPacT NSX100, 100A, TMD",C10X3TM100,8.8,70,100,,,
+MCCB,"ComPacT NSX160, 80A, TMD",C16X3TM160,8.06,70,80,,,
+MCCB,"ComPacT NSX160, 100A, TMD",C16X3TM160,7.7,70,100,,,
+MCCB,"ComPacT NSX160, 125A, TMD",C16X3TM160,10.78,70,125,,,
+MCCB,"ComPacT NSX160, 160A, TMD",C16X3TM160,13.95,70,160,,,
+MCCB,"ComPacT NSX250, 125A, TMD",C25X3TM250,9.45,70,125,,,
+MCCB,"ComPacT NSX250, 160A, TMD",C25X3TM250,11.78,70,160,,,
+MCCB,"ComPacT NSX250, 200A, TMD",C25X3TM250,15.4,70,200,,,
+MCCB,"ComPacT NSX250, 250A, TMD",C25X3TM250,18.75,70,250,,,
+MCCB,"ComPacT NSX100, ML < 40A",C10X32D100,1.3,70,100,,,
+MCCB,"ComPacT NSX100, ML > 40A",C10X32D100,4.7,70,100,,,
+MCCB,"ComPacT NSX160, ML < 40A",C10X32D160,1.2,70,160,,,
+MCCB,"ComPacT NSX160, ML > 40A",C10X32D160,9.2,70,160,,,
+MCCB,"ComPacT NSX250, ML < 40A",C10X32D250,2.7,70,250,,,
+MCCB,"ComPacT NSX250, ML > 40A",C10X32D250,17.6,70,250,,,
+MCCB,"ComPacT NSX400, ML < 400A",C10X32D400,19.2,70,400,,,
+MCCB,"ComPacT NSX630, ML > 630A",C10X32D630,39.7,70,630,,,
+MCCB,"ComPact NS1000, ML >1000A",C100N320FM,22,70,1000,,,
+ATS,"TemBreak 2 ATS, 250A",S250PE,8.5,70,250,,,
+ATS,"ATyS P, 400A",95534040,40,70,400,40,(-0.01*x)+1.3,"From INSTALLATION AND OPERATING MANUAL, watt loss assumed to align with 10% rule."
+Isolator,"Socomec, Load break, 160A",SLB1603PD,16,70,160,,,"Assumed, no socomec watt loss data"
+Isolator,"Socomec, Load break, 250A",SLB2503PD,25,70,250,,,"Assumed, no socomec watt loss data"
+Isolator,"Socomec, Load break, 400A",SLB4003PD,40,70,400,,,"Assumed, no socomec watt loss data"
+Isolator,"Socomec, Load break, 125A",SLBM1253PD,12.5,70,125,,,"Assumed, no socomec watt loss data"
+Isolator,"Socomec, Load break, 1250A, @1250A",SLB12503P,125,70,1250,,,"Assumed, no socomec watt loss data"
+Isolator,"Socomec, Load break, 1250A, @825",SLB12503P,82.5,70,1250,,,"Assumed, no socomec watt loss data"
+MCCB,"TemBreak MCCB, 100A",P160F23100BE,3.9,70,100,,,
+MCCB,"TemBreak MCCB, 400A",P400F3400BE,33.3,70,400,60,(-11.08*x)+1124,
+Other,Emergency Lighting Relay,CPELK,4,70,,,,
+Other,MINIATURE GENERAL PURPOSE RELAY 7A 4CO 24V DC COIL,5534007424VDC,1,85,,,,
+Surge,Surge Reduction Filter,TSF20A240V,0,40,,,,
+Surge,Transient Discriminating SPD,TDSMT277,0,55,,,,
+PFR,PhaseFail Relay - Carlo Gavazzi,DPA01CM48W4,0,60,,,,
+PFR,PhaseFail Relay - Carlo Gavazzi,DPB02CM48,2.5,60,,,,
+PFR,PhaseFail Relay - Rhomberg,SP430,3,50,,,,
+RTU,SCADAPack 474,TBUP474-UA50-BB00S,0.4,70,,,,
+RTU,Expansion Module 6601,TBUX297585S,0.12,70,,,,
+RTU,Flex I/O Controller,1794AENTR,7.1,55,,,,
+RTU,Flex I/O 16 point digital input,1794IB16,6.1,55,,,,
+Terminal,Generic (24VDC < 0.5A),Generic,0.00134,70,,,,
+Terminal,Terminal Generic (230VAC < 5A),Generic,0.048,70,,,,
+Terminal,Terminal Generic (230VAC > 10A),Generic,0.134,70,,,,
+Terminal,Terminal Generic (230VAC > 16A),Generic,0.342,70,,,,
+Terminal,Terminal Generic (230VAC > 25A),Generic,0.836,70,,,,
+Terminal,Terminal Generic (230VAC > 32A),Generic,1.369,70,,,,
+Terminal,Terminal Generic (230VAC > 40A),Generic,2.139,70,,,,
+Terminal,Terminal Generic (230VAC > 63A),Generic,5.3,70,,,,
+VSD,"FRENIC-MEGA AC DRIVE, 3.7kW, 9.0A, 400V",FRN3.7G1E-4A,120,60,,,,
+VSD,"ACQ580 AC DRIVE, 15kW, 32A, 400V, IP21/55",ACQ580-31-033A-4,492,50,32,40,(-0.01*x)+1.4,
+VSD,"ACQ580 AC DRIVE, 18.5kW, 38A, 400V,IP21/55",ACQ580-31-039A-4,523,50,38,40,(-0.01*x)+1.4,
+VSD,"FC 202, 75kW, 147A, 400V, IP21",FC-202P75KT4E20H2TGXXXXSXXXXANBXCXXXXDX,1384,55,147,45,(-0.03*x)+2.35,
+VSD,"FC 202, 55kW, 109A, 400V, IP21",FC-202P55KT4E20H2TGXXXXSXXXXANBXCXXXXDX,1083,55,109,45,(-0.03*x)+2.35,"**How to obtain the temperature function**
+Use **Figure 5.15, page 119: C1/C2, T2/T4, 60° AVM, normal overload**.
+ Taking a vertical slice at **3 kHz**, the graph gives approximately:
+
+| Ambient temperature | Available current factor | Continuous output |
+|---|---:|---:|
+| 45°C | 1.00 | 106 A |
+| 50°C | 0.85 | 90.1 A |
+| 55°C | 0.70 | 74.2 A |
+
+That is a reduction of **15 percentage points per 5°C**, giving:
+factor(x) = (-0.03*x)+2.35"
+AHF,"AAF 007, 3~, Advanced Active Filter (55A)",AAF-0073B04-55A0E20,833,50,55,40,(-0.03*x)+2.2,
+POWER SUPPLY,Flex I/O Power Supply PS-02,1794PS13,7,55,,,,
+POWER SUPPLY,Flex I/O Power Supply PS-03,1794PS3,12,55,,,,
+UPS,Extended-Run Battery Pack for SRVS UPS,SRV72BP-9A,20,40,,,,
+UPS,"APC Easy UPS On-Line, 2000VA/1800W",SRVPM2KRIL-E,222.4,40,,,,
+UPS,"Device monitoring and management, Network Management Cards,",AP9544,3.5,40,,,,
+RTU,Flex I/O 16 Point Digital Output,1794OB16P,3.3,55,,,,
+RTU,Flex I/O 8 Point Analogue Input,1794IE8,3,55,,,,
+RTU,FLEX I/O Terminal Base Unit,1794TB3,0.1,70,,,,
+RTU,Flex I/O 12 Point Analogue Output,1794OE12,7.68,55,,,,
+RTU,FLEX I/O Terminal Base Unit,1794TB3G,0.1,70,,,,
+RTU,Flex Extension Cable,1794CE3,0,70,,,,
+Switch,Stratix 5800 Switch,1783-MMA10,6.6,55,,,,Assumed
+Switch,Stratix Expansion Manual,1783MMX14T2S,6.6,55,,,,Assumed
+Switch,MGate 5105-MB-EIP Series,5105-MB-EIP,0.5,60,,,,Assumed
+Relay,Relay Interface Module 6A 1 Changeover 24V ACDC Coil,385124VACDC,0.24,70,,,,Assumed (Calculated from finder coil resistance)
+Surge,Slimline Signal Protector,SL420-G,0.5,70,,,,Assumed
+Instrument,ABB ProcessMaster Flowmeter,FET632,2,60,,,,Assumed
+SS,Emotron - 30kW 56A Soft Starter ,TSA52-056,27,55,,,,With a -2% de-rating per degree above 40C
+Other,IME Analogue Voltmeter,RQ72EVAC500V,3,70,,,,Assumed temperature.
+Other,VigiPacT Earth Residual Leakage Relay,56173,4,70,,,,
+Other,Xylem Flygt MiniCAS II,MiniCAS II,5,60,,,,
+RTU,Miri RTU,AD2006+TR-P4012-LA-W,1.4,70,,,,Assumed loss as 100% of power consumption.
+RTU,Miri Telemetry Expansion Module,M16-TR,1.4,70,,,,Assumed loss as 100% of power consumption.
+RTU,Miri Input Expansion Module,M16-LN,1.4,70,,,,Assumed loss as 100% of power consumption.
+PSU,Phoenix Power supply 24VDC/10A,QUINT-PS/1AC/24DC,22,70,,,,With a -2.5% de-rating per degree above 60C
+UPS,Phoenix UPS 24VDC/10A,QUINT-UPS/24DC,5.27,70,,,,With a -2.5% de-rating per degree above 60C
+Other,Sitrans Flowmeter Transmitter,FM6000,11,60,,,,Assumed power loss as full power.
+MCCB,C100N320FM,"ComPacT NS1000, ML >1000A",22,70,,,,
+BUSBAR,2 x 50 x 10 x 1m,2 x 50 x 10 Total 3 Phase Bus Distance of 1m,30,55,,,,
+BUSBAR,2 x 40 x 10 x 1.8m,2 x 40 x 10 x Total 3 Phase Bus Distance = 1.8m,40,55,,,,
+BUSBAR,1 x 30 x 10 x 0.6m,1 x 30 x 10 x Total 3 Phase Phase Bus Distance = 0.6m,16,55,,,,
+Power Meter,IME Nemo 96 HD Multifuction Meter,NEMO96HD1000,2.5,55,,,,Assumed loss as 100% of power consumption.
+Surge,Type 2 surge arrester,VAL-ME-3+1-100-275-A,0.1,85,,,,"Assumed 0.1 watt loss. Is negligible between its a one-port device (parallel, no series impedance)"
+Other,Mechanical Thermostat,MTO11,0.1,60,,,,
+Other,Hybrid Control Gear - Sylvania Schreder,HYB1ST240V,126,65,,,,Assumed 90% efficiency
+Transformer,24VDC Transformer,TRA23024/160VA,6.5,55,6.67,40,(-0.004*x)+1.16,
+PSU,"Modicon X80, 24 to 48V DC, 31.2W Power Supply",BMXCPS3020,8.1,60,,,,
+Other,"EIO drop adapter, Modicon X80, with Ethernet backplane",BMECRA31210,0.6,60,,,,Assumed 10% of power consumption
+PLC,"Discrete input module, Modicon X80, 16 inputs, 24V DC positive",BMXDDI1602,2.5,60,,,,
+PLC,"Discrete output module, Modicon X80, 16 NO relay outputs",BMXDRA1605,2.5,60,,,,"Assumed same as DI, not provided online."
+PLC,"Analog isolated high level input module, Modicon X80, 8 inputs",BMXAMI0810,1.5,60,,,,
+Switch,Managed Gigabit Ethernet switch,EDS-518A-SS-SC,1.2,60,,,,Assumed 10% of power consumption
+PSU,"DIN rail power supplies for 1-phase system 24 V, 10 A @ Half Load",QS10.241,7.3,70,10,,,"Calculated at half output power, 120Watts, at 93.5% effiency from data sheet."
+Other,MACH-ProSys,MACH-ProSys,13,55,,,,Assumed 50% eff
+Other,MACH-ProPoint™ Input/Output,MACH-ProPoint™ Input/Output,13,55,,,,Assumed 50% eff
+Other,MACH-ProWebCom,MACH-ProWebCom,2,55,,,,Assumed 50% eff
+Other,Vega Level Control Relay,VEGAMET 141,0.3,60,,,,Assumed 10% of power consumption
+Radio,"Remote radio, Trio",QRX50,3.9,70,,,,Assumed 10% of transmit power loss

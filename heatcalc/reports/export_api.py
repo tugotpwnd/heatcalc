@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QGraphicsScene
 from ..core.compliance_61439 import evaluate_tier_compliance
 from ..core.louvre_calc import tier_max_effective_inlet_area_cm2
 from ..ui.tier_item import TierItem, tier_effective_inlet_area_cm2
+from ..ui.bus_items import BusLineItem, BusLoadItem, BusSourceItem, BusJoinItem
 from ..core.iec60890_calc import calc_tier_iec60890
 
 from .simple_report import (
@@ -101,6 +102,7 @@ def _map_tier_item(t: TierItem, solve) -> ReportTier:
         )
 
     buses: List[ReportBus] = []
+    tier_joint_rows = []
 
     schedule = []
     tier_edges = {}
@@ -151,6 +153,8 @@ def _map_tier_item(t: TierItem, solve) -> ReportTier:
         buses=buses,
         joints=tier_joint_rows,  # ✅ clean
         loads=[],  # placeholder for later
+        has_bus_elements=any(isinstance(item, (BusLineItem, BusLoadItem, BusSourceItem, BusJoinItem))
+                             for item in t.bus_items()),
     )
 
 def _meta_from_project(project: Any) -> ReportMeta:
@@ -170,7 +174,8 @@ def _meta_from_project(project: Any) -> ReportMeta:
         designer=g(m, "designer_name", "designer"),
         revision=g(m, "revision"),
         date=g(m, "date"),
-        ip_rating_n=g(m,"ip_rating_n"),
+          ip_rating_n=g(m,"ip_rating_n"),
+          use_manufacturer_derating=g(m, "use_manufacturer_derating", default=False),
     )
 
 
@@ -405,6 +410,7 @@ def export_project_report(
                     airflow_m3h=res.get("airflow_m3h"),
                     selected_airflow_m3h=res.get("selected_airflow_m3h", 0.0),
                     selected_fan_name=getattr(t, "selected_fan_name", ""),
+                    use_manufacturer_derating=project.meta.use_manufacturer_derating,
                     P_material_W=res.get("P_material"),
                     P_cooling_W=res.get("P_cooling"),
                     vent_recommended=bool(res.get("vent_recommended", False)),

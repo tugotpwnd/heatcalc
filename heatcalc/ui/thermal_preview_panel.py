@@ -116,6 +116,7 @@ class ThermalPreviewPanel(QWidget):
             "An exceeded temperature rating is flagged separately."
         )
         note.setWordWrap(True)
+        self.derating_note = note
         layout.addWidget(note)
         layout.addStretch()
         # Compare saved inputs, not scene repaint events (which also fire on solve).
@@ -193,6 +194,14 @@ class ThermalPreviewPanel(QWidget):
         self.pending.setVisible(changed)
 
     def refresh(self):
+        use_curve = self.swb.project.meta.use_manufacturer_derating
+        self.derating_note.setText(
+            "Manufacturer curves replace the 80% Ith cap where valid. Missing or invalid curves "
+            "retain the 80% limit. Current is per device; temperature ratings still apply."
+            if use_curve else
+            "Current capacity is per device, capped at 80% of rated current. Missing or invalid "
+            "curves use the 80% fallback. Temperature ratings still apply."
+        )
         tier = self.swb._selected_tier()
         signature = self.signature() if self.result is not None else None
         key = (id(tier), signature, id(self.result))
@@ -253,8 +262,8 @@ class ThermalPreviewPanel(QWidget):
         )
         self.table.setRowCount(len(components))
         for row, component in enumerate(components):
-            current = evaluate_derating(component, top)
-            at_limit = evaluate_derating(component, limit)
+            current = evaluate_derating(component, top, use_manufacturer_curve=use_curve)
+            at_limit = evaluate_derating(component, limit, use_manufacturer_curve=use_curve)
             rating = f"Max {component.max_temp_C:.1f} °C"
             if top > component.max_temp_C:
                 rating += " — EXCEEDED"

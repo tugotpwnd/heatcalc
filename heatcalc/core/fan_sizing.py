@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import numpy as np
 
-from .compliance_61439 import evaluate_derating
+from .compliance_61439 import evaluate_derating, has_valid_derating_curve
 from .iec60890_calc import calc_tier_iec60890
 
 
@@ -31,31 +30,7 @@ class FanSizingData:
     mids_C: list[float]
     devices: list[DeviceOperatingPoint]
     excluded_count: int
-
-
-def has_valid_derating_curve(component, temperatures):
-    """Do not plot the evaluator's 80% fallback as a manufacturer curve."""
-    expression = getattr(component, "derating_function", None)
-    rated = getattr(component, "rated_current_A", None)
-    if not isinstance(expression, str) or not expression.strip() or rated is None:
-        return False
-    try:
-        if not math.isfinite(float(rated)) or float(rated) <= 0:
-            return False
-        code = compile(expression, "<derating curve>", "eval")
-        start = getattr(component, "derating_temp_start_C", None)
-        # Always probe above the threshold as well, even if this chart's whole
-        # temperature range is below it (where the main evaluator bypasses it).
-        probes = [*temperatures, float(start) + 1 if start is not None else 40.0]
-        for temperature in probes:
-            if start is not None and temperature <= start:
-                continue
-            value = eval(code, {"__builtins__": {}}, {"x": temperature, "math": math})
-            if not isinstance(value, (int, float)) or not math.isfinite(value):
-                return False
-    except Exception:
-        return False
-    return True
+    use_manufacturer_derating: bool = False
 
 
 def build_fan_sizing_data(switchboard, tier, result, maximum_m3h):
@@ -85,13 +60,14 @@ def build_fan_sizing_data(switchboard, tier, result, maximum_m3h):
         devices.append(DeviceOperatingPoint(
             label=f"D{len(devices) + 1:02d}", name=name, quantity=component.qty,
             rated_A=float(component.rated_current_A),
-            current_A=evaluate_derating(component, result["T_top"]),
+            current_A=evaluate_derating(component, result["T_top"], use_manufacturer_curve=meta.use_manufacturer_derating),
             max_temp_C=float(component.max_temp_C),
-            currents_A=[evaluate_derating(component, t) for t in tops],
+            currents_A=[evaluate_derating(component, t, use_manufacturer_curve=meta.use_manufacturer_derating) for t in tops],
         ))
     return FanSizingData(
         tier_name=tier.name, airflow_m3h=flow, maximum_m3h=maximum,
         result=result, flows_m3h=flows, tops_C=tops,
         mids_C=[r["T_mid"] for r in results], devices=devices,
         excluded_count=len(tier.component_entries) - len(devices),
+        use_manufacturer_derating=meta.use_manufacturer_derating,
     )

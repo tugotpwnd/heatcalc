@@ -56,6 +56,10 @@ class FanPreviewTests(unittest.TestCase):
             derating_temp_start_C=40, derating_function="1 - (x - 40) * 0.01",
         )]
 
+    def tearDown(self):
+        # Complete queued chart redraws before cleanup destroys their Qt canvases.
+        self.app.processEvents()
+
     def calculate(self, flow=0, **overrides):
         args = dict(tier=self.tier, tiers=[self.tier], wall_mounted=False,
                     inlet_area_cm2=0, ambient_C=40, altitude_m=0, ip_rating_n=2,
@@ -346,6 +350,79 @@ class FanPreviewTests(unittest.TestCase):
             self.assertFalse(warning.called, warning.call_args)
             self.assertEqual(len(PdfReader(path.with_suffix(".pdf")).pages), 1)
             self.assertTrue(path.with_suffix(".png").exists())
+
+    def test_manufacturer_override_uses_curve_and_keeps_fallback(self):
+        component = self.tier.component_entries[0]
+        self.assertEqual(evaluate_derating(component, 40), 80)
+        self.assertEqual(evaluate_derating(component, 40, use_manufacturer_curve=True), 100)
+        self.assertEqual(evaluate_derating(component, 45, use_manufacturer_curve=True), 95)
+        self.assertEqual(evaluate_derating(component, 70, use_manufacturer_curve=True), 70)
+        for expression in (None, "", " ", "bad curve", "math.nan", "math.inf"):
+            invalid = replace(component, derating_function=expression)
+            for temperature in (20, 55):
+                self.assertEqual(evaluate_derating(invalid, temperature, use_manufacturer_curve=True), 80)
+        self.assertEqual(evaluate_derating(replace(component, derating_function="1.5"), 60,
+                                           use_manufacturer_curve=True), 100)
+
+    def test_project_checkbox_and_real_save_payload(self):
+        import json
+        from heatcalc.ui.project_meta_widget import ProjectMetaWidget
+        from heatcalc.ui.main_window import MainWindow
+        window = self.make_window()
+        editor = ProjectMetaWidget(window.project, window)
+        self.addCleanup(editor.close)
+        self.assertFalse(editor.cb_manufacturer_derating.isChecked())
+        editor.cb_manufacturer_derating.setChecked(True)
+        self.assertTrue(window.project.meta.use_manufacturer_derating)
+        holder = SimpleNamespace(project=window.project, switchboard_tab=window)
+        payload = MainWindow._get_project_json(holder)
+        restored = Project.from_json(json.loads(json.dumps(payload)))
+        self.assertTrue(restored.meta.use_manufacturer_derating)
+        del payload["meta"]["use_manufacturer_derating"]
+        self.assertFalse(Project.from_json(payload).meta.use_manufacturer_derating)
+        window.project.meta.use_manufacturer_derating = False
+        editor.refresh_from_project()
+        self.assertFalse(editor.cb_manufacturer_derating.isChecked())
+
+    def test_override_matches_preview_curves_and_both_report_tables(self):
+        from heatcalc.reports.export_api import export_project_report
+        from heatcalc.reports.simple_report import render_working_temperature_page, SectionCounter
+        from heatcalc.reports.fan_sizing_report import export_fan_sizing_report
+        from PyPDF2 import PdfReader
+        window = self.make_window()
+        window.project.meta.use_manufacturer_derating = True
+        self.tier.selected_airflow_m3h = 300
+        window.solve_all_thermal(apply_to_ui=True)
+        from heatcalc.ui.fan_sizing_dialog import FanSizingDialog
+        dialog = FanSizingDialog(window.preview_panel, self.tier)
+        self.addCleanup(dialog.close)
+        device = dialog.data.devices[0]
+        self.assertGreater(device.current_A, 80)
+        self.assertEqual(window.preview_panel.table.item(0, 3).text(), f"{device.current_A:.1f}")
+        with patch("heatcalc.reports.export_api.export_simple_report") as export:
+            export_project_report(window.project, window, None, Path("unused.pdf"), ambient_C=40)
+        kwargs = export.call_args.kwargs
+        self.assertTrue(kwargs["meta"].use_manufacturer_derating)
+        thermal, tier = kwargs["tier_thermals"][0], kwargs["tiers"][0]
+        flow = []
+        render_working_temperature_page(flow, SectionCounter(), tier, thermal)
+        self.assertAlmostEqual(tier.components[0].derated_current_A, device.current_A)
+        from reportlab.platypus import Table
+        report_text = " ".join(cell.getPlainText() for item in flow if isinstance(item, Table)
+                               for row in item._cellvalues for cell in row if hasattr(cell, "getPlainText"))
+        self.assertIn("Drive*", report_text)
+        self.assertIn("Component(s) temperature deratings were solved directly using manufacturer data.", report_text)
+        with report_test_directory() as tmp:
+            path = export_fan_sizing_report(Path(tmp) / "enabled.pdf", dialog.data, window.project.meta)
+            reader = PdfReader(path)
+            self.assertEqual(len(reader.pages), 1)
+            text = reader.pages[0].extract_text()
+            self.assertIn("80% Ith", text)
+            self.assertIn("superseded", text)
+            self.assertIn(f"{device.current_A:.1f}", text)
+            disabled = replace(dialog.data, use_manufacturer_derating=False)
+            path = export_fan_sizing_report(Path(tmp) / "disabled.pdf", disabled, window.project.meta)
+            self.assertNotIn("superseded", PdfReader(path).pages[0].extract_text())
 
 
 if __name__ == "__main__":
